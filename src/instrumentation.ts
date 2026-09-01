@@ -6,5 +6,8 @@ export async function register() {
 
     const { preventSystemSleep } = await import("@/lib/keep-awake");
     preventSystemSleep();
+
+    const { recoverRuns } = await import("@/lib/run-recovery");
+    await recoverRuns();
   }
 }

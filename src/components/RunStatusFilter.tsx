@@ -24,7 +24,8 @@ export default function RunStatusFilter() {
     <select
       value={status}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded border border-neutral-600 bg-neutral-900 px-3 py-2 text-sm"
+      aria-label="Filter runs by status"
+      className="ui-input px-3 py-2 text-sm"
     >
       <option value="">All statuses</option>
       {STATUSES.map((s) => (

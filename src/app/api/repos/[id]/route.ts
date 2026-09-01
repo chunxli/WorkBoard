@@ -17,11 +17,17 @@ export async function PATCH(
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const repo = await prisma.repo
-    .update({ where: { id, userId }, data: parsed.data })
-    .catch(() => null);
-  if (!repo) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(repo);
+  try {
+    const repo = await prisma.repo.update({ where: { id, userId }, data: parsed.data });
+    return NextResponse.json(repo);
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? String(error.code) : "";
+    if (code === "P2025") return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json(
+      { error: code === "P2002" ? "This resource already exists" : "Failed to update resource" },
+      { status: code === "P2002" ? 409 : 500 }
+    );
+  }
 }
 
 export async function DELETE(
@@ -32,6 +38,7 @@ export async function DELETE(
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
-  await prisma.repo.delete({ where: { id, userId } }).catch(() => null);
+  const deleted = await prisma.repo.deleteMany({ where: { id, userId } });
+  if (deleted.count === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json({ ok: true });
 }

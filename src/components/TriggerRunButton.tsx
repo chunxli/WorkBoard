@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Play } from "lucide-react";
 
 export default function TriggerRunButton({ taskId }: { taskId: string }) {
   const router = useRouter();
@@ -24,8 +25,9 @@ export default function TriggerRunButton({ taskId }: { taskId: string }) {
     <button
       onClick={onClick}
       disabled={submitting}
-      className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+      className="ui-primary-button"
     >
+      <Play size={14} fill="currentColor" aria-hidden="true" />
       {submitting ? "Starting..." : "Run now"}
     </button>
   );

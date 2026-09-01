@@ -24,7 +24,7 @@ export async function POST(
   const eventType = req.headers.get("x-github-event") ?? "";
 
   const tasks = await prisma.task.findMany({
-    where: { repoId, triggerType: "WEBHOOK", enabled: true },
+    where: { repoId, triggerType: "WEBHOOK", enabled: true, archivedAt: null },
   });
 
   const matchingTasks = tasks.filter((task) =>

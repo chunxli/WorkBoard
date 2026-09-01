@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { hostname } from "node:os";
+import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import { getRunDiff, getRemoteUrl } from "@/lib/git-safety";
@@ -12,6 +15,13 @@ import CancelRunButton from "@/components/CancelRunButton";
 import ProcessInfoPanel from "@/components/ProcessInfoPanel";
 import RepoInfoPanel from "@/components/RepoInfoPanel";
 import DiffView from "@/components/DiffView";
+import { ownedRunWhere } from "@/lib/run-access";
+import TerminalSessionActions from "@/components/TerminalSessionActions";
+import { localTerminalAvailable } from "@/lib/local-terminal-policy";
+import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import MetaChip from "@/components/MetaChip";
+import SectionHeading from "@/components/SectionHeading";
+import { ArrowLeft, Clock3, Download, GitBranch, GitCompareArrows, GitCommitHorizontal, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
 
 export default async function RunDetailPage({
   params,
@@ -23,19 +33,35 @@ export default async function RunDetailPage({
 
   const { id } = await params;
   const run = await prisma.run.findFirst({
-    where: { id, task: { repo: { userId } } },
-    include: { task: { include: { repo: true } } },
+    where: ownedRunWhere(userId, id),
+    include: { task: { include: { repo: true } }, work: true },
   });
   if (!run) notFound();
 
   const log = run.logPath ? await readFile(run.logPath, "utf8").catch(() => "") : "";
 
-  const diff = await getRunDiff(run);
+  const diff = run.outputDir
+    ? await readFile(path.join(run.outputDir, "diff.patch"), "utf8").catch(() => "")
+    : await getRunDiff(run);
 
-  const workdirPath = getRepoWorkdirPath(run.task.repo);
-  const remoteUrl = await getRemoteUrl(workdirPath);
+  const workdirPath =
+    run.executionPath ?? run.work?.directoryPath ?? (run.task ? getRepoWorkdirPath(run.task.repo) : "");
+  const remoteUrl = workdirPath ? await getRemoteUrl(workdirPath) : null;
 
   const isLive = run.status === "PENDING" || run.status === "RUNNING";
+  const requestHost = (await headers()).get("host") ?? "";
+  const sameMachine = !run.hostname || run.hostname === hostname();
+  const ownerArchived = run.work?.status === "ARCHIVED" || Boolean(run.task?.archivedAt);
+  const canOpenTerminal = localTerminalAvailable(requestHost) && sameMachine;
+  const resumeReady =
+    Boolean(run.copilotSessionId) &&
+    canOpenTerminal &&
+    await isTerminalResumeReady({
+      id: run.id,
+      taskId: run.taskId,
+      status: run.status,
+      work: run.work,
+    });
   const commitRange =
     run.baseCommit && run.finalCommit
       ? `${run.baseCommit.slice(0, 8)}..${run.finalCommit.slice(0, 8)}`
@@ -43,43 +69,61 @@ export default async function RunDetailPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <Link href={`/tasks/${run.task.id}`} className="text-sm text-blue-400 hover:underline">
-          ← {run.task.name}
+      <header className="border-b border-neutral-800 pb-5">
+        <Link
+          href={run.task ? `/tasks/${run.task.id}` : run.work ? `/work/${run.work.id}` : "/runs"}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-500 hover:text-emerald-300"
+        >
+          <ArrowLeft size={13} aria-hidden="true" />
+          {run.task?.name ?? run.work?.name ?? "Runs"}
         </Link>
-        <div className="mt-1 flex items-center gap-3">
-          <h1 className="text-xl font-semibold">Run {run.id.slice(0, 8)}</h1>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-bold text-white">Run <span className="font-mono">{run.id.slice(0, 8)}</span></h1>
           <StatusBadge status={run.status} />
           {isLive && <CancelRunButton runId={run.id} />}
         </div>
-        <p className="text-sm text-neutral-400">
-          Trigger: {run.trigger}
-          {run.branchName && ` · Branch: ${run.branchName}`}
-          {run.startedAt && ` · Duration: ${formatDuration(run.startedAt, run.finishedAt)}`}
-          {(run.hostname ?? run.task.repo.hostname) && ` · Machine: ${run.hostname ?? run.task.repo.hostname}`}
-        </p>
-        {run.baseCommit && (
-          <p className="text-sm text-neutral-400">
-            Start: <span title={run.baseCommit}>{run.baseCommit.slice(0, 8)}</span>
-            {run.finalCommit && (
-              <>
-                {" · End: "}
-                <span title={run.finalCommit}>{run.finalCommit.slice(0, 8)}</span>
-              </>
-            )}
-          </p>
+        {run.copilotSessionId && canOpenTerminal && (
+          <div className="mt-3">
+            <TerminalSessionActions
+              runId={run.id}
+              canResume={!ownerArchived && resumeReady}
+              canSync={run.trigger === "TERMINAL_RESUME"}
+            />
+          </div>
         )}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <MetaChip icon={Zap}>{run.trigger}</MetaChip>
+          {run.branchName && <MetaChip icon={GitBranch} mono>{run.branchName}</MetaChip>}
+          {run.startedAt && <MetaChip icon={Clock3}>{formatDuration(run.startedAt, run.finishedAt)}</MetaChip>}
+          {(run.hostname ?? run.task?.repo.hostname) && (
+            <MetaChip icon={Monitor} mono>{run.hostname ?? run.task?.repo.hostname}</MetaChip>
+          )}
+          {run.baseCommit && (
+            <MetaChip icon={GitCommitHorizontal} mono>
+              {run.baseCommit.slice(0, 8)}{run.finalCommit ? `..${run.finalCommit.slice(0, 8)}` : ""}
+            </MetaChip>
+          )}
+        </div>
         {run.errorMessage && <p className="mt-2 text-sm text-red-400">{run.errorMessage}</p>}
-      </div>
+      </header>
 
-      <RepoInfoPanel
-        info={{
-          currentBranch: run.branchName ?? run.task.repo.defaultBranch,
-          defaultBranch: run.task.repo.defaultBranch,
-          remoteUrl,
-          workdirPath,
-        }}
-      />
+      {run.task ? (
+        <RepoInfoPanel
+          info={{
+            currentBranch: run.branchName ?? run.task.repo.defaultBranch,
+            defaultBranch: run.task.repo.defaultBranch,
+            remoteUrl,
+            workdirPath,
+          }}
+        />
+      ) : (
+        <div className="ui-panel p-4">
+          <div className="text-sm text-neutral-500">Work directory</div>
+          <div className="mt-1 truncate font-mono text-xs text-neutral-300" title={workdirPath}>
+            {workdirPath}
+          </div>
+        </div>
+      )}
 
       <ProcessInfoPanel
         runId={run.id}
@@ -89,27 +133,55 @@ export default async function RunDetailPage({
           command: run.command,
           cpuTimeMs: run.cpuTimeMs,
           memoryMb: run.peakMemoryMb,
-          model: run.model ?? run.task.model,
-          contextTier: run.contextTier ?? run.task.contextTier,
-          reasoningEffort: run.reasoningEffort ?? run.task.reasoningEffort,
+          agent: run.agent ?? run.task?.agent,
+          model: run.model ?? run.task?.model,
+          fallbackModel: run.fallbackModel ?? run.task?.fallbackModel,
+          contextTier: run.contextTier ?? run.task?.contextTier,
+          reasoningEffort: run.reasoningEffort ?? run.task?.reasoningEffort,
+          permissionMode: run.permissionMode ?? run.task?.permissionMode,
+          timeoutLabel: run.task
+            ? `${run.timeoutSeconds ?? run.task.timeoutSeconds}s`
+            : run.timeoutSeconds
+              ? `${run.timeoutSeconds}s`
+              : "None",
         }}
       />
 
-      <div>
-        <h2 className="mb-2 text-lg font-semibold">Output</h2>
+      {run.outputDir && (
+        <section className="ui-panel p-4 sm:p-5">
+          <SectionHeading icon={PackageOpen} title="Artifacts" />
+          <div className="flex flex-wrap gap-2">
+            {["result.md", "transcript.jsonl", "diff.patch", "run.json", "stdout.log", "stderr.log"].map(
+              (name) => (
+                <a
+                  key={name}
+                  href={`/api/runs/${run.id}/artifacts/${name}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-950/50 px-3 py-2 font-mono text-xs text-neutral-300 hover:border-neutral-600 hover:bg-neutral-800 hover:text-white"
+                >
+                  <Download size={12} aria-hidden="true" />
+                  {name}
+                </a>
+              )
+            )}
+          </div>
+        </section>
+      )}
+
+      <section>
+        <SectionHeading icon={TerminalSquare} title="Output" />
         <LiveRunLog
           runId={run.id}
           initialLog={log}
           isLive={isLive}
-          outputFormat={(run.outputFormat ?? run.task.outputFormat) === "json" ? "json" : "text"}
+          outputFormat={(run.outputFormat ?? run.task?.outputFormat ?? "text") === "json" ? "json" : "text"}
         />
-      </div>
+      </section>
 
       {diff && (
-        <div>
-          <h2 className="mb-2 text-lg font-semibold">Diff{commitRange && ` (${commitRange})`}</h2>
+        <section>
+          <SectionHeading icon={GitCompareArrows} title={`Diff${commitRange ? ` (${commitRange})` : ""}`} />
           <DiffView diff={diff} />
-        </div>
+        </section>
       )}
     </div>
   );

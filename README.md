@@ -1,23 +1,72 @@
-# CodeBoard
+![Work Board — local-first Copilot workspace](docs/screenshots/work-board-banner.png)
 
-CodeBoard is a personal, local web app for orchestrating [GitHub Copilot CLI](https://github.com/github/copilot-cli) coding tasks against your own repositories — define a task once (which repo, what prompt, which agent/model), then trigger it manually, on a cron schedule, from a GitHub webhook, or via an external API call, and watch it run with live streaming output, safe git branching, and a colored diff of the result.
+# Work Board
 
-It's a single Next.js process: the UI, the API routes, and the background cron scheduler all run together — there's no separate backend server to deploy.
+Work Board is a local-first workspace for quickly creating, running, comparing, resuming, and archiving [GitHub Copilot CLI](https://github.com/github/copilot-cli) work. A Work points at a real directory, keeps its prompt beside the resources, and collects portable output for every run.
+
+The existing scheduled task system remains available as **Automations**. The application is still a single Next.js process: UI, API routes, queue, and cron scheduler run together.
+
+## Application tour
+
+### Work Board
+
+Current Work is displayed as a responsive card grid. Drag the card handle to persist a custom order, or use the card actions to open the directory, resume the latest eligible session in Windows Terminal, or inspect the Work.
+
+![Work Board card grid showing successful, running, and in-terminal Work](docs/screenshots/work-board.png)
+
+### Work details
+
+Each Work keeps its execution settings, prompt, latest Run, result, artifacts, and Terminal Resume workflow together. Output can be shown as readable text or raw JSON events, and Work timeout defaults to None.
+
+![Work details showing execution settings and Terminal Resume](docs/screenshots/work-detail.png)
 
 ## Features
 
-- **Repos** — register a repo by local path or git URL (auto-clone/pull on demand), with a built-in folder browser and default-branch auto-detection.
-- **Tasks** — define a prompt, target repo, optional agent/model with a configurable fallback when the primary model is unavailable, permission mode (`default` vs `--allow-all`), and output format (`text` or `json`) per task.
-- **Triggers** — run a task manually from the UI, on a `node-cron` schedule, from a signed GitHub webhook, or via an API-token-protected external endpoint.
-- **Live runs** — each execution streams the Copilot CLI's output live over SSE; `json`-format output is summarized into short, readable lines (tool calls, reasoning, results) instead of raw event JSON. Live PID/CPU/memory stats and a cancel button are shown while a run is in progress.
-- **Git safety** — every run pulls the repo's default branch first, then works on its own dedicated `codeboard/run-<id>` branch so a run can never edit the default branch directly. The run detail page shows a colored (+/-) diff of everything the run changed.
-- **Dashboard** — activity chart (last 14 days by status), success rate, global search across repos/tasks/runs, and a sortable/filterable runs list.
-- **Settings** — manage API tokens used for the external trigger endpoint.
-- **Authentication** — sign in with a Microsoft account (work/school or personal) via Auth.js; every repo, task, run, and API token is owned by and scoped to the signed-in user, so multiple people can safely share one deployment.
+- **Fast Work creation** — enter or browse to a directory, write a prompt, then create and run in one action. Missing directories are created automatically.
+- **Draggable Work cards** — scan Current Work as a responsive card grid and drag cards into a persistent custom order with pointer, touch, or keyboard controls.
+- **Card-level local actions** — open a Work directory in Windows Explorer or resume its latest eligible Copilot session in Windows Terminal directly from the card. Active terminal sessions are identified as **IN TERMINAL**.
+- **Common Root directories** — save frequently used roots in New Work, browse their immediate child folders, select a Work directory, or open a root or child folder directly in Windows Explorer.
+- **Prompt templates** — fill, append, or replace prompt text with built-in workflows, and manage or import reusable Markdown and plain-text templates in Settings.
+- **Portable prompts** — `PROMPT.md` is the source of truth and autosaves with external-edit conflict detection. Multiple Works sharing one directory use `PROMPT-2.md`, `PROMPT-3.md`, and so on.
+- **Numbered folder copies** — confirm and copy the selected directory to the next monotonic sibling (`work-2`, `work-3`, and so on), open the copy in Explorer for edits, then return to write the Prompt and run it. Copies include hidden files, `.git`, dependencies, and build output.
+- **Resource initialization** — start from the selected local path or copy a registered Resource into a new Work directory.
+- **Dual engines** — use the existing Copilot CLI runner or the official `@github/copilot-sdk`. CLI is the default.
+- **Explicit Work execution settings** — configure engine, agent, primary and fallback models, context size, reasoning effort, permissions, and readable or raw JSON output per Work. Every Run freezes those settings for later inspection.
+- **Execution defaults** — set shared Work and Automation defaults in Settings; new items inherit them while existing saved settings remain unchanged.
+- **Optional Work timeout** — Work runs default to no timeout, but each Work can set a 30–86400 second limit. Automation timeouts remain independently configurable.
+- **Skill comparisons** — discover project Skills or add a local Skill directory, freeze one resource snapshot, then run complete isolated copies in parallel with explicit `/skill-name` or automatic invocation.
+- **Live and resumable runs** — stream output, cancel work, and resume the exact Copilot session in Windows Terminal from a Work card, Work details, or Run details. After the terminal exits, its new session events sync back to Work Board.
+- **Session compatibility repair** — read legacy Copilot permission events during Sync and safely upgrade them before Resume, with an atomic backup and active-process protection.
+- **Portable results** — every Work, Experiment, terminal-resume, and Automation run writes `result.md`, `transcript.jsonl`, `diff.patch`, `run.json`, `stdout.log`, and `stderr.log`.
+- **Archive without deleting** — completed Work and Automations can be archived and restored while keeping directories, sessions, and history.
+- **Automations** — existing manual, cron, signed GitHub webhook, and token-authenticated API triggers remain compatible.
+- **Inline Resources** — select, add, edit, or remove an Automation Resource directly in New Automation; there is no separate Resource workspace to manage.
+- **Light and dark themes** — follow the operating system on first use, then persist an explicit theme selected from the navigation bar.
 
 ## Tech stack
 
-Next.js 16 (App Router, Turbopack) · TypeScript · Tailwind CSS v4 · Prisma 7 + SQLite (`better-sqlite3` driver adapter) · `node-cron` scheduler (started from `instrumentation.ts`) · Auth.js (NextAuth v5) with the Microsoft Entra ID provider.
+Next.js 16 (App Router, Turbopack) · React 19 · TypeScript · Tailwind CSS v4 · dnd-kit · Prisma 7 + SQLite · GitHub Copilot CLI + Copilot SDK · Vitest · Auth.js with Microsoft Entra ID.
+
+## Work directory layout
+
+```text
+my-work/
+├── PROMPT.md
+├── project resources...
+└── .workboard/
+   ├── index.json
+   ├── works/<work-id>.json
+   ├── outputs/<run-id>/
+   │   ├── result.md
+   │   ├── transcript.jsonl
+   │   ├── diff.patch
+   │   ├── run.json
+   │   ├── stdout.log
+   │   └── stderr.log
+   └── variants/<work-id>/<experiment-id>/...
+```
+
+`.workboard/` is excluded when Work Board copies a Work, preventing recursive copies. It is otherwise ordinary, inspectable local data and should be included when backing up the Work.
 
 ## Getting started
 
@@ -53,9 +102,8 @@ Open [http://localhost:3100](http://localhost:3100).
 Dev mode rebuilds on every request and isn't meant for long-running/scheduled use. To run the optimized production build instead:
 
 ```bash
-npx prisma generate        # only needed if you changed prisma/schema.prisma
 npx prisma migrate deploy  # only needed if there are new migrations
-npm run build
+npm run build              # prebuild generates Prisma Client automatically
 npm run start              # runs `next start -p 3100` — serves the build, no hot-reload
 ```
 
@@ -63,13 +111,13 @@ The `node-cron` scheduler starts automatically in both dev and production mode, 
 
 ### Run the Release in the background
 
-The same commands work in PowerShell/Command Prompt on Windows and Terminal on macOS. The start command generates Prisma, applies migrations, builds the release, then launches CodeBoard detached from the terminal with output redirected to `data/`:
+The same commands work in PowerShell/Command Prompt on Windows and Terminal on macOS. The start command generates Prisma, applies migrations, builds the release, then launches Work Board detached from the terminal with output redirected to `data/`:
 
 ```bash
 npm run background:start
 ```
 
-The terminal can be closed after the command reports that CodeBoard started. Manage the detached process with:
+The terminal can be closed after the command reports that Work Board started. Manage the detached process with:
 
 ```bash
 npm run background:status
@@ -81,18 +129,18 @@ After the first build, use `npm run background:start:fast` to restart the existi
 
 ## Authentication setup
 
-CodeBoard requires signing in with a Microsoft account before any UI page or API route (other than the auth, GitHub webhook, and external-trigger endpoints) becomes accessible. This needs a Microsoft Entra ID app registration:
+Work Board requires signing in with a Microsoft account before any UI page or API route (other than auth, GitHub webhook, external-trigger, and protected terminal callback endpoints) becomes accessible. This needs a Microsoft Entra ID app registration:
 
 1. **Create the app registration** (supports both work/school and personal Microsoft accounts):
    ```bash
-   az ad app create --display-name "CodeBoard" \
+   az ad app create --display-name "Work Board" \
      --sign-in-audience AzureADandPersonalMicrosoftAccount \
      --web-redirect-uris "http://localhost:3100/api/auth/callback/microsoft-entra-id" \
      --enable-id-token-issuance true
    ```
 2. **Create a client secret** for the app you just created (use its `appId` from the previous step's output):
    ```bash
-   az ad app credential reset --id <appId> --display-name "codeboard-nextauth" --years 2
+   az ad app credential reset --id <appId> --display-name "workboard-nextauth" --years 2
    ```
 3. **Create a service principal** so consent/sign-in works:
    ```bash
@@ -110,21 +158,31 @@ No `AUTH_MICROSOFT_ENTRA_ID_ISSUER` is set intentionally — omitting it makes A
 
 Scheduled tasks are driven entirely by the Node.js server process (`instrumentation.ts` → `node-cron`), not by the browser — a task will still fire on schedule even if no browser tab is open. What _does_ matter is keeping the server process itself alive continuously:
 
-- Don't let the machine sleep/hibernate while relying on schedules (suspends all timers). While the server is running, CodeBoard automatically prevents idle system sleep on Windows (via `SetThreadExecutionState`) and macOS (via `caffeinate`); the display may still turn off normally. Set `CODEBOARD_PREVENT_SLEEP=false` to disable this. On Linux, configure sleep inhibition at the OS/service level.
+- Don't let the machine sleep/hibernate while relying on schedules (suspends all timers). While the server is running, Work Board automatically prevents idle system sleep on Windows (via `SetThreadExecutionState`) and macOS (via `caffeinate`); the display may still turn off normally. Set `CODEBOARD_PREVENT_SLEEP=false` to disable this. On Linux, configure sleep inhibition at the OS/service level.
 - Run the server as a persistent background process (e.g. `pm2`, a Windows service via NSSM, or a Task Scheduler/systemd entry set to restart on failure) rather than a terminal you might close.
 - There's currently no "catch up on missed runs" — if the process was down when a scheduled time passed, that run is simply skipped.
 
 ## Configuration
 
-| Env var                          | Purpose                                                                                      |
-| -------------------------------- | -------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                   | SQLite connection string, defaults to `file:./dev.db` (see `.env`)                           |
-| `GH_TOKEN` / `GITHUB_TOKEN`      | Optional PAT for headless Copilot CLI auth (needs "Copilot Requests" permission)             |
-| `AUTH_MICROSOFT_ENTRA_ID_ID`     | Client (application) ID of the Microsoft Entra ID app registration used for sign-in          |
-| `AUTH_MICROSOFT_ENTRA_ID_SECRET` | Client secret for that app registration                                                      |
-| `AUTH_SECRET`                    | Random secret Auth.js uses to sign/encrypt session tokens — required in production           |
-| `AUTH_URL`                       | Base URL of the deployment (e.g. `http://localhost:3100`), used to build OAuth callback URLs |
-| `AUTH_TRUST_HOST`                | Set to `true` when running behind a reverse proxy or on a non-standard host/port             |
-| `CODEBOARD_PREVENT_SLEEP`        | Set to `false` to disable automatic Windows/macOS idle-sleep prevention                      |
+| Env var                           | Purpose                                                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                    | SQLite connection string, defaults to `file:./dev.db` (see `.env`)                            |
+| `GH_TOKEN` / `GITHUB_TOKEN`       | Optional PAT for headless Copilot CLI auth (needs "Copilot Requests" permission)              |
+| `AUTH_MICROSOFT_ENTRA_ID_ID`      | Client (application) ID of the Microsoft Entra ID app registration used for sign-in           |
+| `AUTH_MICROSOFT_ENTRA_ID_SECRET`  | Client secret for that app registration                                                       |
+| `AUTH_SECRET`                     | Random secret Auth.js uses to sign/encrypt session tokens — required in production            |
+| `AUTH_URL`                        | Base URL of the deployment (e.g. `http://localhost:3100`), used to build OAuth callback URLs  |
+| `AUTH_TRUST_HOST`                 | Set to `true` when running behind a reverse proxy or on a non-standard host/port              |
+| `CODEBOARD_PREVENT_SLEEP`         | Set to `false` to disable automatic Windows/macOS idle-sleep prevention                       |
+| `WORKBOARD_ENABLE_LOCAL_TERMINAL` | Allow a trusted non-localhost request to open Windows Terminal on the server; default `false` |
+| `WORKBOARD_LOCAL_URL`             | Loopback URL used by the terminal exit callback; default `http://127.0.0.1:3100`              |
 
-Local state — the SQLite database, per-run logs, and any auto-cloned `GIT_URL` repos — lives under `dev.db` and `data/`, both git-ignored since they're machine-specific and may contain repo paths/log content.
+Local state — the SQLite database, compatibility logs, terminal launch credentials, and auto-cloned Resources — lives under `dev.db` and `data/`. Work prompts, experiment copies, and standard results live in each Work directory.
+
+## Operational boundaries
+
+- Work Board is designed for one trusted machine and one Next.js server instance. Queue state is recovered after restart, but there is no distributed lock for multiple application replicas.
+- Running two agents directly in the same directory is allowed and clearly marked unsafe: file changes and diffs may be mixed. Use the numbered-copy option or Skill variants when result attribution matters.
+- Full copies can be large because they intentionally include dependencies, build output, hidden files, and Git metadata. Check available disk space before large comparisons.
+- Windows Terminal resume is only offered for sessions created on the same host. Remote deployments should leave local terminal launch disabled.
+- Work processes receive an environment allowlist. Auth.js, Entra, and database secrets are not forwarded to Copilot.

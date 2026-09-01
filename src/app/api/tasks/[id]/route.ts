@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { updateTaskSchema } from "@/lib/validation";
 import { getSessionUserId } from "@/lib/session";
+import cron from "node-cron";
 
 export async function GET(
   _req: NextRequest,
@@ -44,6 +45,18 @@ export async function PATCH(
   }
   if (fallbackModel && fallbackModel === model) {
     return NextResponse.json({ error: "fallbackModel must differ from model" }, { status: 400 });
+  }
+
+  const triggerType = parsed.data.triggerType ?? existing.triggerType;
+  const cronExpression =
+    parsed.data.cronExpression === undefined
+      ? existing.cronExpression
+      : parsed.data.cronExpression;
+  if (triggerType === "SCHEDULE" && (!cronExpression || !cron.validate(cronExpression))) {
+    return NextResponse.json(
+      { error: "A valid cronExpression is required when triggerType is SCHEDULE" },
+      { status: 400 }
+    );
   }
 
   if (parsed.data.repoId) {

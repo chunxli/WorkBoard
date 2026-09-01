@@ -2,14 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Search, X } from "lucide-react";
 
 interface SearchResults {
+  works: { id: string; name: string }[];
   repos: { id: string; name: string }[];
   tasks: { id: string; name: string }[];
-  runs: { id: string; status: string; task: { name: string } }[];
+  runs: { id: string; status: string; task: { name: string } | null; work: { name: string } | null }[];
 }
 
-const EMPTY: SearchResults = { repos: [], tasks: [], runs: [] };
+const EMPTY: SearchResults = { works: [], repos: [], tasks: [], runs: [] };
 
 export default function GlobalSearch() {
   const router = useRouter();
@@ -51,7 +53,19 @@ export default function GlobalSearch() {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  const hasResults = results.repos.length + results.tasks.length + results.runs.length > 0;
+  useEffect(() => {
+    function focusSearch(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        containerRef.current?.querySelector("input")?.focus();
+      }
+    }
+    document.addEventListener("keydown", focusSearch);
+    return () => document.removeEventListener("keydown", focusSearch);
+  }, []);
+
+  const hasResults =
+    results.works.length + results.repos.length + results.tasks.length + results.runs.length > 0;
 
   function goTo(href: string) {
     setOpen(false);
@@ -60,28 +74,67 @@ export default function GlobalSearch() {
   }
 
   return (
-    <div ref={containerRef} className="relative ml-auto w-64">
+    <div ref={containerRef} className="relative w-full">
+      <Search
+        size={15}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500"
+      />
       <input
+        aria-label="Global search"
         value={query}
         onChange={(e) => {
           setQuery(e.target.value);
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
-        placeholder="Search repos, tasks, runs..."
-        className="w-full rounded border border-neutral-600 bg-neutral-900 px-3 py-1.5 text-sm"
+        placeholder="Search work, resources, runs..."
+        className="h-9 w-full rounded-md border border-neutral-700 bg-neutral-950/70 py-1.5 pl-9 pr-16 text-sm text-neutral-200 shadow-inner shadow-black/10 placeholder:text-neutral-600 hover:border-neutral-600 focus:border-emerald-700"
       />
+      {!query && (
+        <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-[9px] text-neutral-500 xl:inline-flex">
+          Ctrl K
+        </kbd>
+      )}
+      {query && (
+        <button
+          type="button"
+          onClick={() => {
+            setQuery("");
+            setResults(EMPTY);
+          }}
+          aria-label="Clear search"
+          title="Clear search"
+          className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-white"
+        >
+          <X size={14} aria-hidden="true" />
+        </button>
+      )}
       {open && query.trim().length >= 2 && (
-        <div className="absolute right-0 z-10 mt-1 w-80 rounded-lg border border-neutral-700 bg-neutral-800 p-2 text-sm shadow-lg">
-          {!hasResults && <p className="px-2 py-1 text-neutral-500">No matches.</p>}
+        <div className="absolute right-0 z-50 mt-2 w-full overflow-hidden rounded-lg border border-neutral-700 bg-neutral-900/95 p-2 text-sm shadow-2xl shadow-black/50 backdrop-blur-xl sm:w-96">
+          {!hasResults && <p className="px-3 py-5 text-center text-neutral-500">No matches.</p>}
+          {results.works.length > 0 && (
+            <div className="mb-1">
+              <p className="px-2 py-1.5 text-[11px] font-bold uppercase text-neutral-500">Work</p>
+              {results.works.map((work) => (
+                <button
+                  key={work.id}
+                  onClick={() => goTo(`/work/${work.id}`)}
+                  className="block w-full rounded-md px-2 py-2 text-left text-neutral-200 hover:bg-neutral-800"
+                >
+                  {work.name}
+                </button>
+              ))}
+            </div>
+          )}
           {results.repos.length > 0 && (
             <div className="mb-1">
-              <p className="px-2 py-1 text-xs font-semibold text-neutral-500">Repos</p>
+              <p className="px-2 py-1.5 text-[11px] font-bold uppercase text-neutral-500">Resources</p>
               {results.repos.map((r) => (
                 <button
                   key={r.id}
-                  onClick={() => goTo("/repos")}
-                  className="block w-full rounded px-2 py-1 text-left hover:bg-neutral-700"
+                  onClick={() => goTo(`/tasks/new?resource=${encodeURIComponent(r.id)}`)}
+                  className="block w-full rounded-md px-2 py-2 text-left text-neutral-200 hover:bg-neutral-800"
                 >
                   {r.name}
                 </button>
@@ -90,12 +143,12 @@ export default function GlobalSearch() {
           )}
           {results.tasks.length > 0 && (
             <div className="mb-1">
-              <p className="px-2 py-1 text-xs font-semibold text-neutral-500">Tasks</p>
+              <p className="px-2 py-1.5 text-[11px] font-bold uppercase text-neutral-500">Automations</p>
               {results.tasks.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => goTo(`/tasks/${t.id}`)}
-                  className="block w-full rounded px-2 py-1 text-left hover:bg-neutral-700"
+                  className="block w-full rounded-md px-2 py-2 text-left text-neutral-200 hover:bg-neutral-800"
                 >
                   {t.name}
                 </button>
@@ -104,14 +157,14 @@ export default function GlobalSearch() {
           )}
           {results.runs.length > 0 && (
             <div>
-              <p className="px-2 py-1 text-xs font-semibold text-neutral-500">Runs</p>
+              <p className="px-2 py-1.5 text-[11px] font-bold uppercase text-neutral-500">Runs</p>
               {results.runs.map((r) => (
                 <button
                   key={r.id}
                   onClick={() => goTo(`/runs/${r.id}`)}
-                  className="block w-full rounded px-2 py-1 text-left hover:bg-neutral-700"
+                  className="block w-full rounded-md px-2 py-2 text-left text-neutral-200 hover:bg-neutral-800"
                 >
-                  {r.task.name} · {r.id.slice(0, 8)} ({r.status})
+                  {r.work?.name ?? r.task?.name ?? "Unknown"} · {r.id.slice(0, 8)} ({r.status})
                 </button>
               ))}
             </div>

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getRunProcessStats } from "@/lib/copilot-runner";
 import { getSessionUserId } from "@/lib/session";
+import { ownedRunWhere } from "@/lib/run-access";
 
 export async function GET(
   _req: NextRequest,
@@ -12,7 +13,7 @@ export async function GET(
 
   const { id } = await params;
   const run = await prisma.run.findFirst({
-    where: { id, task: { repo: { userId } } },
+    where: ownedRunWhere(userId, id),
     select: {
       pid: true,
       command: true,

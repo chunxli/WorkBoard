@@ -36,6 +36,49 @@ enum RunTrigger {
   SCHEDULE
   WEBHOOK
   API
+  WORK
+  TERMINAL_RESUME
+  EXPERIMENT
+}
+
+enum ExperimentStatus {
+  PROVISIONING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum ExperimentVariantStatus {
+  COPYING
+  READY
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum SkillInvocationMode {
+  EXPLICIT
+  AUTO
+}
+
+enum TerminalLaunchStatus {
+  PENDING
+  LAUNCHED
+  SYNCING
+  COMPLETED
+  FAILED
+}
+
+enum WorkStatus {
+  ACTIVE
+  REVIEW
+  ARCHIVED
+}
+
+enum WorkEngine {
+  CLI
+  SDK
 }
 
 model Repo {
@@ -56,6 +99,7 @@ model Repo {
 
   tasks       Task[]
   webhooks    WebhookConfig[]
+  sourceWorks Work[]         @relation("WorkSourceRepo")
 
   @@unique([userId, sourceType, location])
   @@index([userId])
@@ -66,6 +110,8 @@ model Task {
   name            String
   repoId          String
   repo            Repo          @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  workId          String?
+  work            Work?         @relation(fields: [workId], references: [id], onDelete: SetNull)
   prompt          String
   agent           String?
   model           String?
@@ -88,23 +134,108 @@ model Task {
   // Wait for every earlier queued/running Run before starting, and block later Runs until done.
   waitForPreviousRuns Boolean   @default(false)
   timeoutSeconds  Int           @default(1800)
+  archivedAt      DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
   runs            Run[]
 
   @@index([repoId])
+  @@index([workId])
   // Speeds up the scheduler's 30s reconciliation query and the webhook receiver's task lookup,
   // both of which filter by triggerType + enabled.
   @@index([triggerType, enabled])
+  @@index([repoId, triggerType, enabled])
+}
+
+model Work {
+  id             String       @id @default(cuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceRepoId   String?
+  sourceRepo     Repo?        @relation("WorkSourceRepo", fields: [sourceRepoId], references: [id], onDelete: SetNull)
+  name           String
+  directoryPath  String
+  canonicalPath  String
+  promptFileName String       @default("PROMPT.md")
+  promptCache    String       @default("")
+  promptHash     String?
+  hostname       String?
+  status         WorkStatus   @default(ACTIVE)
+  defaultEngine  WorkEngine   @default(CLI)
+  agent          String?
+  model          String?
+  fallbackModel  String?
+  contextTier    String?
+  reasoningEffort String?
+  permissionMode String       @default("default")
+  outputFormat   String       @default("text")
+  timeoutSeconds Int?
+  position       Int          @default(0)
+  archivedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  tasks          Task[]
+  runs           Run[]
+  experiments    Experiment[]
+
+  @@unique([userId, canonicalPath, promptFileName])
+  @@index([userId, status, updatedAt])
+  @@index([userId, status, position])
+  @@index([sourceRepoId])
+}
+
+model WorkPathShortcut {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label      String
+  rootPath   String
+  position   Int      @default(0)
+  lastUsedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, rootPath])
+  @@index([userId, position])
+}
+
+model PromptTemplate {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  content     String
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId, position])
 }
 
 model Run {
   id           String     @id @default(cuid())
-  taskId       String
-  task         Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId       String?
+  task         Task?      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  workId       String?
+  work         Work?      @relation(fields: [workId], references: [id], onDelete: Cascade)
+  experimentVariantId String?
+  experimentVariant ExperimentVariant? @relation(fields: [experimentVariantId], references: [id], onDelete: SetNull)
   status       RunStatus  @default(PENDING)
   trigger      RunTrigger
+  engine       WorkEngine?
+  executionPath String?
+  promptSnapshot String?
+  finalOutput  String?
+  outputDir    String?
+  copilotSessionId String?
+  concurrencyMode String?
+  resumedFromRunId String?
+  resumedFromRun Run?       @relation("RunResumes", fields: [resumedFromRunId], references: [id], onDelete: SetNull)
+  resumedRuns    Run[]      @relation("RunResumes")
   branchName   String?
   // Commit SHA of the default branch right before this run started (captured after syncing to
   // it, before any safe branch is created) — lets getRunDiff compute a two-ref diff without
@@ -120,9 +251,13 @@ model Run {
   outputFormat String?
   // Model / context tier / reasoning effort actually used for this run, copied from the Task at
   // start time for the same reason as outputFormat above.
+  agent           String?
   model           String?
+  fallbackModel   String?
   contextTier     String?
   reasoningEffort String?
+  permissionMode  String?
+  timeoutSeconds  Int?
   exitCode     Int?
   errorMessage String?
   startedAt    DateTime?
@@ -138,8 +273,67 @@ model Run {
   // Hostname of the machine that actually executed this run (set once it starts) — a PENDING run
   // that hasn't started yet has no value here; fall back to the task's repo hostname in the UI.
   hostname     String?
+  terminalLaunches TerminalLaunch[]
 
   @@index([taskId])
+  @@index([workId, createdAt])
+  @@index([status, createdAt])
+  @@index([resumedFromRunId])
+  @@index([experimentVariantId])
+}
+
+model Experiment {
+  id             String              @id @default(cuid())
+  workId         String
+  work           Work                @relation(fields: [workId], references: [id], onDelete: Cascade)
+  name           String
+  invocationMode SkillInvocationMode @default(EXPLICIT)
+  engine         WorkEngine          @default(CLI)
+  status         ExperimentStatus    @default(PROVISIONING)
+  basePath       String?
+  errorMessage   String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  variants       ExperimentVariant[]
+
+  @@index([workId, createdAt])
+}
+
+model ExperimentVariant {
+  id              String                  @id @default(cuid())
+  experimentId    String
+  experiment      Experiment              @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  skillName       String?
+  skillSourcePath String?
+  skillHash       String?
+  directoryPath   String?
+  status          ExperimentVariantStatus @default(COPYING)
+  skillInvoked    Boolean?
+  errorMessage    String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  runs            Run[]
+
+  @@index([experimentId, status])
+}
+
+model TerminalLaunch {
+  id          String               @id @default(cuid())
+  runId       String               @unique
+  run         Run                  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  tokenHash   String               @unique
+  status      TerminalLaunchStatus @default(PENDING)
+  launcherPid Int?
+  expiresAt   DateTime
+  launchedAt  DateTime?
+  completedAt DateTime?
+  errorMessage String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@index([status, expiresAt])
 }
 
 model ApiToken {
@@ -180,6 +374,30 @@ model User {
   sessions      Session[]
   repos         Repo[]
   apiTokens     ApiToken[]
+  works         Work[]
+  workPathShortcuts WorkPathShortcut[]
+  promptTemplates PromptTemplate[]
+  executionSettings UserExecutionSettings?
+}
+
+model UserExecutionSettings {
+  id                    String     @id @default(cuid())
+  userId                String     @unique
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultEngine         WorkEngine @default(CLI)
+  agent                 String?
+  model                 String?
+  fallbackModel         String?
+  contextTier           String?
+  reasoningEffort       String?
+  permissionMode        String     @default("default")
+  outputFormat          String     @default("text")
+  workTimeoutSeconds    Int?
+  automationTimeoutSeconds Int     @default(1800)
+  useSafeBranch         Boolean    @default(true)
+  waitForPreviousRuns   Boolean    @default(false)
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
 }
 
 model Account {

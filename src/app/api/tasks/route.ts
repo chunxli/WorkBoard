@@ -2,13 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createTaskSchema } from "@/lib/validation";
 import { getSessionUserId } from "@/lib/session";
+import cron from "node-cron";
+import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
+import { automationDefaultsPayload } from "@/lib/execution-defaults";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const userId = await getSessionUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const tasks = await prisma.task.findMany({
-    where: { repo: { userId } },
+    where: {
+      repo: { userId },
+      archivedAt: req.nextUrl.searchParams.get("view") === "archived" ? { not: null } : null,
+    },
     orderBy: { createdAt: "desc" },
     include: { repo: true, runs: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
@@ -20,14 +26,21 @@ export async function POST(req: NextRequest) {
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const parsed = createTaskSchema.safeParse(body);
+  const defaults = await getUserExecutionDefaults(userId);
+  const parsed = createTaskSchema.safeParse({
+    ...automationDefaultsPayload(defaults),
+    ...(body && typeof body === "object" && !Array.isArray(body) ? body : {}),
+  });
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  if (parsed.data.triggerType === "SCHEDULE" && !parsed.data.cronExpression) {
+  if (
+    parsed.data.triggerType === "SCHEDULE" &&
+    (!parsed.data.cronExpression || !cron.validate(parsed.data.cronExpression))
+  ) {
     return NextResponse.json(
-      { error: "cronExpression is required when triggerType is SCHEDULE" },
+      { error: "A valid cronExpression is required when triggerType is SCHEDULE" },
       { status: 400 }
     );
   }

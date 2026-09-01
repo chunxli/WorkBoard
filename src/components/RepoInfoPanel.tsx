@@ -8,8 +8,8 @@ interface RepoInfo {
 /** Static repo/branch context for a run — no polling needed, this never changes after the run starts. */
 export default function RepoInfoPanel({ info }: { info: RepoInfo }) {
   return (
-    <div className="rounded-lg border border-neutral-700 bg-neutral-800 p-4">
-      <h2 className="mb-3 text-lg font-semibold">Repo info</h2>
+    <div className="ui-panel p-4 sm:p-5">
+      <h2 className="mb-4 text-sm font-bold text-neutral-200">Repo info</h2>
       <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <div>
           <div className="text-neutral-500">当前 Branch</div>

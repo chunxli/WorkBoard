@@ -2,7 +2,7 @@ function lineClass(line: string): string {
   if (line.startsWith("+++") || line.startsWith("---")) return "text-neutral-400";
   if (line.startsWith("+")) return "text-emerald-400";
   if (line.startsWith("-")) return "text-red-400";
-  if (line.startsWith("@@")) return "text-sky-400";
+  if (line.startsWith("@@")) return "text-blue-400";
   if (line.startsWith("diff --git") || line.startsWith("index ")) return "text-neutral-500";
   return "text-neutral-200";
 }

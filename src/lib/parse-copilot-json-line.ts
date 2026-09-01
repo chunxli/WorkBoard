@@ -52,3 +52,13 @@ export function summarizeCopilotJsonLine(raw: string): string | null {
       return `· ${type}`;
   }
 }
+
+export function formatCopilotLogLines(
+  lines: string[],
+  outputFormat: "text" | "json"
+): string[] {
+  if (outputFormat === "json") return lines;
+  return lines
+    .map((line) => summarizeCopilotJsonLine(line))
+    .filter((line): line is string => line !== null);
+}

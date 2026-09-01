@@ -1,10 +1,17 @@
 import { spawn } from "node:child_process";
+import { mkdir, rm } from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { resolveRepoWorkdir } from "@/lib/repo-workdir";
 import type { Repo } from "@/generated/prisma/client";
 
-function runGit(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+function runGit(
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true });
+    const child = spawn("git", args, { cwd, env, windowsHide: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
@@ -40,15 +47,68 @@ export async function getBranchDiff(repoPath: string, fromRef: string, toRef: st
   return result.stdout;
 }
 
+/** Captures committed, staged, unstaged, and untracked changes relative to a base commit. */
+export async function getWorktreeDiff(repoPath: string, baseRef: string | null): Promise<string> {
+  if (!(await isGitRepo(repoPath))) return "";
+  const tracked = await runGit(["diff", "--binary", baseRef ?? "HEAD"], repoPath);
+  const untracked = await runGit(["ls-files", "--others", "--exclude-standard", "-z"], repoPath);
+  const sections = [tracked.stdout];
+
+  for (const relativePath of untracked.stdout.split("\0").filter(Boolean)) {
+    const patch = await runGit(["diff", "--no-index", "--binary", "--", "/dev/null", relativePath], repoPath);
+    if (patch.stdout) sections.push(patch.stdout);
+  }
+
+  return sections.filter(Boolean).join("\n");
+}
+
+/** Writes the current non-ignored working tree to an isolated Git tree without changing the real index. */
+export async function captureWorktreeTree(repoPath: string): Promise<string | null> {
+  if (!(await isGitRepo(repoPath))) return null;
+  const temporaryDirectory = path.join(repoPath, ".workboard", "tmp");
+  await mkdir(temporaryDirectory, { recursive: true });
+  const temporaryIndex = path.join(temporaryDirectory, `git-index-${randomUUID()}`);
+  const env = { ...process.env, GIT_INDEX_FILE: temporaryIndex };
+
+  try {
+    const empty = await runGit(["read-tree", "--empty"], repoPath, env);
+    if (empty.code !== 0) throw new Error(empty.stderr || "Failed to initialize Git snapshot");
+    const add = await runGit(
+      ["add", "-A", "--", ".", ":(exclude).workboard", ":(exclude).workboard/**"],
+      repoPath,
+      env
+    );
+    if (add.code !== 0) throw new Error(add.stderr || "Failed to capture Git snapshot");
+    const tree = await runGit(["write-tree"], repoPath, env);
+    if (tree.code !== 0) throw new Error(tree.stderr || "Failed to write Git snapshot");
+    return tree.stdout.trim() || null;
+  } finally {
+    await rm(temporaryIndex, { force: true }).catch(() => {});
+  }
+}
+
+export async function getWorktreeSnapshotDiff(
+  repoPath: string,
+  beforeTree: string | null,
+  afterTree: string | null
+): Promise<string> {
+  if (!beforeTree || !afterTree) return "";
+  const result = await runGit(["diff", "--binary", beforeTree, afterTree], repoPath);
+  if (result.code !== 0) throw new Error(result.stderr || "Failed to compare Git snapshots");
+  return result.stdout;
+}
+
 /** Computes the immutable committed diff captured for a run without checking out either ref. */
 export async function getRunDiff(run: {
   baseCommit: string | null;
   finalCommit: string | null;
-  task: { repo: Repo };
+  executionPath?: string | null;
+  task?: { repo: Repo } | null;
 }): Promise<string> {
   if (!run.baseCommit || !run.finalCommit) return "";
   try {
-    const repoPath = await resolveRepoWorkdir(run.task.repo);
+    const repoPath = run.executionPath ?? (run.task ? await resolveRepoWorkdir(run.task.repo) : null);
+    if (!repoPath) return "";
     return await getBranchDiff(repoPath, run.baseCommit, run.finalCommit);
   } catch {
     return "";

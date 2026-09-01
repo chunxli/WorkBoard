@@ -7,6 +7,8 @@ import StatusBadge from "@/components/StatusBadge";
 import RunStatusFilter from "@/components/RunStatusFilter";
 import CancelRunButton from "@/components/CancelRunButton";
 import { formatDuration } from "@/lib/format";
+import { ownedRunWhere } from "@/lib/run-access";
+import PageHeader from "@/components/PageHeader";
 
 const PAGE_SIZE = 20;
 const VALID_STATUSES = new Set(["PENDING", "RUNNING", "SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"]);
@@ -22,7 +24,7 @@ export default async function RunsPage({
   const { status, page: pageParam } = await searchParams;
   const page = Math.max(1, Number(pageParam) || 1);
   const where = {
-    task: { repo: { userId } },
+    ...ownedRunWhere(userId),
     ...(status && VALID_STATUSES.has(status) ? { status: status as RunStatus } : {}),
   };
 
@@ -32,7 +34,10 @@ export default async function RunsPage({
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
-      include: { task: { select: { id: true, name: true, repo: { select: { hostname: true } } } } },
+      include: {
+        task: { select: { id: true, name: true, repo: { select: { hostname: true } } } },
+        work: { select: { id: true, name: true } },
+      },
     }),
     prisma.run.count({ where }),
   ]);
@@ -42,15 +47,15 @@ export default async function RunsPage({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Runs</h1>
+      <PageHeader eyebrow="Execution history" title="Runs">
+        <span className="font-mono text-xs text-neutral-500">{total} runs</span>
         <RunStatusFilter />
-      </div>
-      <div className="overflow-hidden rounded-lg border border-neutral-700">
-        <table className="w-full text-sm">
-          <thead className="bg-neutral-800 text-left text-neutral-400">
+      </PageHeader>
+      <div className="ui-table-shell">
+        <table className="ui-table min-w-[920px]">
+          <thead>
             <tr>
-              <th className="px-4 py-2">Task</th>
+              <th className="px-4 py-2">Work / Automation</th>
               <th className="px-4 py-2">Machine</th>
               <th className="px-4 py-2">Trigger</th>
               <th className="px-4 py-2">Status</th>
@@ -64,14 +69,14 @@ export default async function RunsPage({
             {runs.map((run) => {
               const isLive = run.status === "PENDING" || run.status === "RUNNING";
               return (
-                <tr key={run.id} className="border-t border-neutral-700 hover:bg-neutral-800/50">
+                <tr key={run.id}>
                   <td className="px-4 py-2">
-                    <Link href={`/runs/${run.id}`} className="text-blue-400 hover:underline">
-                      {run.task.name}
+                    <Link href={`/runs/${run.id}`} className="font-semibold text-neutral-100 hover:text-emerald-300">
+                      {run.work?.name ?? run.task?.name ?? "Unknown run"}
                     </Link>
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-neutral-400">
-                    {run.hostname ?? run.task.repo.hostname ?? "-"}
+                    {run.hostname ?? run.task?.repo.hostname ?? "-"}
                   </td>
                   <td className="px-4 py-2 text-neutral-400">{run.trigger}</td>
                   <td className="px-4 py-2">
@@ -107,7 +112,7 @@ export default async function RunsPage({
             <Link
               href={`/runs?page=${page - 1}${query}`}
               aria-disabled={page <= 1}
-              className={`rounded border border-neutral-600 px-3 py-1 hover:bg-neutral-800 ${
+                className={`ui-secondary-button min-h-0 px-3 py-1 ${
                 page <= 1 ? "pointer-events-none opacity-40" : ""
               }`}
             >
@@ -116,7 +121,7 @@ export default async function RunsPage({
             <Link
               href={`/runs?page=${page + 1}${query}`}
               aria-disabled={page >= totalPages}
-              className={`rounded border border-neutral-600 px-3 py-1 hover:bg-neutral-800 ${
+                className={`ui-secondary-button min-h-0 px-3 py-1 ${
                 page >= totalPages ? "pointer-events-none opacity-40" : ""
               }`}
             >

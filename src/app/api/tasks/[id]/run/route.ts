@@ -12,7 +12,7 @@ export async function POST(
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
-  const task = await prisma.task.findFirst({ where: { id, repo: { userId } } });
+  const task = await prisma.task.findFirst({ where: { id, archivedAt: null, repo: { userId } } });
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
   const run = await createPendingRun(task.id, "MANUAL");

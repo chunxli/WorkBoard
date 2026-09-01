@@ -154,7 +154,7 @@ async function start() {
   const existing = readPid();
   if (existing && isAlive(existing.pid) && isCodeBoardProcess(existing.pid)) {
     console.log(
-      `CodeBoard is already running (PID ${existing.pid}) at http://localhost:${port}.`,
+      `Work Board is already running (PID ${existing.pid}) at http://localhost:${port}.`,
     );
     return;
   }
@@ -164,22 +164,22 @@ async function start() {
     const pid = unmanagedCodeBoardPid();
     if (pid) {
       console.log(
-        `CodeBoard is already running (PID ${pid}) at http://localhost:${port}; it is not managed by the background script.`,
+        `Work Board is already running (PID ${pid}) at http://localhost:${port}; it is not managed by the background script.`,
       );
       return;
     }
     console.error(
-      `Port ${port} is already in use. Stop that process before starting CodeBoard.`,
+      `Port ${port} is already in use. Stop that process before starting Work Board.`,
     );
     process.exit(1);
   }
 
   if (!skipBuild) {
-    console.log("[CodeBoard] Generating Prisma client...");
+    console.log("[Work Board] Generating Prisma client...");
     run(process.execPath, [prismaBin, "generate"]);
-    console.log("[CodeBoard] Applying database migrations...");
+    console.log("[Work Board] Applying database migrations...");
     run(process.execPath, [prismaBin, "migrate", "deploy"]);
-    console.log("[CodeBoard] Building release...");
+    console.log("[Work Board] Building release...");
     run(process.execPath, [nextBin, "build"]);
   }
 
@@ -220,12 +220,12 @@ async function start() {
       }
     }
     rmSync(pidFile, { force: true });
-    console.error(`CodeBoard did not start. Check ${stderrLog}.`);
+    console.error(`Work Board did not start. Check ${stderrLog}.`);
     process.exit(1);
   }
 
   console.log(
-    `CodeBoard started in the background (PID ${child.pid}) at http://localhost:${port}.`,
+    `Work Board started in the background (PID ${child.pid}) at http://localhost:${port}.`,
   );
   console.log(`Logs: ${stdoutLog} and ${stderrLog}`);
 }
@@ -236,11 +236,11 @@ async function stop() {
     const pid = unmanagedCodeBoardPid();
     if (pid) {
       console.log(
-        `CodeBoard is running (PID ${pid}) but is not managed by the background script. Stop it from its original terminal.`,
+        `Work Board is running (PID ${pid}) but is not managed by the background script. Stop it from its original terminal.`,
       );
       return;
     }
-    console.log("CodeBoard is not running (no PID file found).\n");
+    console.log("Work Board is not running (no PID file found).\n");
     return;
   }
   if (!isAlive(state.pid)) {
@@ -250,7 +250,7 @@ async function stop() {
   }
   if (!isCodeBoardProcess(state.pid)) {
     console.error(
-      `PID ${state.pid} is not a CodeBoard process; refusing to stop it.`,
+      `PID ${state.pid} is not a Work Board process; refusing to stop it.`,
     );
     process.exit(1);
   }
@@ -282,14 +282,14 @@ async function stop() {
   }
 
   rmSync(pidFile, { force: true });
-  console.log("CodeBoard stopped.");
+  console.log("Work Board stopped.");
 }
 
 function status() {
   const state = readPid();
   if (state && isAlive(state.pid) && isCodeBoardProcess(state.pid)) {
     console.log(
-      `CodeBoard is running (PID ${state.pid}) at http://localhost:${state.port ?? port}.`,
+      `Work Board is running (PID ${state.pid}) at http://localhost:${state.port ?? port}.`,
     );
     return;
   }
@@ -297,11 +297,11 @@ function status() {
   const pid = unmanagedCodeBoardPid();
   if (pid) {
     console.log(
-      `CodeBoard is running (PID ${pid}) at http://localhost:${port} (not managed by the background script).`,
+      `Work Board is running (PID ${pid}) at http://localhost:${port} (not managed by the background script).`,
     );
     return;
   }
-  console.log("CodeBoard is not running.");
+  console.log("Work Board is not running.");
 }
 
 function logs() {

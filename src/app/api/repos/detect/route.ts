@@ -2,21 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { access } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { isGitRepo, getCurrentBranch } from "@/lib/git-safety";
-
-type SourceType = "LOCAL_PATH" | "GIT_URL";
-
-function detectSourceType(location: string): SourceType {
-  if (/^https?:\/\//i.test(location) || /^git@/i.test(location) || /\.git$/i.test(location)) {
-    return "GIT_URL";
-  }
-  return "LOCAL_PATH";
-}
-
-function deriveName(location: string): string {
-  const trimmed = location.trim().replace(/[\\/]+$/, "");
-  const segment = trimmed.split(/[\\/]/).pop() ?? trimmed;
-  return segment.replace(/\.git$/i, "") || "repo";
-}
+import { inferResourceName, inferResourceSourceType } from "@/lib/resource-input";
 
 /** Asks the remote for its default branch without cloning, so users don't have to guess/type it. */
 function detectRemoteDefaultBranch(url: string): Promise<string | null> {
@@ -68,8 +54,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "location is required" }, { status: 400 });
   }
 
-  const sourceType = detectSourceType(location);
-  const name = deriveName(location);
+  const sourceType = inferResourceSourceType(location);
+  const name = inferResourceName(location);
 
   if (sourceType === "GIT_URL") {
     const defaultBranch = (await detectRemoteDefaultBranch(location)) ?? "main";

@@ -23,13 +23,21 @@ export default function WebhookEventsInput({
   }
 
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-2 rounded border border-neutral-600 bg-neutral-900 px-3 py-2 text-sm">
+    <fieldset>
+      <legend className="mb-1.5 text-xs font-medium text-neutral-400">Webhook events</legend>
+      <div className="flex flex-wrap gap-2">
       {COMMON_WEBHOOK_EVENTS.map((event) => (
-        <label key={event} className="flex items-center gap-1.5 text-neutral-200">
-          <input type="checkbox" checked={selected.includes(event)} onChange={() => toggle(event)} />
+        <label key={event} className="flex items-center gap-2 rounded-md border border-neutral-700 bg-neutral-950/35 px-3 py-2 text-xs text-neutral-300 hover:border-neutral-600">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-emerald-500"
+            checked={selected.includes(event)}
+            onChange={() => toggle(event)}
+          />
           {event}
         </label>
       ))}
-    </div>
+      </div>
+    </fieldset>
   );
 }

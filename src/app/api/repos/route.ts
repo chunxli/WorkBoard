@@ -22,6 +22,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const repo = await prisma.repo.create({ data: { ...parsed.data, userId, hostname: hostname() } });
-  return NextResponse.json(repo, { status: 201 });
+  try {
+    const repo = await prisma.repo.create({
+      data: { ...parsed.data, userId, hostname: hostname() },
+    });
+    return NextResponse.json(repo, { status: 201 });
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? String(error.code) : "";
+    return NextResponse.json(
+      { error: code === "P2002" ? "This resource already exists" : "Failed to create resource" },
+      { status: code === "P2002" ? 409 : 500 }
+    );
+  }
 }

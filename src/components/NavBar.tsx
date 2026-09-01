@@ -1,44 +1,55 @@
 import Link from "next/link";
+import { LayoutDashboard, LogIn, LogOut } from "lucide-react";
 import GlobalSearch from "@/components/GlobalSearch";
+import NavLinks from "@/components/NavLinks";
+import ThemeToggle from "@/components/ThemeToggle";
 import { auth, signIn, signOut } from "@/auth";
-
-const links = [
-  { href: "/", label: "Dashboard" },
-  { href: "/repos", label: "Repos" },
-  { href: "/tasks", label: "Tasks" },
-  { href: "/runs", label: "Runs" },
-  { href: "/settings", label: "Settings" },
-];
 
 export default async function NavBar() {
   const session = await auth();
 
   return (
-    <nav className="border-b border-neutral-700 bg-neutral-800">
-      <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
-        <span className="font-semibold tracking-tight">CodeBoard</span>
+    <nav className="sticky top-0 z-40 border-b border-neutral-800/90 bg-[var(--nav-background)] backdrop-blur-xl">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-5 gap-y-3 px-4 py-3 sm:px-6 lg:flex-nowrap lg:px-8">
+        <Link
+          href="/work"
+          className="order-1 flex shrink-0 items-center gap-2.5 whitespace-nowrap text-white"
+        >
+          <span className="grid size-8 place-items-center rounded-md border border-emerald-700/50 bg-emerald-950/70 text-emerald-300 shadow-[0_0_24px_rgba(67,209,158,0.08)]">
+            <LayoutDashboard size={17} strokeWidth={2} aria-hidden="true" />
+          </span>
+          <span className="text-[15px] font-bold">Work Board</span>
+        </Link>
         {session?.user && (
-          <div className="flex gap-4 text-sm text-neutral-300">
-            {links.map((link) => (
-              <Link key={link.href} href={link.href} className="hover:text-white">
-                {link.label}
-              </Link>
-            ))}
+          <div className="nav-scroll order-3 w-full overflow-x-auto lg:order-2 lg:w-auto lg:overflow-visible">
+            <NavLinks />
           </div>
         )}
-        {session?.user && <GlobalSearch />}
-        <div className="ml-auto flex items-center gap-3 text-sm">
+        {session?.user && (
+          <div className="order-4 w-full lg:order-3 lg:ml-auto lg:w-72">
+            <GlobalSearch />
+          </div>
+        )}
+        <div className="order-2 ml-auto flex items-center gap-2 whitespace-nowrap text-sm lg:order-4 lg:ml-0">
+          <ThemeToggle />
           {session?.user ? (
             <>
-              <span className="text-neutral-400">{session.user.name ?? session.user.email}</span>
+              <span className="hidden size-8 place-items-center rounded-full border border-neutral-700 bg-neutral-800 text-xs font-bold text-neutral-200 xl:grid">
+                {(session.user.name ?? session.user.email ?? "U").slice(0, 1).toUpperCase()}
+              </span>
               <form
                 action={async () => {
                   "use server";
                   await signOut();
                 }}
               >
-                <button type="submit" className="text-neutral-300 hover:text-white">
-                  Sign out
+                <button
+                  type="submit"
+                  aria-label="Sign out"
+                  title="Sign out"
+                  className="grid size-9 place-items-center rounded-md text-neutral-400 hover:bg-neutral-800 hover:text-white"
+                >
+                  <LogOut size={16} aria-hidden="true" />
                 </button>
               </form>
             </>
@@ -49,7 +60,11 @@ export default async function NavBar() {
                 await signIn("microsoft-entra-id");
               }}
             >
-              <button type="submit" className="text-neutral-300 hover:text-white">
+              <button
+                type="submit"
+                className="flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-2 font-semibold text-[var(--on-accent)] hover:bg-emerald-400"
+              >
+                <LogIn size={16} aria-hidden="true" />
                 Sign in with Microsoft
               </button>
             </form>

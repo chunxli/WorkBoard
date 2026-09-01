@@ -7,9 +7,13 @@ interface ProcessInfo {
   command: string | null;
   cpuTimeMs: number | null;
   memoryMb: number | null;
+  agent?: string | null;
   model?: string | null;
+  fallbackModel?: string | null;
   contextTier?: string | null;
   reasoningEffort?: string | null;
+  permissionMode?: string | null;
+  timeoutLabel?: string | null;
 }
 
 function formatCpuTime(ms: number | null): string {
@@ -60,8 +64,8 @@ export default function ProcessInfoPanel({
   if (!info.pid && !info.command) return null;
 
   return (
-    <div className="rounded-lg border border-neutral-700 bg-neutral-800 p-4">
-      <h2 className="mb-3 text-lg font-semibold">Process info</h2>
+    <div className="ui-panel p-4 sm:p-5">
+      <h2 className="mb-4 text-sm font-bold text-neutral-200">Process info</h2>
       <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <div>
           <div className="text-neutral-500">PID</div>
@@ -84,6 +88,14 @@ export default function ProcessInfoPanel({
           <div className="font-mono">{info.model || "auto"}</div>
         </div>
         <div>
+          <div className="text-neutral-500">Fallback Model</div>
+          <div className="font-mono">{info.fallbackModel || "-"}</div>
+        </div>
+        <div>
+          <div className="text-neutral-500">Agent</div>
+          <div className="font-mono">{info.agent || "default"}</div>
+        </div>
+        <div>
           <div className="text-neutral-500">Context Size</div>
           <div>{info.contextTier ? (CONTEXT_TIER_LABELS[info.contextTier] ?? info.contextTier) : "Default"}</div>
         </div>
@@ -94,6 +106,14 @@ export default function ProcessInfoPanel({
               ? (REASONING_EFFORT_LABELS[info.reasoningEffort] ?? info.reasoningEffort)
               : "-"}
           </div>
+        </div>
+        <div>
+          <div className="text-neutral-500">Permissions</div>
+          <div>{info.permissionMode === "full" ? "Full access" : "Standard tools"}</div>
+        </div>
+        <div>
+          <div className="text-neutral-500">Timeout</div>
+          <div>{info.timeoutLabel ?? "-"}</div>
         </div>
       </div>
       {info.command && (

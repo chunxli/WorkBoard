@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
   // Verify the token's owner actually owns the repo the task belongs to — otherwise any valid
   // token could trigger any task in the system regardless of who created it.
   const task = await prisma.task.findFirst({
-    where: { id: parsed.data.taskId, repo: { userId } },
+    where: { id: parsed.data.taskId, archivedAt: null, repo: { userId } },
   });
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 

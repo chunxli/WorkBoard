@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import EditTaskForm from "@/components/EditTaskForm";
+import PageHeader from "@/components/PageHeader";
 
 export default async function EditTaskPage({
   params,
@@ -20,7 +21,7 @@ export default async function EditTaskPage({
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Edit task</h1>
+      <PageHeader eyebrow="Automation setup" title="Edit automation" />
       <EditTaskForm task={task} repos={repos} />
     </div>
   );

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Square } from "lucide-react";
 
 export default function CancelRunButton({ runId }: { runId: string }) {
   const router = useRouter();
@@ -22,8 +23,9 @@ export default function CancelRunButton({ runId }: { runId: string }) {
     <button
       onClick={onClick}
       disabled={submitting}
-      className="rounded border border-amber-700 px-2 py-1 text-xs text-amber-400 hover:bg-amber-950 disabled:opacity-50"
+      className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-amber-800 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-amber-950/60 disabled:opacity-50"
     >
+      <Square size={11} fill="currentColor" aria-hidden="true" />
       {submitting ? "Cancelling..." : "Cancel run"}
     </button>
   );

@@ -15,7 +15,12 @@ async function triggerScheduledTask(taskId: string, repoId: string, waitForPrevi
 /** Reconciles active node-cron jobs with the current set of enabled SCHEDULE tasks in the DB. */
 export async function syncSchedules() {
   const tasks = await prisma.task.findMany({
-    where: { triggerType: "SCHEDULE", enabled: true, cronExpression: { not: null } },
+    where: {
+      triggerType: "SCHEDULE",
+      enabled: true,
+      archivedAt: null,
+      cronExpression: { not: null },
+    },
   });
 
   const desired = new Map(

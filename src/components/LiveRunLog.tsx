@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { summarizeCopilotJsonLine } from "@/lib/parse-copilot-json-line";
+import { formatCopilotLogLines } from "@/lib/parse-copilot-json-line";
 
 interface CopilotRunEvent {
   type: "line" | "exit" | "error";
@@ -55,14 +55,14 @@ export default function LiveRunLog({
           if (typeof Notification !== "undefined" && Notification.permission === "granted") {
             const title =
               event.type === "error"
-                ? "CodeBoard run failed to start"
+                ? "Work Board run failed to start"
                 : event.cancelled
-                  ? "CodeBoard run cancelled"
+                  ? "Work Board run cancelled"
                   : event.timedOut
-                    ? "CodeBoard run timed out"
+                    ? "Work Board run timed out"
                     : event.code === 0
-                      ? "CodeBoard run succeeded"
-                      : "CodeBoard run failed";
+                      ? "Work Board run succeeded"
+                      : "Work Board run failed";
             new Notification(title, { body: `Run ${runId.slice(0, 8)}` });
           }
         }
@@ -117,17 +117,22 @@ export default function LiveRunLog({
     containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight });
   }, [lines]);
 
-  const displayLines =
-    outputFormat === "json"
-      ? lines.map((line) => summarizeCopilotJsonLine(line)).filter((line): line is string => line !== null)
-      : lines;
+  const displayLines = formatCopilotLogLines(lines, outputFormat);
 
   return (
     <div>
-      {!finished && <p className="mb-2 text-xs text-emerald-400">● Live</p>}
+      {!finished && (
+        <p className="mb-2 inline-flex items-center gap-2 font-mono text-[10px] font-semibold uppercase text-emerald-300">
+          <span className="relative flex size-1.5">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+            <span className="relative inline-flex size-1.5 rounded-full bg-emerald-400" />
+          </span>
+          Live output
+        </p>
+      )}
       <div
         ref={containerRef}
-        className="max-h-[500px] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-950 p-4 font-mono text-xs text-neutral-200"
+        className="max-h-[500px] overflow-y-auto rounded-lg border border-neutral-800 bg-[var(--terminal-background)] p-4 font-mono text-xs leading-5 text-neutral-300 shadow-inner shadow-black/10"
       >
         {displayLines.length === 0 && <p className="text-neutral-500">Waiting for output...</p>}
         {displayLines.map((line, i) => (
