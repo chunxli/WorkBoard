@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import {
   extractFinalCopilotOutput,
   startCopilotRun,
+  type RunOutputFormat,
 } from "@/lib/copilot-runner";
 import { startCopilotSdkRun } from "@/lib/copilot-sdk-runner";
 import {
@@ -19,8 +20,18 @@ import {
   type WorkRunSnapshot,
 } from "@/lib/run-artifacts";
 import { detectSkillInvocation } from "@/lib/skill-events";
-import { hashWorkContent } from "@/lib/work-files";
-import { captureRunSourceBaseline, captureRunSourceDiff } from "@/lib/run-source-snapshot";
+import { appendWorkFollowUp, hashWorkContent } from "@/lib/work-files";
+import {
+  captureRunSourceBaseline,
+  captureRunSourceDiff,
+  inheritRunSourceBaseline,
+} from "@/lib/run-source-snapshot";
+import { repairLegacyCopilotSessionEvents } from "@/lib/copilot-session-compat";
+import {
+  readCopilotSessionInsights,
+  serializeCopilotTokenUsage,
+  subtractCopilotTokenUsage,
+} from "@/lib/copilot-session-insights";
 
 export async function createPendingWorkRun(options: {
   workId: string;
@@ -60,6 +71,116 @@ export async function createPendingWorkRun(options: {
   });
 }
 
+export async function createPendingFollowUpRun(options: {
+  workId: string;
+  prompt: string;
+  parentRunId?: string | null;
+}) {
+  const runId = randomUUID();
+  const work = await prisma.work.findUniqueOrThrow({ where: { id: options.workId } });
+  const parent = options.parentRunId
+    ? await prisma.run.findFirstOrThrow({
+        where: {
+          id: options.parentRunId,
+          workId: work.id,
+          experimentVariantId: null,
+        },
+      })
+    : null;
+  const sessionId = parent?.copilotSessionId ?? randomUUID();
+  const executionPath = parent?.executionPath ?? work.directoryPath;
+  const outputDir = getWorkRunArtifactPaths(work.directoryPath, runId).outputDirectory;
+  const settings = resolveFollowUpExecutionSettings(work, parent);
+
+  return prisma.run.create({
+    data: {
+      id: runId,
+      workId: work.id,
+      status: "PENDING",
+      trigger: "FOLLOW_UP",
+      engine: settings.engine,
+      executionPath,
+      promptSnapshot: options.prompt,
+      outputFormat: settings.outputFormat,
+      timeoutSeconds: settings.timeoutSeconds,
+      agent: settings.agent,
+      model: settings.model,
+      fallbackModel: settings.fallbackModel,
+      contextTier: settings.contextTier,
+      reasoningEffort: settings.reasoningEffort,
+      permissionMode: settings.permissionMode,
+      outputDir,
+      copilotSessionId: sessionId,
+      concurrencyMode: parent ? "FOLLOW_UP_RESUME" : "FOLLOW_UP_NEW_SESSION",
+      resumedFromRunId: parent?.id ?? null,
+    },
+  });
+}
+
+interface FollowUpSettingsSource {
+  defaultEngine?: "CLI" | "SDK";
+  engine?: "CLI" | "SDK" | null;
+  agent: string | null;
+  model: string | null;
+  fallbackModel: string | null;
+  contextTier: string | null;
+  reasoningEffort: string | null;
+  permissionMode: string | null;
+  outputFormat: string | null;
+  timeoutSeconds: number | null;
+}
+
+export function resolveFollowUpExecutionSettings(
+  work: FollowUpSettingsSource,
+  parent: FollowUpSettingsSource | null
+) {
+  const source = parent ?? work;
+  return {
+    engine: parent?.engine ?? work.defaultEngine ?? "CLI",
+    agent: source.agent,
+    model: source.model,
+    fallbackModel: source.fallbackModel,
+    contextTier: source.contextTier,
+    reasoningEffort: source.reasoningEffort,
+    permissionMode: source.permissionMode ?? work.permissionMode ?? "default",
+    outputFormat: source.outputFormat ?? work.outputFormat ?? "text",
+    timeoutSeconds: source.timeoutSeconds,
+  };
+}
+
+export function getWorkRunQueueKey(run: {
+  id: string;
+  trigger: string;
+  copilotSessionId: string | null;
+}): string {
+  return run.trigger === "FOLLOW_UP" && run.copilotSessionId
+    ? `session:${run.copilotSessionId}`
+    : run.id;
+}
+
+export function resolveWorkCliOutputOptions(outputFormat: RunOutputFormat) {
+  return {
+    outputFormat,
+    maxIncompleteContinuations: 3,
+  };
+}
+
+export async function ensureFollowUpPrompt(
+  work: { id: string; directoryPath: string; promptFileName: string },
+  run: { id: string; createdAt: Date; promptSnapshot: string | null }
+): Promise<void> {
+  await appendWorkFollowUp(work, run.promptSnapshot ?? "", {
+    createdAt: run.createdAt,
+    followUpId: run.id,
+    afterWrite: async (updatedPrompt) => {
+      await prisma.work.update({
+        where: { id: work.id },
+        data: { promptCache: updatedPrompt.content, promptHash: updatedPrompt.hash },
+      });
+    },
+  });
+}
+
 export async function executeWorkRun(runId: string): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
@@ -93,6 +214,8 @@ export async function executeWorkRun(runId: string): Promise<void> {
     sessionId,
     executionPath,
     concurrencyMode: run.concurrencyMode ?? "DIRECT",
+    trigger: run.trigger,
+    resumedFromRunId: run.resumedFromRunId,
     status: run.status,
     startedAt: startedAt?.toISOString() ?? null,
     finishedAt: null,
@@ -117,12 +240,36 @@ export async function executeWorkRun(runId: string): Promise<void> {
 
   try {
     await prepareWorkRunArtifacts(work.directoryPath, run.id, snapshot());
-    if (run.status === "CANCELLED") {
-      await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
+    if (run.trigger === "FOLLOW_UP") {
+      await ensureFollowUpPrompt(work, run);
+    }
+    const pendingRun = await prisma.run.findUnique({
+      where: { id: run.id },
+      select: { status: true },
+    });
+    if (pendingRun?.status !== "PENDING") {
+      if (pendingRun?.status === "CANCELLED") {
+        await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
+      }
       return;
     }
 
-    beforeTree = await captureRunSourceBaseline(executionPath, work.directoryPath, run.id);
+    if (run.resumedFromRunId) {
+      const parentPaths = getWorkRunArtifactPaths(work.directoryPath, run.resumedFromRunId);
+      const parentSnapshot = await readWorkRunSnapshot(parentPaths.snapshot).catch(() => null);
+      beforeTree = parentSnapshot
+        ? await inheritRunSourceBaseline({
+            sourceWorkDirectory: work.directoryPath,
+            sourceRunId: run.resumedFromRunId,
+            sourceGitTree: parentSnapshot.gitAfterTree,
+            targetWorkDirectory: work.directoryPath,
+            targetRunId: run.id,
+          }).catch(() => captureRunSourceBaseline(executionPath, work.directoryPath, run.id))
+        : await captureRunSourceBaseline(executionPath, work.directoryPath, run.id);
+      await repairLegacyCopilotSessionEvents(sessionId);
+    } else {
+      beforeTree = await captureRunSourceBaseline(executionPath, work.directoryPath, run.id);
+    }
     baseCommit = await getHeadCommit(executionPath).catch(() => null);
     startedAt = new Date();
     const claimed = await prisma.run.updateMany({
@@ -172,6 +319,10 @@ export async function executeWorkRun(runId: string): Promise<void> {
       return;
     }
 
+    const sdkUsageBaseline = engine === "SDK"
+      ? await readCopilotSessionInsights(sessionId).catch(() => null)
+      : null;
+
     const result =
       engine === "SDK"
         ? await startCopilotSdkRun({
@@ -179,6 +330,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
             sessionId,
             workPath: executionPath,
             prompt,
+            resumeSession: Boolean(run.resumedFromRunId),
             model: run.model,
             contextTier: run.contextTier,
             reasoningEffort: run.reasoningEffort,
@@ -192,21 +344,27 @@ export async function executeWorkRun(runId: string): Promise<void> {
             sessionId,
             repoPath: executionPath,
             prompt,
+            resumeSession: Boolean(run.resumedFromRunId),
             agent: run.agent,
             model: run.model,
             fallbackModel: run.fallbackModel,
             contextTier: run.contextTier,
             reasoningEffort: run.reasoningEffort,
             permissionMode: run.permissionMode === "full" ? "full" : "default",
-            // Structured transport keeps sub-agent/tool completion checks reliable;
-            // run.outputFormat controls whether the UI shows summaries or raw events.
-            outputFormat: "json",
+            ...resolveWorkCliOutputOptions(outputFormat),
             timeoutSeconds,
-            maxIncompleteContinuations: 3,
             stdoutLogPath: artifactPaths.stdout,
             stderrLogPath: artifactPaths.stderr,
             onSpawn,
           });
+
+    const usage = "usage" in result
+      ? result.usage
+      : subtractCopilotTokenUsage(
+          (await readCopilotSessionInsights(sessionId).catch(() => null))?.usage ?? null,
+          sdkUsageBaseline?.usage ?? null
+        );
+    const usageData = serializeCopilotTokenUsage(usage);
 
     const sourceDiff = await captureRunSourceDiff({
       executionPath,
@@ -218,9 +376,11 @@ export async function executeWorkRun(runId: string): Promise<void> {
     finalCommit = await getHeadCommit(executionPath).catch(() => null);
     const diff = sourceDiff.diff;
     const stdout = await readFile(artifactPaths.stdout, "utf8").catch(() => "");
-    const finalOutput = result.finalOutput ?? extractFinalCopilotOutput(stdout);
     const skillInvoked = detectSkillInvocation(stdout, run.experimentVariant?.skillName ?? null);
     const incomplete = "incomplete" in result && result.incomplete;
+    const finalOutput = incomplete
+      ? null
+      : result.finalOutput ?? extractFinalCopilotOutput(stdout);
     const errorMessage = "incompleteReason" in result ? result.incompleteReason : null;
     const status = result.cancelled
       ? "CANCELLED"
@@ -242,6 +402,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
         errorMessage,
         gitBeforeTree: beforeTree,
         gitAfterTree: afterTree,
+        ...usageData,
       }),
       finalOutput,
       diff,
@@ -257,6 +418,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
         finishedAt,
         cpuTimeMs: result.cpuTimeMs,
         peakMemoryMb: result.peakMemoryMb,
+        ...usageData,
       },
     });
     if (run.experimentVariantId) {
@@ -376,6 +538,8 @@ async function finalizeCancelledWorkRunUnlocked(
       sessionId: run.copilotSessionId ?? "unknown",
       executionPath,
       concurrencyMode: run.concurrencyMode ?? "DIRECT",
+      trigger: run.trigger,
+      resumedFromRunId: run.resumedFromRunId,
       status: run.status,
       startedAt: run.startedAt?.toISOString() ?? null,
       finishedAt: null,
@@ -386,6 +550,20 @@ async function finalizeCancelledWorkRunUnlocked(
       experimentVariantId: run.experimentVariantId,
       skillName: run.experimentVariant?.skillName,
       skillHash: run.experimentVariant?.skillHash,
+      agent: run.agent,
+      model: run.model,
+      fallbackModel: run.fallbackModel,
+      contextTier: run.contextTier,
+      reasoningEffort: run.reasoningEffort,
+      permissionMode: run.permissionMode,
+      outputFormat: run.outputFormat,
+      timeoutSeconds: run.timeoutSeconds,
+      inputTokens: run.inputTokens,
+      outputTokens: run.outputTokens,
+      cacheReadTokens: run.cacheReadTokens,
+      cacheWriteTokens: run.cacheWriteTokens,
+      reasoningTokens: run.reasoningTokens,
+      modelsUsed: run.modelsUsed,
     } satisfies WorkRunSnapshot;
     await prepareWorkRunArtifacts(work.directoryPath, run.id, snapshot);
   }

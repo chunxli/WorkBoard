@@ -3,6 +3,7 @@
 // launches the single Next.js process that serves the frontend, API routes,
 // and the cron scheduler (this project has no separate backend server).
 import { spawnSync, spawn } from "node:child_process";
+import path from "node:path";
 
 // All commands below are static (no interpolated/user-controlled input), so
 // running them as a single shell string is safe and avoids Node's shell-array
@@ -21,6 +22,9 @@ console.log("[quickstart] Applying pending migrations...");
 run("npx prisma migrate deploy");
 
 console.log("[quickstart] Starting Next.js (frontend + API + scheduler)...");
-const dev = spawn("npx next dev -p 3100", { stdio: "inherit", shell: true });
+const dev = spawn(
+  process.execPath,
+  [path.join(import.meta.dirname, "run-next.mjs"), "dev"],
+  { stdio: "inherit" },
+);
 dev.on("exit", (code) => process.exit(code ?? 0));
-

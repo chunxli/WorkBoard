@@ -33,6 +33,13 @@ export default async function WorkBoardPage() {
             trigger: true,
             copilotSessionId: true,
             hostname: true,
+            model: true,
+            modelsUsed: true,
+            inputTokens: true,
+            outputTokens: true,
+            cacheReadTokens: true,
+            cacheWriteTokens: true,
+            reasoningTokens: true,
           },
         },
       },
@@ -56,6 +63,31 @@ export default async function WorkBoardPage() {
   const localHostname = os.hostname();
   const workSummaries = await Promise.all(works.map(async (work) => {
     const latestRun = work.runs[0] ?? null;
+    let modelsUsed: string[] = [];
+    try {
+      const parsed = latestRun?.modelsUsed ? JSON.parse(latestRun.modelsUsed) : [];
+      if (Array.isArray(parsed)) {
+        modelsUsed = parsed.filter((model): model is string => typeof model === "string");
+      }
+    } catch {
+      modelsUsed = [];
+    }
+    const latestModels = modelsUsed.length > 0
+      ? modelsUsed
+      : latestRun?.model
+        ? [latestRun.model]
+        : work.model
+          ? [work.model]
+          : [];
+    const latestTokenUsage = latestRun && (
+      latestRun.inputTokens !== null || latestRun.outputTokens !== null
+    ) ? {
+        inputTokens: latestRun.inputTokens ?? 0,
+        outputTokens: latestRun.outputTokens ?? 0,
+        cacheReadTokens: latestRun.cacheReadTokens ?? 0,
+        cacheWriteTokens: latestRun.cacheWriteTokens ?? 0,
+        reasoningTokens: latestRun.reasoningTokens ?? 0,
+      } : null;
     const runIsActive = latestRun?.status === "PENDING" || latestRun?.status === "RUNNING";
     let terminalResumeState: "ready" | "active" | "unavailable" = "unavailable";
     if (
@@ -87,6 +119,8 @@ export default async function WorkBoardPage() {
       automationCount: work._count.tasks,
       latestRunStatus: getWorkRunDisplayStatus(latestRun),
       latestRunId: latestRun?.id ?? null,
+      latestModels,
+      latestTokenUsage,
       terminalResumeState,
     };
   }));

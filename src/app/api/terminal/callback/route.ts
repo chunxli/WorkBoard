@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hashToken } from "@/lib/crypto";
-import { syncTerminalRun } from "@/lib/terminal-resume";
+import { syncTerminalRun, TerminalSyncInProgressError } from "@/lib/terminal-resume";
 import { CopilotSessionInUseError } from "@/lib/copilot-session-compat";
 
 const callbackSchema = z.object({ exitCode: z.number().int().min(-1).max(2147483647) });
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
     await syncTerminalRun(launch.runId, parsed.data.exitCode);
     return NextResponse.json({ ok: true });
   } catch (error) {
-    if (error instanceof CopilotSessionInUseError) {
+    if (error instanceof CopilotSessionInUseError || error instanceof TerminalSyncInProgressError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return NextResponse.json({ error: "Session synchronization failed" }, { status: 500 });

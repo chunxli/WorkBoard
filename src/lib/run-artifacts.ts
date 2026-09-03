@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+const RUN_LOG_TAIL_BYTES = 512 * 1024;
+const RUN_LOG_TRUNCATED_MESSAGE =
+  "[Earlier output omitted. Download stdout.log for the complete output.]";
 
 const globalForRunArtifacts = globalThis as unknown as {
   runFinalizationQueues?: Map<string, Promise<unknown>>;
@@ -31,6 +35,8 @@ export interface WorkRunSnapshot {
   sessionId: string;
   executionPath: string;
   concurrencyMode: string;
+  trigger?: string;
+  resumedFromRunId?: string | null;
   status: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -50,9 +56,37 @@ export interface WorkRunSnapshot {
   permissionMode?: string | null;
   outputFormat?: string | null;
   timeoutSeconds?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  reasoningTokens?: number | null;
+  modelsUsed?: string | null;
   sessionEventCursorStart?: number;
   taskId?: string | null;
   resourceName?: string | null;
+}
+
+export async function readRunLogTail(
+  filePath: string,
+  maxBytes = RUN_LOG_TAIL_BYTES
+): Promise<string> {
+  const file = await open(filePath, "r");
+  try {
+    const fileInfo = await file.stat();
+    const length = Math.min(fileInfo.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    await file.read(buffer, 0, length, fileInfo.size - length);
+    if (fileInfo.size <= maxBytes) return buffer.toString("utf8");
+
+    const firstNewline = buffer.indexOf(0x0a);
+    const completeTail = firstNewline >= 0 && firstNewline < buffer.length - 1
+      ? buffer.subarray(firstNewline + 1).toString("utf8")
+      : "";
+    return `${RUN_LOG_TRUNCATED_MESSAGE}\n${completeTail}`;
+  } finally {
+    await file.close();
+  }
 }
 
 async function writeAtomic(filePath: string, content: string): Promise<void> {

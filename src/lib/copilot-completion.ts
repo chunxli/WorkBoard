@@ -7,24 +7,31 @@ interface CopilotJsonEvent {
     agentDisplayName?: unknown;
     agentName?: unknown;
     content?: unknown;
+    cancelled?: unknown;
   };
 }
 
 export interface CopilotCompletionSummary {
   openSubagents: { id: string; name: string }[];
+  cancelledSubagents: { id: string; name: string }[];
+  failedSubagents: { id: string; name: string }[];
   openTools: { id: string; name: string }[];
   rootFinalOutput: string | null;
   taskComplete: boolean;
   sessionIdle: boolean;
+  aborted: boolean;
 }
 
 export class CopilotCompletionTracker {
   private buffer = "";
   private readonly openSubagents = new Map<string, string>();
+  private readonly cancelledSubagents = new Map<string, string>();
+  private readonly failedSubagents = new Map<string, string>();
   private readonly openTools = new Map<string, string>();
   private rootFinalOutput: string | null = null;
   private taskComplete = false;
   private sessionIdle = false;
+  private aborted = false;
 
   push(text: string): void {
     this.buffer += text;
@@ -38,10 +45,13 @@ export class CopilotCompletionTracker {
     this.buffer = "";
     return {
       openSubagents: [...this.openSubagents].map(([id, name]) => ({ id, name })),
+      cancelledSubagents: [...this.cancelledSubagents].map(([id, name]) => ({ id, name })),
+      failedSubagents: [...this.failedSubagents].map(([id, name]) => ({ id, name })),
       openTools: [...this.openTools].map(([id, name]) => ({ id, name })),
       rootFinalOutput: this.rootFinalOutput,
       taskComplete: this.taskComplete,
       sessionIdle: this.sessionIdle,
+      aborted: this.aborted,
     };
   }
 
@@ -72,6 +82,12 @@ export class CopilotCompletionTracker {
       (event.type === "subagent.completed" || event.type === "subagent.failed") &&
       agentId
     ) {
+      const name = this.openSubagents.get(agentId) ?? agentId;
+      if (event.type === "subagent.failed") {
+        this.failedSubagents.set(agentId, name);
+      } else if (event.data?.cancelled === true) {
+        this.cancelledSubagents.set(agentId, name);
+      }
       this.openSubagents.delete(agentId);
     } else if (event.type === "tool.execution_start" && typeof event.data?.toolCallId === "string") {
       const toolCallId = event.data.toolCallId;
@@ -97,6 +113,8 @@ export class CopilotCompletionTracker {
       this.taskComplete = true;
     } else if (event.type === "session.idle") {
       this.sessionIdle = true;
+    } else if (event.type === "abort") {
+      this.aborted = true;
     }
   }
 }

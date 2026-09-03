@@ -130,6 +130,10 @@ export const runWorkSchema = z
   })
   .strict();
 
+export const followUpWorkSchema = z.object({
+  prompt: z.string().trim().min(1).max(100000),
+}).strict();
+
 export const createWorkPathShortcutSchema = z.object({
   label: z.string().trim().min(1).max(80),
   rootPath: z.string().trim().min(1).max(2000),

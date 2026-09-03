@@ -13,6 +13,13 @@ interface CopilotRunEvent {
   message?: string;
 }
 
+const MAX_VISIBLE_LOG_LINES = 2000;
+const MAX_VISIBLE_LINE_CHARACTERS = 32 * 1024;
+
+function splitVisibleLog(log: string): string[] {
+  return log.split("\n").filter(Boolean).slice(-MAX_VISIBLE_LOG_LINES);
+}
+
 export default function LiveRunLog({
   runId,
   initialLog,
@@ -24,7 +31,7 @@ export default function LiveRunLog({
   isLive: boolean;
   outputFormat?: "text" | "json";
 }) {
-  const [lines, setLines] = useState<string[]>(initialLog ? initialLog.split("\n").filter(Boolean) : []);
+  const [lines, setLines] = useState<string[]>(() => splitVisibleLog(initialLog));
   const [finished, setFinished] = useState(!isLive);
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -45,7 +52,7 @@ export default function LiveRunLog({
       source.onmessage = (e) => {
         const event: CopilotRunEvent = JSON.parse(e.data);
         if (event.type === "line" && event.data) {
-          setLines((prev) => [...prev, event.data!]);
+          setLines((prev) => [...prev, event.data!].slice(-MAX_VISIBLE_LOG_LINES));
         } else if (event.type === "exit" || event.type === "error") {
           stopped = true;
           setFinished(true);
@@ -85,11 +92,11 @@ export default function LiveRunLog({
     const pollTimer = setInterval(async () => {
       if (stopped) return;
       try {
-        const res = await fetch(`/api/runs/${runId}`);
+        const res = await fetch(`/api/runs/${runId}?view=live`);
         if (!res.ok) return;
         const data: { log?: string; status?: string } = await res.json();
         if (typeof data.log === "string") {
-          setLines(data.log.split("\n").filter(Boolean));
+          setLines(splitVisibleLog(data.log));
         }
         if (data.status && data.status !== "PENDING" && data.status !== "RUNNING") {
           stopped = true;
@@ -117,7 +124,11 @@ export default function LiveRunLog({
     containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight });
   }, [lines]);
 
-  const displayLines = formatCopilotLogLines(lines, outputFormat);
+  const displayLines = formatCopilotLogLines(lines, outputFormat).map((line) =>
+    line.length > MAX_VISIBLE_LINE_CHARACTERS
+      ? `${line.slice(0, MAX_VISIBLE_LINE_CHARACTERS)}\n[Entry truncated. Download stdout.log for the complete output.]`
+      : line
+  );
 
   return (
     <div>

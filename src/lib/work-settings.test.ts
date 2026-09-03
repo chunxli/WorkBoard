@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createWorkSchema, runWorkSchema, updateWorkSchema } from "./validation";
+import { createWorkSchema, followUpWorkSchema, runWorkSchema, updateWorkSchema } from "./validation";
 
 const validWork = {
   name: "Explicit settings",
@@ -61,5 +61,13 @@ describe("Work execution settings", () => {
       ...validWork,
       fallbackModel: validWork.model,
     }).success).toBe(false);
+  });
+
+  it("accepts only a non-empty Follow Up prompt", () => {
+    expect(followUpWorkSchema.parse({ prompt: "  Continue the analysis  " })).toEqual({
+      prompt: "Continue the analysis",
+    });
+    expect(followUpWorkSchema.safeParse({ prompt: "   " }).success).toBe(false);
+    expect(followUpWorkSchema.safeParse({ prompt: "valid", sessionId: "client-controlled" }).success).toBe(false);
   });
 });

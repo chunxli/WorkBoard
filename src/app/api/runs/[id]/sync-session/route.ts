@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ownedRunWhere } from "@/lib/run-access";
 import { getSessionUserId } from "@/lib/session";
-import { syncTerminalRun } from "@/lib/terminal-resume";
+import { syncTerminalRun, TerminalSyncInProgressError } from "@/lib/terminal-resume";
 import { CopilotSessionInUseError } from "@/lib/copilot-session-compat";
 
 export async function POST(
@@ -26,7 +26,7 @@ export async function POST(
     await syncTerminalRun(run.id);
     return NextResponse.json({ ok: true });
   } catch (error) {
-    if (error instanceof CopilotSessionInUseError) {
+    if (error instanceof CopilotSessionInUseError || error instanceof TerminalSyncInProgressError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return NextResponse.json(

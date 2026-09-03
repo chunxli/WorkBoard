@@ -29,13 +29,12 @@ import {
 } from "@/lib/run-source-snapshot";
 import { getRepoWorkdirPath } from "@/lib/repo-workdir";
 import { hashWorkContent } from "@/lib/work-files";
-
-const globalForTerminalResume = globalThis as unknown as {
-  launchingCopilotSessions?: Set<string>;
-};
-const launchingCopilotSessions =
-  globalForTerminalResume.launchingCopilotSessions ?? new Set<string>();
-globalForTerminalResume.launchingCopilotSessions = launchingCopilotSessions;
+import { RunStartInProgressError, withRunStartLock } from "@/lib/run-start-lock";
+import {
+  analyzeCopilotSessionEvents,
+  serializeCopilotTokenUsage,
+  subtractCopilotTokenUsage,
+} from "@/lib/copilot-session-insights";
 
 export class TerminalResumeInProgressError extends Error {
   constructor() {
@@ -48,6 +47,13 @@ export class TerminalResumeNotReadyError extends Error {
   constructor() {
     super("Terminal Resume baseline is not ready for this Run");
     this.name = "TerminalResumeNotReadyError";
+  }
+}
+
+export class TerminalSyncInProgressError extends Error {
+  constructor() {
+    super("This terminal session is already being synchronized");
+    this.name = "TerminalSyncInProgressError";
   }
 }
 
@@ -89,20 +95,24 @@ export async function launchTerminalResume(parentRunId: string): Promise<{
 }> {
   const candidate = await prisma.run.findUniqueOrThrow({
     where: { id: parentRunId },
-    select: { copilotSessionId: true },
+    select: { copilotSessionId: true, workId: true, taskId: true },
   });
   if (!candidate.copilotSessionId) {
     throw new Error("This run does not have a resumable Copilot session");
   }
-  if (launchingCopilotSessions.has(candidate.copilotSessionId)) {
-    throw new TerminalResumeInProgressError();
-  }
-
-  launchingCopilotSessions.add(candidate.copilotSessionId);
+  const ownerKey = candidate.workId
+    ? `work:${candidate.workId}`
+    : `task:${candidate.taskId}`;
   try {
-    return await launchTerminalResumeUnlocked(parentRunId);
-  } finally {
-    launchingCopilotSessions.delete(candidate.copilotSessionId);
+    return await withRunStartLock(
+      [ownerKey, `session:${candidate.copilotSessionId}`],
+      () => launchTerminalResumeUnlocked(parentRunId)
+    );
+  } catch (error) {
+    if (error instanceof RunStartInProgressError) {
+      throw new TerminalResumeInProgressError();
+    }
+    throw error;
   }
 }
 
@@ -125,6 +135,18 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
   }
   if (parentRun.hostname && parentRun.hostname !== hostname()) {
     throw new Error("This session belongs to another machine");
+  }
+  const activeOwnerRun = await prisma.run.findFirst({
+    where: {
+      ...(parentRun.workId
+        ? { workId: parentRun.workId }
+        : { taskId: parentRun.taskId }),
+      status: { in: ["PENDING", "RUNNING"] },
+    },
+    select: { id: true },
+  });
+  if (activeOwnerRun) {
+    throw new TerminalResumeInProgressError();
   }
 
   const work = parentRun.work;
@@ -183,6 +205,8 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
     sessionId: parentRun.copilotSessionId,
     executionPath,
     concurrencyMode: "EXTERNAL_TERMINAL",
+    trigger: "TERMINAL_RESUME",
+    resumedFromRunId: parentRun.id,
     status: "RUNNING",
     startedAt: startedAt.toISOString(),
     finishedAt: null,
@@ -199,6 +223,8 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
     contextTier: parentRun.contextTier,
     reasoningEffort: parentRun.reasoningEffort,
     permissionMode: parentRun.permissionMode,
+    outputFormat: "json",
+    timeoutSeconds: null,
   };
   await prepareRunArtifacts(paths, snapshot);
 
@@ -329,7 +355,26 @@ export async function isTerminalResumeReady(run: {
   });
 }
 
-export async function syncTerminalRun(runId: string, exitCode = 0): Promise<"synced" | "already-synced"> {
+export async function syncTerminalRun(
+  runId: string,
+  exitCode = 0
+): Promise<"synced" | "already-synced"> {
+  try {
+    return await withRunStartLock([`terminal-sync:${runId}`], () =>
+      syncTerminalRunUnlocked(runId, exitCode)
+    );
+  } catch (error) {
+    if (error instanceof RunStartInProgressError) {
+      throw new TerminalSyncInProgressError();
+    }
+    throw error;
+  }
+}
+
+async function syncTerminalRunUnlocked(
+  runId: string,
+  exitCode: number
+): Promise<"synced" | "already-synced"> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
     include: { work: true, task: { include: { repo: true } } },
@@ -340,13 +385,12 @@ export async function syncTerminalRun(runId: string, exitCode = 0): Promise<"syn
   await assertCopilotSessionNotInUse(run.copilotSessionId);
 
   const claim = await prisma.terminalLaunch.updateMany({
-    where: { runId, status: { in: ["PENDING", "LAUNCHED", "FAILED"] } },
+    where: { runId, status: { in: ["PENDING", "LAUNCHED", "SYNCING", "FAILED"] } },
     data: { status: "SYNCING", errorMessage: null },
   });
   if (claim.count === 0) {
     const launch = await prisma.terminalLaunch.findUnique({ where: { runId } });
     if (launch?.status === "COMPLETED") return "already-synced";
-    if (launch?.status === "SYNCING") return "already-synced";
     throw new Error("This terminal session is already being synchronized");
   }
 
@@ -368,6 +412,11 @@ export async function syncTerminalRun(runId: string, exitCode = 0): Promise<"syn
     );
     const cursor = priorSnapshot.sessionEventCursorStart ?? 0;
     const events = cursor <= allEvents.length ? allEvents.slice(cursor) : allEvents;
+    const currentInsights = analyzeCopilotSessionEvents(allEvents, cursor);
+    const priorUsage = analyzeCopilotSessionEvents(allEvents.slice(0, cursor)).usage;
+    const usageData = serializeCopilotTokenUsage(
+      subtractCopilotTokenUsage(currentInsights.usage, priorUsage)
+    );
     const transcript = events.map((event) => JSON.stringify(event)).join("\n");
     await writeFile(paths.stdout, transcript ? `${transcript}\n` : "", "utf8");
 
@@ -393,6 +442,7 @@ export async function syncTerminalRun(runId: string, exitCode = 0): Promise<"syn
         finishedAt: finishedAt.toISOString(),
         gitAfterTree: afterTree,
         errorMessage: exitCode === 0 ? null : `Copilot exited with code ${exitCode}`,
+        ...usageData,
       },
       finalOutput,
       diff,
@@ -407,6 +457,7 @@ export async function syncTerminalRun(runId: string, exitCode = 0): Promise<"syn
           finalCommit,
           finishedAt,
           errorMessage: exitCode === 0 ? null : `Copilot exited with code ${exitCode}`,
+          ...usageData,
         },
       }),
       prisma.terminalLaunch.updateMany({

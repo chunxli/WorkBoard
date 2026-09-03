@@ -13,3 +13,10 @@ export function formatDuration(startedAt: Date | string | null, finishedAt: Date
   const remMinutes = minutes % 60;
   return `${hours}h ${remMinutes}m`;
 }
+
+export function formatTokenCount(tokens: number): string {
+  return new Intl.NumberFormat("en-US", {
+    notation: tokens >= 1_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(tokens);
+}

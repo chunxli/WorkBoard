@@ -3,15 +3,20 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Archive, Check, Clipboard, RotateCcw } from "lucide-react";
+import FollowUpDialog from "@/components/FollowUpDialog";
 
 export default function WorkActions({
   workId,
   directoryPath,
   archived,
+  followUpMode,
+  followUpDisabledReason,
 }: {
   workId: string;
   directoryPath: string;
   archived: boolean;
+  followUpMode: "resume" | "new";
+  followUpDisabledReason?: string | null;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -40,6 +45,11 @@ export default function WorkActions({
 
   return (
     <div className="flex flex-wrap gap-2">
+      <FollowUpDialog
+        workId={workId}
+        mode={followUpMode}
+        disabledReason={followUpDisabledReason}
+      />
       <button
         type="button"
         onClick={async () => {

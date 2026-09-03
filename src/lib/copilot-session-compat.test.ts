@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  copilotSessionExists,
   readCompatibleCopilotSessionEvents,
   repairLegacyCopilotSessionEvents,
   upgradeLegacyPermissionEvent,
@@ -29,6 +30,14 @@ async function createSession(content: string) {
 }
 
 describe("Copilot session compatibility", () => {
+  it("distinguishes persisted sessions from allocated-only IDs", async () => {
+    const session = await createSession('{"type":"session.start"}\n');
+
+    await expect(copilotSessionExists(session.sessionId, session.baseDirectory)).resolves.toBe(true);
+    await rm(session.eventsPath);
+    await expect(copilotSessionExists(session.sessionId, session.baseDirectory)).resolves.toBe(false);
+  });
+
   it("maps legacy permission transitions in both directions", () => {
     const enabled = upgradeLegacyPermissionEvent({
       type: "session.permissions_changed",

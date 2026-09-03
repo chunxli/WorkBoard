@@ -23,6 +23,7 @@ import {
   serializeRunFinalization,
   type WorkRunSnapshot,
 } from "@/lib/run-artifacts";
+import { serializeCopilotTokenUsage } from "@/lib/copilot-session-insights";
 import { captureRunSourceBaseline, captureRunSourceDiff } from "@/lib/run-source-snapshot";
 import { hashWorkContent } from "@/lib/work-files";
 
@@ -176,6 +177,7 @@ export async function executeRun(runId: string): Promise<void> {
       permissionMode,
       outputFormat,
       timeoutSeconds,
+      maxIncompleteContinuations: 3,
       stdoutLogPath: paths.stdout,
       stderrLogPath: paths.stderr,
       onSpawn: ({ pid, command, model }) => {
@@ -193,7 +195,9 @@ export async function executeRun(runId: string): Promise<void> {
     });
     const finalCommit = await getHeadCommit(repoPath).catch(() => null);
     const stdout = await readFile(paths.stdout, "utf8").catch(() => "");
-    const finalOutput = result.finalOutput ?? extractFinalCopilotOutput(stdout);
+    const finalOutput = result.incomplete
+      ? null
+      : result.finalOutput ?? extractFinalCopilotOutput(stdout);
     const status = result.cancelled
       ? "CANCELLED"
       : result.timedOut
@@ -204,6 +208,7 @@ export async function executeRun(runId: string): Promise<void> {
             ? "SUCCESS"
             : "FAILED";
     const errorMessage = result.incompleteReason;
+    const usageData = serializeCopilotTokenUsage(result.usage);
     const finishedAt = new Date();
     await finalizeWorkRunArtifacts({
       paths,
@@ -214,6 +219,7 @@ export async function executeRun(runId: string): Promise<void> {
         exitCode: result.exitCode,
         errorMessage,
         gitAfterTree: sourceDiff.afterGitTree,
+        ...usageData,
       },
       finalOutput,
       diff: sourceDiff.diff,
@@ -232,6 +238,7 @@ export async function executeRun(runId: string): Promise<void> {
         finishedAt,
         cpuTimeMs: result.cpuTimeMs,
         peakMemoryMb: result.peakMemoryMb,
+        ...usageData,
       },
     });
   } catch (err) {

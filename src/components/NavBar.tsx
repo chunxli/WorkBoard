@@ -1,12 +1,16 @@
 import Link from "next/link";
-import { LayoutDashboard, LogIn, LogOut } from "lucide-react";
+import { LayoutDashboard, LogIn, LogOut, Monitor } from "lucide-react";
 import GlobalSearch from "@/components/GlobalSearch";
 import NavLinks from "@/components/NavLinks";
 import ThemeToggle from "@/components/ThemeToggle";
 import { auth, signIn, signOut } from "@/auth";
+import { authMode } from "@/lib/auth-mode";
 
 export default async function NavBar() {
-  const session = await auth();
+  const session = authMode === "entra" ? await auth() : null;
+  const user = authMode === "local"
+    ? { name: "Local", email: null }
+    : session?.user;
 
   return (
     <nav className="sticky top-0 z-40 border-b border-neutral-800/90 bg-[var(--nav-background)] backdrop-blur-xl">
@@ -20,22 +24,30 @@ export default async function NavBar() {
           </span>
           <span className="text-[15px] font-bold">Work Board</span>
         </Link>
-        {session?.user && (
+        {user && (
           <div className="nav-scroll order-3 w-full overflow-x-auto lg:order-2 lg:w-auto lg:overflow-visible">
             <NavLinks />
           </div>
         )}
-        {session?.user && (
+        {user && (
           <div className="order-4 w-full lg:order-3 lg:ml-auto lg:w-72">
             <GlobalSearch />
           </div>
         )}
         <div className="order-2 ml-auto flex items-center gap-2 whitespace-nowrap text-sm lg:order-4 lg:ml-0">
           <ThemeToggle />
-          {session?.user ? (
+          {authMode === "local" ? (
+            <span
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-2.5 text-xs font-semibold text-neutral-400"
+              title="Login-free loopback mode"
+            >
+              <Monitor size={14} aria-hidden="true" />
+              Local
+            </span>
+          ) : user ? (
             <>
               <span className="hidden size-8 place-items-center rounded-full border border-neutral-700 bg-neutral-800 text-xs font-bold text-neutral-200 xl:grid">
-                {(session.user.name ?? session.user.email ?? "U").slice(0, 1).toUpperCase()}
+                {(user.name ?? user.email ?? "U").slice(0, 1).toUpperCase()}
               </span>
               <form
                 action={async () => {

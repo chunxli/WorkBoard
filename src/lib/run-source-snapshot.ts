@@ -41,7 +41,7 @@ export async function captureRunSourceDiff(options: {
 
   const snapshotPath = getDirectorySnapshotPath(options.workDirectory, options.runId);
   const before = await readDirectorySnapshot(snapshotPath).catch(() => null);
-  const after = await captureDirectorySnapshot(options.executionPath);
+  const after = await captureDirectorySnapshot(options.executionPath, before ?? undefined);
   await writeDirectorySnapshot(snapshotPath, after);
   return {
     afterGitTree: null,

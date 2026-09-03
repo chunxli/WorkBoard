@@ -5,9 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  appendWorkFollowUp,
   copyWorkToExperimentBase,
   copyWorkToNumberedSibling,
+  listDirectoryPromptFiles,
   provisionWorkDirectory,
+  readDirectoryPromptFile,
   readWorkPrompt,
   WorkPromptConflictError,
   writeWorkPrompt,
@@ -27,6 +30,41 @@ afterEach(async () => {
 });
 
 describe("Work directory contract", () => {
+  it("lists and reads extensionless and numbered top-level Prompt files safely", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(path.join(directory, "Prompt"), "extensionless", "utf8");
+    await writeFile(path.join(directory, "PROMPT-10.md"), "tenth", "utf8");
+    await writeFile(path.join(directory, "PROMPT.md"), "primary", "utf8");
+    await writeFile(path.join(directory, "PROMPT-2.md"), "second", "utf8");
+    await writeFile(path.join(directory, "notes.md"), "ignore", "utf8");
+    await writeFile(path.join(directory, "PROMPT.txt"), "ignore", "utf8");
+    await mkdir(path.join(directory, "nested"));
+    await writeFile(path.join(directory, "nested", "PROMPT.md"), "nested", "utf8");
+
+    const files = await listDirectoryPromptFiles(directory);
+
+    expect(files.map((file) => file.name)).toEqual([
+      "Prompt",
+      "PROMPT.md",
+      "PROMPT-2.md",
+      "PROMPT-10.md",
+    ]);
+    await expect(readDirectoryPromptFile(directory, "Prompt")).resolves.toMatchObject({
+      name: "Prompt",
+      content: "extensionless",
+    });
+    await expect(readDirectoryPromptFile(directory, "PROMPT-2.md")).resolves.toMatchObject({
+      name: "PROMPT-2.md",
+      content: "second",
+    });
+    await expect(readDirectoryPromptFile(directory, "../PROMPT.md")).rejects.toMatchObject({
+      code: "invalid_prompt_path",
+    });
+    await expect(readDirectoryPromptFile(directory, "PROMPT.txt")).rejects.toMatchObject({
+      code: "invalid_prompt_path",
+    });
+  });
+
   it("creates numbered prompt files without overwriting existing content", async () => {
     const directory = await temporaryDirectory();
     await writeFile(path.join(directory, "PROMPT.md"), "existing", "utf8");
@@ -108,6 +146,97 @@ describe("Work directory contract", () => {
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+  });
+
+  it("serializes cache synchronization with prompt mutations", async () => {
+    const directory = await temporaryDirectory();
+    const record = await provisionWorkDirectory({
+      workId: "cache-sync-work",
+      name: "Cache sync",
+      directoryPath: directory,
+      prompt: "initial",
+    });
+    const original = await readWorkPrompt(record);
+    const order: string[] = [];
+    let cacheHash = original.hash;
+    let releaseAutosaveSync!: () => void;
+    let markAutosaveSyncStarted!: () => void;
+    const autosaveSyncCanFinish = new Promise<void>((resolve) => {
+      releaseAutosaveSync = resolve;
+    });
+    const autosaveSyncStarted = new Promise<void>((resolve) => {
+      markAutosaveSyncStarted = resolve;
+    });
+
+    const autosave = writeWorkPrompt(record, "browser edit", original.hash, async (prompt) => {
+      order.push("autosave:start");
+      markAutosaveSyncStarted();
+      await autosaveSyncCanFinish;
+      cacheHash = prompt.hash;
+      order.push("autosave:end");
+    });
+    await autosaveSyncStarted;
+    const followUp = appendWorkFollowUp(
+      record,
+      "Continue",
+      {
+        createdAt: new Date("2026-09-02T01:00:00.000Z"),
+        afterWrite: async (prompt) => {
+          cacheHash = prompt.hash;
+          order.push("follow-up");
+        },
+      }
+    );
+
+    releaseAutosaveSync();
+    await Promise.all([autosave, followUp]);
+
+    expect(order).toEqual(["autosave:start", "autosave:end", "follow-up"]);
+    expect(cacheHash).toBe((await readWorkPrompt(record)).hash);
+  });
+
+  it("serializes timestamped Follow Up sections into PROMPT.md", async () => {
+    const directory = await temporaryDirectory();
+    const record = await provisionWorkDirectory({
+      workId: "follow-up-work",
+      name: "Follow Up",
+      directoryPath: directory,
+      prompt: "Original prompt\n",
+    });
+
+    await Promise.all([
+      appendWorkFollowUp(record, "First follow up", {
+        createdAt: new Date("2026-09-02T01:00:00.000Z"),
+      }),
+      appendWorkFollowUp(record, "Second follow up", {
+        createdAt: new Date("2026-09-02T02:00:00.000Z"),
+      }),
+    ]);
+
+    const content = await readFile(path.join(directory, record.promptFileName), "utf8");
+    expect(content).toContain("Original prompt\n\n---\n\n## Follow Up - 2026-09-02T01:00:00.000Z");
+    expect(content).toContain("## Follow Up - 2026-09-02T02:00:00.000Z\n\nSecond follow up");
+  });
+
+  it("appends a recovered Follow Up Run only once", async () => {
+    const directory = await temporaryDirectory();
+    const record = await provisionWorkDirectory({
+      workId: "recovered-follow-up-work",
+      name: "Recovered Follow Up",
+      directoryPath: directory,
+      prompt: "Original prompt",
+    });
+    const options = {
+      createdAt: new Date("2026-09-02T01:00:00.000Z"),
+      followUpId: "run-123",
+    };
+
+    await appendWorkFollowUp(record, "Continue", options);
+    await appendWorkFollowUp(record, "Continue", options);
+
+    const content = await readFile(path.join(directory, record.promptFileName), "utf8");
+    expect(content.match(/workboard-follow-up:run-123/g)).toHaveLength(1);
+    expect(content.match(/## Follow Up/g)).toHaveLength(1);
   });
 
   it("copies all source content except Work Board metadata into a numbered sibling", async () => {

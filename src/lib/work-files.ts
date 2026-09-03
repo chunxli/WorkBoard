@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   access,
   cp,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -15,6 +16,8 @@ import path from "node:path";
 
 const WORKBOARD_DIRECTORY = ".workboard";
 const INDEX_SCHEMA_VERSION = 1;
+const MAX_WORK_PROMPT_CHARACTERS = 100_000;
+const READABLE_PROMPT_FILE_PATTERN = /^PROMPT(?:\.md|-\d+\.md)?$/i;
 const globalForWorkFiles = globalThis as unknown as {
   workPromptWriteQueues?: Map<string, Promise<unknown>>;
   workProvisionQueues?: Map<string, Promise<unknown>>;
@@ -46,6 +49,24 @@ export interface WorkDiskRecord {
   promptHash: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface WorkPromptState {
+  content: string;
+  hash: string;
+  modifiedAt: string;
+}
+
+export interface DirectoryPromptFile {
+  name: string;
+  size: number;
+  modifiedAt: string;
+}
+
+export interface AppendWorkFollowUpOptions {
+  createdAt?: Date;
+  followUpId?: string;
+  afterWrite?: (prompt: WorkPromptState) => Promise<void>;
 }
 
 export class WorkFileError extends Error {
@@ -172,6 +193,77 @@ function getPromptPath(directoryPath: string, promptFileName: string): string {
     throw new WorkFileError("invalid_prompt_path", "Invalid Work prompt file name");
   }
   return path.join(directoryPath, promptFileName);
+}
+
+function getReadablePromptPath(directoryPath: string, promptFileName: string): string {
+  if (
+    path.basename(promptFileName) !== promptFileName ||
+    !READABLE_PROMPT_FILE_PATTERN.test(promptFileName)
+  ) {
+    throw new WorkFileError("invalid_prompt_path", "Invalid Prompt file name");
+  }
+  return path.join(directoryPath, promptFileName);
+}
+
+function promptFileOrder(fileName: string): number {
+  if (/^PROMPT$/i.test(fileName)) return -1;
+  const match = /^PROMPT(?:-(\d+))?\.md$/i.exec(fileName);
+  return match?.[1] ? Number(match[1]) : 0;
+}
+
+export async function listDirectoryPromptFiles(
+  directoryPath: string
+): Promise<DirectoryPromptFile[]> {
+  const directory = resolveWorkDirectory(directoryPath);
+  const directoryInfo = await stat(directory).catch(() => null);
+  if (!directoryInfo?.isDirectory()) {
+    throw new WorkFileError("invalid_path", "Work path is not an accessible directory");
+  }
+
+  const entries = await readdir(directory, { withFileTypes: true });
+  const promptFiles = entries.filter(
+    (entry) => entry.isFile() && READABLE_PROMPT_FILE_PATTERN.test(entry.name)
+  );
+  const files = await Promise.all(
+    promptFiles.map(async (entry) => {
+      const fileInfo = await stat(getReadablePromptPath(directory, entry.name));
+      return {
+        name: entry.name,
+        size: fileInfo.size,
+        modifiedAt: fileInfo.mtime.toISOString(),
+      };
+    })
+  );
+  return files.sort(
+    (left, right) =>
+      promptFileOrder(left.name) - promptFileOrder(right.name) ||
+      left.name.localeCompare(right.name)
+  );
+}
+
+export async function readDirectoryPromptFile(
+  directoryPath: string,
+  promptFileName: string
+): Promise<DirectoryPromptFile & { content: string }> {
+  const directory = resolveWorkDirectory(directoryPath);
+  const promptPath = getReadablePromptPath(directory, promptFileName);
+  const fileInfo = await lstat(promptPath);
+  if (!fileInfo.isFile()) {
+    throw new WorkFileError("invalid_prompt_path", "Prompt path is not a file");
+  }
+  const content = await readFile(promptPath, "utf8");
+  if (content.length > MAX_WORK_PROMPT_CHARACTERS) {
+    throw new WorkFileError(
+      "prompt_too_large",
+      `Prompt file exceeds ${MAX_WORK_PROMPT_CHARACTERS.toLocaleString()} characters`
+    );
+  }
+  return {
+    name: promptFileName,
+    content,
+    size: fileInfo.size,
+    modifiedAt: fileInfo.mtime.toISOString(),
+  };
 }
 
 async function readIndex(directoryPath: string): Promise<WorkIndex> {
@@ -415,7 +507,7 @@ export async function updateWorkManifestMetadata(
 export async function readWorkPrompt(work: {
   directoryPath: string;
   promptFileName: string;
-}): Promise<{ content: string; hash: string; modifiedAt: string }> {
+}): Promise<WorkPromptState> {
   const promptPath = getPromptPath(resolveWorkDirectory(work.directoryPath), work.promptFileName);
   const [content, fileInfo] = await Promise.all([readFile(promptPath, "utf8"), stat(promptPath)]);
   return {
@@ -428,8 +520,9 @@ export async function readWorkPrompt(work: {
 export async function writeWorkPrompt(
   work: { id: string; directoryPath: string; promptFileName: string },
   content: string,
-  expectedHash: string
-): Promise<{ content: string; hash: string; modifiedAt: string }> {
+  expectedHash: string,
+  afterWrite?: (prompt: WorkPromptState) => Promise<void>
+): Promise<WorkPromptState> {
   const directoryPath = resolveWorkDirectory(work.directoryPath);
   const promptPath = getPromptPath(directoryPath, work.promptFileName);
   const previous = promptWriteQueues.get(promptPath) ?? Promise.resolve();
@@ -452,7 +545,53 @@ export async function writeWorkPrompt(
     } catch {
       // The prompt remains the source of truth even if an optional manifest repair is needed.
     }
-    return { content, hash: contentHash, modifiedAt };
+    const prompt = { content, hash: contentHash, modifiedAt };
+    await afterWrite?.(prompt);
+    return prompt;
+  });
+  promptWriteQueues.set(promptPath, operation);
+  try {
+    return await operation;
+  } finally {
+    if (promptWriteQueues.get(promptPath) === operation) promptWriteQueues.delete(promptPath);
+  }
+}
+
+export async function appendWorkFollowUp(
+  work: { id: string; directoryPath: string; promptFileName: string },
+  prompt: string,
+  options: AppendWorkFollowUpOptions = {}
+): Promise<WorkPromptState> {
+  const directoryPath = resolveWorkDirectory(work.directoryPath);
+  const promptPath = getPromptPath(directoryPath, work.promptFileName);
+  const previous = promptWriteQueues.get(promptPath) ?? Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    const currentContent = await readFile(promptPath, "utf8").catch(() => "");
+    const createdAt = options.createdAt ?? new Date();
+    const marker = options.followUpId
+      ? `<!-- workboard-follow-up:${options.followUpId} -->`
+      : null;
+    let content = currentContent;
+    if (!marker || !currentContent.includes(marker)) {
+      const separator = currentContent.trimEnd() ? "\n\n---\n\n" : "";
+      const markerLine = marker ? `${marker}\n` : "";
+      content = `${currentContent.trimEnd()}${separator}${markerLine}## Follow Up - ${createdAt.toISOString()}\n\n${prompt.trim()}\n`;
+      await writeAtomic(promptPath, content);
+    }
+    const modifiedAt = (await stat(promptPath)).mtime.toISOString();
+    const contentHash = hashWorkContent(content);
+    const manifestPath = getWorkManifestPath(directoryPath, work.id);
+    try {
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as WorkDiskRecord;
+      manifest.promptHash = contentHash;
+      manifest.updatedAt = createdAt.toISOString();
+      await writeAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    } catch {
+      // PROMPT.md remains the source of truth if optional metadata needs repair.
+    }
+    const updatedPrompt = { content, hash: contentHash, modifiedAt };
+    await options.afterWrite?.(updatedPrompt);
+    return updatedPrompt;
   });
   promptWriteQueues.set(promptPath, operation);
   try {

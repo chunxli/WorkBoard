@@ -50,12 +50,14 @@ export async function PUT(
     const prompt = await writeWorkPrompt(
       work,
       parsed.data.content,
-      parsed.data.expectedHash
+      parsed.data.expectedHash,
+      async (updatedPrompt) => {
+        await prisma.work.update({
+          where: { id },
+          data: { promptCache: updatedPrompt.content, promptHash: updatedPrompt.hash },
+        });
+      }
     );
-    await prisma.work.update({
-      where: { id },
-      data: { promptCache: prompt.content, promptHash: prompt.hash },
-    });
     return NextResponse.json(prompt);
   } catch (error) {
     if (error instanceof WorkPromptConflictError) {

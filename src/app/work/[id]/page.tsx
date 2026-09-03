@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
@@ -19,14 +18,17 @@ import { findActiveRunConflicts } from "@/lib/run-access";
 import TerminalSessionActions from "@/components/TerminalSessionActions";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import { copilotSessionExists } from "@/lib/copilot-session-compat";
 import { ArrowLeft, ArrowUpRight, Bot, Boxes, Clock3, Cpu, FlaskConical, FolderOpen, History, ListTodo, Radio } from "lucide-react";
 import WorkExecutionSettings from "@/components/WorkExecutionSettings";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
+import MarkdownResult from "@/components/MarkdownResult";
 import type {
   WorkContextTier,
   WorkReasoningEffort,
 } from "@/components/WorkExecutionFields";
+import { readRunLogTail } from "@/lib/run-artifacts";
 
 export default async function WorkDetailPage({
   params,
@@ -49,6 +51,7 @@ export default async function WorkDetailPage({
         where: { experimentVariantId: null },
         orderBy: { createdAt: "desc" },
         take: 20,
+        include: { terminalLaunches: { select: { status: true }, take: 1 } },
       },
       experiments: {
         orderBy: { createdAt: "desc" },
@@ -70,10 +73,33 @@ export default async function WorkDetailPage({
     modifiedAt: work.updatedAt.toISOString(),
   }));
   const latestRun = work.runs[0];
+  const followUpParentCandidate = await prisma.run.findFirst({
+    where: {
+      workId: work.id,
+      experimentVariantId: null,
+      copilotSessionId: { not: null },
+      status: { notIn: ["PENDING", "RUNNING"] },
+      startedAt: { not: null },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, hostname: true, copilotSessionId: true, executionPath: true },
+  });
+  const followUpParent = followUpParentCandidate && (
+    followUpParentCandidate.hostname && followUpParentCandidate.hostname !== hostname()
+      ? true
+      : followUpParentCandidate.copilotSessionId &&
+        await copilotSessionExists(followUpParentCandidate.copilotSessionId).catch(() => true)
+  )
+    ? followUpParentCandidate
+    : null;
   const latestLog = latestRun?.logPath
-    ? await readFile(latestRun.logPath, "utf8").catch(() => "")
+    ? await readRunLogTail(latestRun.logPath).catch(() => "")
     : "";
   const activeConflicts = await findActiveRunConflicts(userId, work.directoryPath);
+  const followUpDirectory = followUpParent?.executionPath ?? work.directoryPath;
+  const followUpConflicts = followUpDirectory === work.directoryPath
+    ? activeConflicts
+    : await findActiveRunConflicts(userId, followUpDirectory);
   const projectSkills = await discoverProjectSkills(work.directoryPath).catch(() => []);
   const hasActiveExperiment = work.experiments.some((experiment) =>
     ["PROVISIONING", "RUNNING"].includes(experiment.status)
@@ -90,6 +116,14 @@ export default async function WorkDetailPage({
         work,
       })
     : false;
+  const followUpDisabledReason =
+    work.status === "ARCHIVED"
+      ? "Restore this Work before following up"
+      : followUpConflicts.length > 0
+        ? "Wait for active Runs in this Work directory to finish"
+        : followUpParent?.hostname && followUpParent.hostname !== hostname()
+          ? "The latest Work session belongs to another machine"
+          : null;
 
   return (
     <div className="space-y-8">
@@ -118,6 +152,8 @@ export default async function WorkDetailPage({
           workId={work.id}
           directoryPath={work.directoryPath}
           archived={work.status === "ARCHIVED"}
+          followUpMode={followUpParent ? "resume" : "new"}
+          followUpDisabledReason={followUpDisabledReason}
         />
       </header>
 
@@ -192,9 +228,9 @@ export default async function WorkDetailPage({
                     <p className="mt-2 font-mono text-[10px] text-neutral-600">{variant.skillHash}</p>
                   )}
                   {variantRun?.finalOutput && (
-                    <pre className="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap border-l-2 border-neutral-700 pl-3 font-sans text-xs leading-5 text-neutral-300">
-                      {variantRun.finalOutput}
-                    </pre>
+                    <div className="mt-3 max-h-48 overflow-y-auto border-l-2 border-neutral-700 pl-3">
+                      <MarkdownResult content={variantRun.finalOutput} compact />
+                    </div>
                   )}
                   {variantRun && (
                     <Link
@@ -219,19 +255,24 @@ export default async function WorkDetailPage({
             <div className="flex flex-wrap items-center gap-2">
               <StatusBadge status={latestRun.status} />
               <span className="text-xs text-neutral-500">
-                {latestRun.engine ?? "CLI"} · {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
+                {latestRun.trigger} · {latestRun.engine ?? "CLI"} · {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
               </span>
               {(latestRun.status === "PENDING" || latestRun.status === "RUNNING") && (
                 <CancelRunButton runId={latestRun.id} />
               )}
               {latestRun.copilotSessionId && canOpenTerminal && (
                 <TerminalSessionActions
+                  key={`${latestRun.id}:${latestRun.status}:${latestRun.terminalLaunches[0]?.status ?? "none"}`}
                   runId={latestRun.id}
                   canResume={
                     latestRunResumeReady &&
                     work.status !== "ARCHIVED"
                   }
-                  canSync={latestRun.trigger === "TERMINAL_RESUME"}
+                  canSync={
+                    latestRun.trigger === "TERMINAL_RESUME" &&
+                    latestRun.terminalLaunches[0] !== undefined &&
+                    latestRun.terminalLaunches[0].status !== "COMPLETED"
+                  }
                 />
               )}
               <Link
@@ -249,12 +290,15 @@ export default async function WorkDetailPage({
             isLive={latestRun.status === "PENDING" || latestRun.status === "RUNNING"}
             outputFormat={latestRun.outputFormat === "json" ? "json" : "text"}
           />
+          {latestRun.errorMessage && (
+            <p role="alert" className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-sm text-red-400">
+              {latestRun.errorMessage}
+            </p>
+          )}
           {latestRun.finalOutput && latestRun.status !== "RUNNING" && (
             <div className="border-l-2 border-emerald-600 pl-4">
               <h3 className="mb-2 text-sm font-semibold text-neutral-300">Result</h3>
-              <pre className="whitespace-pre-wrap font-sans text-sm leading-6 text-neutral-200">
-                {latestRun.finalOutput}
-              </pre>
+              <MarkdownResult content={latestRun.finalOutput} />
             </div>
           )}
         </section>
@@ -273,7 +317,7 @@ export default async function WorkDetailPage({
                 <span className="font-mono text-sm">{run.id.slice(0, 8)}</span>
                 <StatusBadge status={run.status} />
                 <span className="text-xs text-neutral-500">
-                  {new Date(run.createdAt).toLocaleString()}
+                  {run.trigger} · {new Date(run.createdAt).toLocaleString()}
                 </span>
               </Link>
             ))}

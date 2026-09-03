@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   closestCenter,
@@ -23,14 +23,17 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   Archive,
   ArrowUpRight,
+  Bot,
   Boxes,
   ChevronDown,
   Copy,
+  FileText,
   Folder,
   FolderOpen,
   GripVertical,
   LoaderCircle,
   MessageSquareText,
+  Gauge,
   Play,
   Plus,
   SquareKanban,
@@ -50,6 +53,7 @@ import {
   type ExecutionDefaultsValue,
   workExecutionSettingsValue,
 } from "@/lib/execution-defaults";
+import { formatTokenCount } from "@/lib/format";
 
 type Initialization = "USE_PATH" | "COPY_REPO";
 
@@ -65,6 +69,14 @@ interface WorkSummary {
   automationCount: number;
   latestRunStatus: string | null;
   latestRunId: string | null;
+  latestModels: string[];
+  latestTokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    reasoningTokens: number;
+  } | null;
   terminalResumeState: "ready" | "active" | "unavailable";
 }
 
@@ -72,6 +84,12 @@ interface ResourceOption {
   id: string;
   name: string;
   location: string;
+}
+
+interface DirectoryPromptFile {
+  name: string;
+  size: number;
+  modifiedAt: string;
 }
 
 function inferName(directoryPath: string): string {
@@ -102,6 +120,12 @@ export default function WorkBoard({
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [folderPromptFiles, setFolderPromptFiles] = useState<DirectoryPromptFile[]>([]);
+  const [selectedFolderPrompt, setSelectedFolderPrompt] = useState("");
+  const [loadedFolderPrompt, setLoadedFolderPrompt] = useState<string | null>(null);
+  const [folderPromptError, setFolderPromptError] = useState<string | null>(null);
+  const [loadingFolderPrompt, setLoadingFolderPrompt] = useState(false);
+  const promptImportRequest = useRef(0);
   const [initialization, setInitialization] = useState<Initialization>("USE_PATH");
   const [sourceRepoId, setSourceRepoId] = useState(resources[0]?.id ?? "");
   const [executionSettings, setExecutionSettings] = useState(
@@ -123,9 +147,116 @@ export default function WorkBoard({
   const [view, setView] = useState<"current" | "archived">("current");
 
   function updateDirectoryPath(value: string) {
+    promptImportRequest.current += 1;
     setDirectoryPath(value);
     setCopiedFolderPath(null);
+    setFolderPromptFiles([]);
+    setSelectedFolderPrompt("");
+    setLoadedFolderPrompt(null);
+    setFolderPromptError(null);
+    setLoadingFolderPrompt(false);
     if (!nameTouched) setName(inferName(value));
+  }
+
+  function selectDirectoryPath(value: string) {
+    const shouldClearImportedPrompt = loadedFolderPrompt !== null;
+    updateDirectoryPath(value);
+    if (shouldClearImportedPrompt) setPrompt("");
+    void discoverFolderPrompts(value.trim(), false);
+  }
+
+  function updatePrompt(value: string) {
+    setPrompt(value);
+    setLoadedFolderPrompt(null);
+  }
+
+  async function readFolderPrompt(
+    selectedDirectory: string,
+    promptFileName: string,
+    requestId: number
+  ) {
+    const response = await fetch(
+      `/api/fs/prompts?path=${encodeURIComponent(selectedDirectory)}&file=${encodeURIComponent(promptFileName)}`
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || typeof body.content !== "string") {
+      throw new Error(
+        typeof body.error === "string" ? body.error : "Failed to read Prompt file"
+      );
+    }
+    if (promptImportRequest.current !== requestId) return;
+    setPrompt(body.content);
+    setSelectedFolderPrompt(promptFileName);
+    setLoadedFolderPrompt(promptFileName);
+  }
+
+  async function discoverFolderPrompts(
+    selectedDirectory = directoryPath.trim(),
+    reportMissing = true
+  ) {
+    if (!selectedDirectory) {
+      setFolderPromptError("Select a Work directory first");
+      return;
+    }
+
+    const requestId = ++promptImportRequest.current;
+    setLoadingFolderPrompt(true);
+    setFolderPromptError(null);
+    setLoadedFolderPrompt(null);
+    try {
+      const response = await fetch(
+        `/api/fs/prompts?path=${encodeURIComponent(selectedDirectory)}`
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !Array.isArray(body.files)) {
+        throw new Error(
+          typeof body.error === "string" ? body.error : "Failed to find Prompt files"
+        );
+      }
+      if (promptImportRequest.current !== requestId) return;
+      const files = body.files.filter(
+        (candidate: unknown): candidate is DirectoryPromptFile =>
+          typeof candidate === "object" &&
+          candidate !== null &&
+          "name" in candidate &&
+          typeof candidate.name === "string"
+      );
+      if (files.length === 0) {
+        setFolderPromptFiles([]);
+        setSelectedFolderPrompt("");
+        if (reportMissing) {
+          throw new Error("No Prompt, PROMPT.md, or numbered Prompt file found in this directory");
+        }
+        return;
+      }
+      setFolderPromptFiles(files);
+      setSelectedFolderPrompt(files[0].name);
+      await readFolderPrompt(selectedDirectory, files[0].name, requestId);
+    } catch (reason) {
+      if (promptImportRequest.current === requestId) {
+        setFolderPromptError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (promptImportRequest.current === requestId) setLoadingFolderPrompt(false);
+    }
+  }
+
+  async function loadSelectedFolderPrompt(promptFileName = selectedFolderPrompt) {
+    const selectedDirectory = directoryPath.trim();
+    if (!selectedDirectory || !promptFileName) return;
+    const requestId = ++promptImportRequest.current;
+    setLoadingFolderPrompt(true);
+    setFolderPromptError(null);
+    setLoadedFolderPrompt(null);
+    try {
+      await readFolderPrompt(selectedDirectory, promptFileName, requestId);
+    } catch (reason) {
+      if (promptImportRequest.current === requestId) {
+        setFolderPromptError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (promptImportRequest.current === requestId) setLoadingFolderPrompt(false);
+    }
   }
 
   function requestFolderCopy() {
@@ -154,7 +285,7 @@ export default function WorkBoard({
           typeof body.error === "string" ? body.error : "Failed to copy folder"
         );
       }
-      updateDirectoryPath(body.destinationPath);
+      selectDirectoryPath(body.destinationPath);
       setCopiedFolderPath(body.destinationPath);
       setInitialization("USE_PATH");
     } catch (reason) {
@@ -385,7 +516,7 @@ export default function WorkBoard({
               initialRoots={shortcuts}
               selectedPath={directoryPath}
               canOpenExplorer={canOpenExplorer}
-              onSelect={updateDirectoryPath}
+              onSelect={selectDirectoryPath}
             />
             <div className="grid grid-cols-3 rounded-md border border-neutral-800 bg-neutral-950 p-1 text-xs">
               <button
@@ -474,15 +605,66 @@ export default function WorkBoard({
           </fieldset>
 
           <div className="space-y-4">
-            <label className="flex items-center gap-2 text-xs font-bold uppercase text-neutral-400" htmlFor="work-prompt">
-              <MessageSquareText size={14} aria-hidden="true" />
-              Prompt
-            </label>
-            <PromptTemplatePicker value={prompt} onChange={setPrompt} />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-2 text-xs font-bold uppercase text-neutral-400" htmlFor="work-prompt">
+                <MessageSquareText size={14} aria-hidden="true" />
+                Prompt
+              </label>
+              <button
+                type="button"
+                onClick={() => void discoverFolderPrompts()}
+                disabled={!directoryPath.trim() || loadingFolderPrompt || submitting !== null}
+                className="ui-secondary-button min-h-8 px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {loadingFolderPrompt ? (
+                  <LoaderCircle size={13} className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <FileText size={13} aria-hidden="true" />
+                )}
+                {loadingFolderPrompt ? "Reading..." : "Read Prompt"}
+              </button>
+            </div>
+            <PromptTemplatePicker value={prompt} onChange={updatePrompt} />
+            {folderPromptFiles.length > 1 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/45 p-2.5">
+                <FileText size={14} className="shrink-0 text-emerald-400" aria-hidden="true" />
+                <select
+                  aria-label="Prompt file"
+                  value={selectedFolderPrompt}
+                  onChange={(event) => {
+                    const promptFileName = event.target.value;
+                    setSelectedFolderPrompt(promptFileName);
+                    void loadSelectedFolderPrompt(promptFileName);
+                  }}
+                  disabled={loadingFolderPrompt}
+                  className="min-w-48 flex-1 rounded-md border border-neutral-700 bg-neutral-950 px-2.5 py-2 font-mono text-xs text-neutral-200"
+                >
+                  {folderPromptFiles.map((file) => (
+                    <option key={file.name} value={file.name}>{file.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void loadSelectedFolderPrompt()}
+                  disabled={loadingFolderPrompt}
+                  className="ui-secondary-button min-h-8 px-3 py-1.5 text-xs"
+                >
+                  Load selected
+                </button>
+              </div>
+            )}
+            {loadedFolderPrompt && (
+              <p role="status" className="text-xs text-emerald-400">
+                Loaded {loadedFolderPrompt}. The original file will not be changed.
+              </p>
+            )}
+            {folderPromptError && (
+              <p role="alert" className="text-xs text-red-400">{folderPromptError}</p>
+            )}
             <textarea
               id="work-prompt"
               value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
+              onChange={(event) => updatePrompt(event.target.value)}
               placeholder="Describe the result you want..."
               required
               rows={7}
@@ -539,7 +721,7 @@ export default function WorkBoard({
         <FolderBrowserModal
           onClose={() => setBrowsingDirectory(false)}
           onSelect={(selectedPath) => {
-            updateDirectoryPath(selectedPath);
+            selectDirectoryPath(selectedPath);
             setBrowsingDirectory(false);
           }}
         />
@@ -681,6 +863,22 @@ function SortableWorkCard({
     transition,
     isDragging,
   } = useSortable({ id: work.id, disabled: !draggable });
+  const modelLabel = work.latestModels.length > 1
+    ? `${work.latestModels[0]} +${work.latestModels.length - 1}`
+    : work.latestModels[0] ?? "Auto";
+  const tokenUsage = work.latestTokenUsage;
+  const totalTokens = tokenUsage
+    ? tokenUsage.inputTokens + tokenUsage.outputTokens
+    : null;
+  const tokenTooltip = tokenUsage
+    ? [
+        `Input: ${tokenUsage.inputTokens.toLocaleString()}`,
+        `Output: ${tokenUsage.outputTokens.toLocaleString()}`,
+        `Cache read: ${tokenUsage.cacheReadTokens.toLocaleString()}`,
+        `Cache write: ${tokenUsage.cacheWriteTokens.toLocaleString()}`,
+        `Reasoning: ${tokenUsage.reasoningTokens.toLocaleString()}`,
+      ].join(" · ")
+    : "Token usage is available after the Run session shuts down";
 
   return (
     <article
@@ -729,6 +927,22 @@ function SortableWorkCard({
         <span className="rounded-md border border-neutral-800 bg-neutral-950/35 px-2 py-1 font-mono">
           {work.defaultEngine}
         </span>
+        <span
+          className="inline-flex min-w-0 max-w-44 items-center gap-1 rounded-md border border-neutral-800 bg-neutral-950/35 px-2 py-1 font-mono"
+          title={work.latestModels.length > 0 ? work.latestModels.join(", ") : "Automatic model selection"}
+        >
+          <Bot size={11} className="shrink-0 text-emerald-500" aria-hidden="true" />
+          <span className="truncate">{modelLabel}</span>
+        </span>
+        {totalTokens !== null && (
+          <span
+            className="inline-flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-950/35 px-2 py-1 font-mono"
+            title={tokenTooltip}
+          >
+            <Gauge size={11} className="text-emerald-500" aria-hidden="true" />
+            {formatTokenCount(totalTokens)} tokens
+          </span>
+        )}
         <span>{work.automationCount} automations</span>
         {work.latestRunStatus && <StatusBadge status={work.latestRunStatus} />}
       </div>

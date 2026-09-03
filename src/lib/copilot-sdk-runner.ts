@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   approveAll,
   CopilotClient,
+  type ResumeSessionConfig,
   type CopilotSession,
   type SessionConfig,
 } from "@github/copilot-sdk";
@@ -19,6 +20,7 @@ interface SdkRunOptions {
   sessionId: string;
   workPath: string;
   prompt: string;
+  resumeSession?: boolean;
   model?: string | null;
   contextTier?: string | null;
   reasoningEffort?: string | null;
@@ -26,6 +28,22 @@ interface SdkRunOptions {
   stdoutLogPath: string;
   stderrLogPath: string;
   onSpawn?: (info: { pid: null; command: string; model: string | null }) => void;
+}
+
+type SdkSessionClient = Pick<CopilotClient, "createSession" | "resumeSession">;
+
+export function openCopilotSdkSession(
+  client: SdkSessionClient,
+  sessionId: string,
+  config: Omit<SessionConfig, "sessionId">,
+  resumeSession: boolean
+): Promise<CopilotSession> {
+  return resumeSession
+    ? client.resumeSession(sessionId, {
+        ...config,
+        continuePendingWork: false,
+      } satisfies ResumeSessionConfig)
+    : client.createSession({ ...config, sessionId });
 }
 
 const globalForSdk = globalThis as unknown as {
@@ -101,15 +119,20 @@ export async function startCopilotSdkRun(options: SdkRunOptions): Promise<{
 
   try {
     await client.start();
-    session = await client.createSession({
-      sessionId: options.sessionId,
+    const sessionConfig = {
       workingDirectory: options.workPath,
       model: options.model ?? undefined,
       contextTier: options.contextTier === "long_context" ? "long_context" : "default",
       reasoningEffort: options.reasoningEffort as SessionConfig["reasoningEffort"],
       streaming: true,
       onPermissionRequest: approveAll,
-    });
+    } satisfies ResumeSessionConfig;
+    session = await openCopilotSdkSession(
+      client,
+      options.sessionId,
+      sessionConfig,
+      options.resumeSession === true
+    );
     activeSessions.set(options.runId, session);
 
     const timeoutMs =

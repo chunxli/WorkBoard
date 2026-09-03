@@ -19,9 +19,11 @@ import { ownedRunWhere } from "@/lib/run-access";
 import TerminalSessionActions from "@/components/TerminalSessionActions";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import { readRunLogTail } from "@/lib/run-artifacts";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
-import { ArrowLeft, Clock3, Download, GitBranch, GitCompareArrows, GitCommitHorizontal, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
+import MarkdownResult from "@/components/MarkdownResult";
+import { ArrowLeft, Clock3, Download, FileText, GitBranch, GitCompareArrows, GitCommitHorizontal, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
 
 export default async function RunDetailPage({
   params,
@@ -34,11 +36,20 @@ export default async function RunDetailPage({
   const { id } = await params;
   const run = await prisma.run.findFirst({
     where: ownedRunWhere(userId, id),
-    include: { task: { include: { repo: true } }, work: true },
+    include: {
+      task: { include: { repo: true } },
+      work: true,
+      resumedFromRun: { select: { id: true, trigger: true, status: true } },
+      resumedRuns: {
+        orderBy: { createdAt: "desc" },
+        select: { id: true, trigger: true, status: true },
+      },
+      terminalLaunches: { select: { status: true }, take: 1 },
+    },
   });
   if (!run) notFound();
 
-  const log = run.logPath ? await readFile(run.logPath, "utf8").catch(() => "") : "";
+  const log = run.logPath ? await readRunLogTail(run.logPath).catch(() => "") : "";
 
   const diff = run.outputDir
     ? await readFile(path.join(run.outputDir, "diff.patch"), "utf8").catch(() => "")
@@ -53,6 +64,7 @@ export default async function RunDetailPage({
   const sameMachine = !run.hostname || run.hostname === hostname();
   const ownerArchived = run.work?.status === "ARCHIVED" || Boolean(run.task?.archivedAt);
   const canOpenTerminal = localTerminalAvailable(requestHost) && sameMachine;
+  const terminalLaunchStatus = run.terminalLaunches[0]?.status;
   const resumeReady =
     Boolean(run.copilotSessionId) &&
     canOpenTerminal &&
@@ -85,9 +97,14 @@ export default async function RunDetailPage({
         {run.copilotSessionId && canOpenTerminal && (
           <div className="mt-3">
             <TerminalSessionActions
+              key={`${run.id}:${run.status}:${terminalLaunchStatus ?? "none"}`}
               runId={run.id}
               canResume={!ownerArchived && resumeReady}
-              canSync={run.trigger === "TERMINAL_RESUME"}
+              canSync={
+                run.trigger === "TERMINAL_RESUME" &&
+                terminalLaunchStatus !== undefined &&
+                terminalLaunchStatus !== "COMPLETED"
+              }
             />
           </div>
         )}
@@ -104,6 +121,27 @@ export default async function RunDetailPage({
             </MetaChip>
           )}
         </div>
+        {(run.resumedFromRun || run.resumedRuns.length > 0) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            {run.resumedFromRun && (
+              <Link
+                href={`/runs/${run.resumedFromRun.id}`}
+                className="rounded-md border border-neutral-800 bg-neutral-950/40 px-2.5 py-1.5 font-mono text-neutral-400 hover:border-neutral-700 hover:text-emerald-300"
+              >
+                Previous {run.resumedFromRun.id.slice(0, 8)} · {run.resumedFromRun.trigger}
+              </Link>
+            )}
+            {run.resumedRuns.map((child) => (
+              <Link
+                key={child.id}
+                href={`/runs/${child.id}`}
+                className="rounded-md border border-neutral-800 bg-neutral-950/40 px-2.5 py-1.5 font-mono text-neutral-400 hover:border-neutral-700 hover:text-emerald-300"
+              >
+                Next {child.id.slice(0, 8)} · {child.trigger}
+              </Link>
+            ))}
+          </div>
+        )}
         {run.errorMessage && <p className="mt-2 text-sm text-red-400">{run.errorMessage}</p>}
       </header>
 
@@ -146,6 +184,13 @@ export default async function RunDetailPage({
               : "None",
         }}
       />
+
+      {run.finalOutput && !isLive && (
+        <section className="border-l-2 border-emerald-600 pl-4">
+          <SectionHeading icon={FileText} title="Result" />
+          <MarkdownResult content={run.finalOutput} />
+        </section>
+      )}
 
       {run.outputDir && (
         <section className="ui-panel p-4 sm:p-5">

@@ -1,7 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { jobQueue } from "@/lib/job-queue";
 import { executeRun, finalizeAutomationRun } from "@/lib/task-executor";
-import { executeWorkRun, finalizeCancelledWorkRun } from "@/lib/work-executor";
+import {
+  executeWorkRun,
+  finalizeCancelledWorkRun,
+  getWorkRunQueueKey,
+} from "@/lib/work-executor";
 import {
   finalizeWorkRunArtifacts,
   getWorkRunArtifactPaths,
@@ -48,6 +52,8 @@ export async function recoverRuns(): Promise<void> {
           sessionId: run.copilotSessionId ?? "unknown",
           executionPath,
           concurrencyMode: run.concurrencyMode ?? "DIRECT",
+          trigger: run.trigger,
+          resumedFromRunId: run.resumedFromRunId,
           status: "RUNNING",
           startedAt: run.startedAt?.toISOString() ?? null,
           finishedAt: null,
@@ -55,6 +61,14 @@ export async function recoverRuns(): Promise<void> {
           errorMessage: null,
           gitBeforeTree: null,
           gitAfterTree: null,
+          agent: run.agent,
+          model: run.model,
+          fallbackModel: run.fallbackModel,
+          contextTier: run.contextTier,
+          reasoningEffort: run.reasoningEffort,
+          permissionMode: run.permissionMode,
+          outputFormat: run.outputFormat,
+          timeoutSeconds: run.timeoutSeconds,
         } satisfies WorkRunSnapshot;
         await prepareWorkRunArtifacts(run.work.directoryPath, run.id, snapshot).catch(() => {});
       }
@@ -109,7 +123,7 @@ export async function recoverRuns(): Promise<void> {
         await prisma.run.update({ where: { id: run.id }, data: { status: "CANCELLED" } });
         await finalizeCancelledWorkRun(run.id, "Work was archived before this run started.");
       } else {
-        jobQueue.enqueue(run.id, () => executeWorkRun(run.id));
+        jobQueue.enqueue(getWorkRunQueueKey(run), () => executeWorkRun(run.id));
       }
     } else {
       await prisma.run.update({

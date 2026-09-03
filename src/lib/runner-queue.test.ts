@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -128,6 +128,140 @@ describe("Copilot process boundary", () => {
     expect(extractFinalCopilotOutput(stdout)).toBe("session:test-session-id");
     expect(stderr).toContain("diagnostic");
     expect(stdout).not.toContain("diagnostic");
+  });
+
+  it("resumes a session with the submitted Follow Up prompt", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "work-board-follow-up-"));
+    cleanupPaths.push(directory);
+    const script = path.join(directory, "fake-copilot.cjs");
+    const argsPath = path.join(directory, "args.json");
+    const runId = `follow-up-test-${Date.now()}`;
+    cleanupPaths.push(getRunLogPath(runId));
+    await writeFile(
+      script,
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args));`,
+        "console.log(JSON.stringify({ type: 'assistant.message', data: { content: 'follow-up complete' } }));",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await startCopilotRun({
+      runId,
+      repoPath: directory,
+      prompt: "Inspect the remaining warning",
+      sessionId: "test-session-id",
+      resumeSession: true,
+      outputFormat: "json",
+      executable: process.execPath,
+      executableArgs: [script],
+      trackProcessStats: false,
+      timeoutSeconds: 30,
+    });
+
+    const args = JSON.parse(await readFile(argsPath, "utf8")) as string[];
+    expect(result.exitCode).toBe(0);
+    expect(args).toContain("--resume=test-session-id");
+    expect(args).not.toContain("--session-id");
+    expect(args[args.indexOf("-p") + 1]).toBe("Inspect the remaining warning");
+  });
+
+  it("passes readable text output through to the CLI command", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "work-board-text-output-"));
+    cleanupPaths.push(directory);
+    const script = path.join(directory, "fake-copilot.cjs");
+    const argsPath = path.join(directory, "args.json");
+    const runId = `text-output-test-${Date.now()}`;
+    cleanupPaths.push(getRunLogPath(runId));
+    await writeFile(
+      script,
+      [
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));`,
+        "console.log('Readable final answer');",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await startCopilotRun({
+      runId,
+      repoPath: directory,
+      prompt: "test prompt",
+      outputFormat: "text",
+      executable: process.execPath,
+      executableArgs: [script],
+      trackProcessStats: false,
+      timeoutSeconds: 30,
+    });
+
+    const args = JSON.parse(await readFile(argsPath, "utf8")) as string[];
+    expect(args.slice(args.indexOf("--output-format"), args.indexOf("--output-format") + 2))
+      .toEqual(["--output-format", "text"]);
+    expect(result.finalOutput).toBe("Readable final answer");
+  });
+
+  it("resumes a text session when shutdown cancels a background sub-agent", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "work-board-text-resume-"));
+    const copilotHome = path.join(directory, "copilot-home");
+    const sessionId = "12345678-1234-4234-8234-123456789abc";
+    const sessionDirectory = path.join(copilotHome, "session-state", sessionId);
+    const eventsPath = path.join(sessionDirectory, "events.jsonl");
+    const script = path.join(directory, "fake-copilot.cjs");
+    const runId = `text-resume-test-${Date.now()}`;
+    cleanupPaths.push(directory, getRunLogPath(runId));
+    await mkdir(sessionDirectory, { recursive: true });
+    await writeFile(
+      script,
+      [
+        "const fs = require('node:fs');",
+        `const eventsPath = ${JSON.stringify(eventsPath)};`,
+        "const resumed = process.argv.slice(2).some((arg) => arg.startsWith('--resume='));",
+        "const events = resumed ? [",
+        "  { type: 'assistant.message', data: { content: 'Final root answer' } },",
+        "  { type: 'session.shutdown', data: { tokenDetails: { input: { tokenCount: 180 }, output: { tokenCount: 20 } }, modelMetrics: { 'gpt-test': { requests: { count: 2 }, usage: { inputTokens: 180, outputTokens: 20 } } } } },",
+        "] : [",
+        "  { type: 'subagent.started', agentId: 'analyst', data: { agentDisplayName: 'Analyst' } },",
+        "  { type: 'abort' },",
+        "  { type: 'subagent.completed', agentId: 'analyst', data: { cancelled: true } },",
+        "  { type: 'session.shutdown', data: { tokenDetails: { input: { tokenCount: 100 }, output: { tokenCount: 10 } }, modelMetrics: { 'gpt-test': { requests: { count: 1 }, usage: { inputTokens: 100, outputTokens: 10 } } } } },",
+        "];",
+        "fs.appendFileSync(eventsPath, events.map((event) => JSON.stringify(event)).join('\\n') + '\\n');",
+        "console.log(resumed ? 'Final root answer' : 'Analyst still running');",
+      ].join("\n"),
+      "utf8"
+    );
+    const previousCopilotHome = process.env.COPILOT_HOME;
+    process.env.COPILOT_HOME = copilotHome;
+    try {
+      const result = await startCopilotRun({
+        runId,
+        repoPath: directory,
+        prompt: "test prompt",
+        sessionId,
+        outputFormat: "text",
+        executable: process.execPath,
+        executableArgs: [script],
+        trackProcessStats: false,
+        timeoutSeconds: 30,
+        maxIncompleteContinuations: 3,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.incomplete).toBe(false);
+      expect(result.continuationCount).toBe(1);
+      expect(result.command).toContain(`--resume=${sessionId}`);
+      expect(result.finalOutput).toBe("Final root answer");
+      expect(result.usage).toMatchObject({
+        inputTokens: 180,
+        outputTokens: 20,
+        models: ["gpt-test"],
+      });
+    } finally {
+      if (previousCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = previousCopilotHome;
+    }
   });
 
   it("resumes the same session when the CLI exits with a background sub-agent open", async () => {

@@ -8,11 +8,14 @@ import { captureWorktreeTree, getWorktreeSnapshotDiff } from "./git-safety";
 import {
   finalizeWorkRunArtifacts,
   prepareWorkRunArtifacts,
+  readRunLogTail,
   type WorkRunSnapshot,
 } from "./run-artifacts";
 import {
   captureDirectorySnapshot,
   createDirectorySnapshotDiff,
+  readDirectorySnapshot,
+  writeDirectorySnapshot,
 } from "./directory-snapshot";
 import {
   captureRunSourceBaseline,
@@ -137,6 +140,19 @@ describe("Run artifacts", () => {
     expect(await readFile(paths.transcript, "utf8")).toContain("assistant.message");
   });
 
+  it("returns complete small logs and only complete records from large log tails", async () => {
+    const work = await temporaryDirectory();
+    const logPath = path.join(work, "stdout.log");
+    await writeFile(logPath, "first\nsecond\n", "utf8");
+    await expect(readRunLogTail(logPath, 64)).resolves.toBe("first\nsecond\n");
+
+    await writeFile(logPath, `${"x".repeat(128)}\ntail-one\ntail-two\n`, "utf8");
+    const tail = await readRunLogTail(logPath, 32);
+    expect(tail).toContain("Earlier output omitted");
+    expect(tail).toContain("tail-one\ntail-two\n");
+    expect(tail).not.toContain("x".repeat(16));
+  });
+
   it("generates a patch for changed, added, deleted, and binary files outside Git", async () => {
     const work = await temporaryDirectory();
     await writeFile(path.join(work, "changed.txt"), "before\n", "utf8");
@@ -158,5 +174,58 @@ describe("Run artifacts", () => {
     expect(diff).toContain("deleted.txt");
     expect(diff).toContain("Binary or large file changed");
     expect(diff).not.toContain("ignored.log");
+  });
+
+  it("excludes dependency, VCS, and generated cache trees outside Git", async () => {
+    const work = await temporaryDirectory();
+    await writeFile(path.join(work, "source.txt"), "source\n", "utf8");
+    for (const directory of [".git", ".next", ".workboard", "node_modules", "coverage"]) {
+      await mkdir(path.join(work, "nested", directory), { recursive: true });
+      await writeFile(path.join(work, "nested", directory, "large.cache"), "ignore\n", "utf8");
+    }
+
+    const snapshot = await captureDirectorySnapshot(work);
+
+    expect(Object.keys(snapshot.entries)).toEqual(["source.txt"]);
+  });
+
+  it("reuses unchanged file hashes and rehashes same-size edits", async () => {
+    const work = await temporaryDirectory();
+    const sourcePath = path.join(work, "source.txt");
+    await writeFile(sourcePath, "before\n", "utf8");
+    const before = await captureDirectorySnapshot(work);
+    before.entries["source.txt"].sha256 = "reused-hash";
+
+    const unchanged = await captureDirectorySnapshot(work, before);
+    expect(unchanged.entries["source.txt"].sha256).toBe("reused-hash");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writeFile(sourcePath, "after!\n", "utf8");
+    const changed = await captureDirectorySnapshot(work, unchanged);
+    expect(changed.entries["source.txt"].sha256).not.toBe("reused-hash");
+    expect(createDirectorySnapshotDiff(unchanged, changed)).toContain("source.txt");
+  });
+
+  it("incrementally reads legacy snapshots and ignores their generated entries", async () => {
+    const work = await temporaryDirectory();
+    const snapshotPath = path.join(work, ".workboard", "tmp", "legacy-snapshot.json");
+    await writeFile(path.join(work, "source.txt"), "source\n", "utf8");
+    const legacy = await captureDirectorySnapshot(work);
+    legacy.entries["source.txt"].sha256 = "legacy-reused-hash";
+    delete legacy.entries["source.txt"].mtimeMs;
+    delete legacy.capturedAtMs;
+    legacy.entries["node_modules/package/cache.bin"] = {
+      kind: "file",
+      size: 5,
+      sha256: "ignored-hash",
+    };
+    await writeDirectorySnapshot(snapshotPath, legacy);
+
+    const loaded = await readDirectorySnapshot(snapshotPath);
+    const current = await captureDirectorySnapshot(work, loaded);
+    const diff = createDirectorySnapshotDiff(loaded, current);
+
+    expect(current.entries["source.txt"].sha256).toBe("legacy-reused-hash");
+    expect(diff).not.toContain("node_modules");
   });
 });

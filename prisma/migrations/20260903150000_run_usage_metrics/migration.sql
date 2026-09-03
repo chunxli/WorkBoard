@@ -1,0 +1,6 @@
+ALTER TABLE "Run" ADD COLUMN "inputTokens" INTEGER;
+ALTER TABLE "Run" ADD COLUMN "outputTokens" INTEGER;
+ALTER TABLE "Run" ADD COLUMN "cacheReadTokens" INTEGER;
+ALTER TABLE "Run" ADD COLUMN "cacheWriteTokens" INTEGER;
+ALTER TABLE "Run" ADD COLUMN "reasoningTokens" INTEGER;
+ALTER TABLE "Run" ADD COLUMN "modelsUsed" TEXT;

@@ -16,7 +16,9 @@ Current Work is displayed as a responsive card grid. Drag the card handle to per
 
 ### Work details
 
-Each Work keeps its execution settings, prompt, latest Run, result, artifacts, and Terminal Resume workflow together. Output can be shown as readable text or raw JSON events, and Work timeout defaults to None.
+Each Work keeps its execution settings, prompt, latest Run, result, artifacts, and Terminal Resume workflow together. The output setting controls whether Copilot CLI emits readable text or raw JSON events, and Work timeout defaults to None.
+
+Work cards show the latest Run's actual model usage and total input + output tokens after the Copilot session shuts down. Hover the token count for input, output, cache, and reasoning details. Work Board checks persisted session events for both readable-text and JSON CLI Runs; exit code 0 is not considered success when tools or sub-agents remain unfinished, are cancelled before a root response, or no root-level final response exists. In that case it resumes the same session up to three times before marking the Run failed.
 
 ![Work details showing execution settings and Terminal Resume](docs/screenshots/work-detail.png)
 
@@ -27,7 +29,7 @@ Each Work keeps its execution settings, prompt, latest Run, result, artifacts, a
 - **Card-level local actions** — open a Work directory in Windows Explorer or resume its latest eligible Copilot session in Windows Terminal directly from the card. Active terminal sessions are identified as **IN TERMINAL**.
 - **Common Root directories** — save frequently used roots in New Work, browse their immediate child folders, select a Work directory, or open a root or child folder directly in Windows Explorer.
 - **Prompt templates** — fill, append, or replace prompt text with built-in workflows, and manage or import reusable Markdown and plain-text templates in Settings.
-- **Portable prompts** — `PROMPT.md` is the source of truth and autosaves with external-edit conflict detection. Multiple Works sharing one directory use `PROMPT-2.md`, `PROMPT-3.md`, and so on.
+- **Portable prompts** — `PROMPT.md` is the source of truth and autosaves with external-edit conflict detection. New Work can read an existing top-level `Prompt` (no extension), `PROMPT.md`, or numbered Prompt file without changing it; multiple Works sharing one directory use `PROMPT-2.md`, `PROMPT-3.md`, and so on.
 - **Numbered folder copies** — confirm and copy the selected directory to the next monotonic sibling (`work-2`, `work-3`, and so on), open the copy in Explorer for edits, then return to write the Prompt and run it. Copies include hidden files, `.git`, dependencies, and build output.
 - **Resource initialization** — start from the selected local path or copy a registered Resource into a new Work directory.
 - **Dual engines** — use the existing Copilot CLI runner or the official `@github/copilot-sdk`. CLI is the default.
@@ -36,6 +38,7 @@ Each Work keeps its execution settings, prompt, latest Run, result, artifacts, a
 - **Optional Work timeout** — Work runs default to no timeout, but each Work can set a 30–86400 second limit. Automation timeouts remain independently configurable.
 - **Skill comparisons** — discover project Skills or add a local Skill directory, freeze one resource snapshot, then run complete isolated copies in parallel with explicit `/skill-name` or automatic invocation.
 - **Live and resumable runs** — stream output, cancel work, and resume the exact Copilot session in Windows Terminal from a Work card, Work details, or Run details. After the terminal exits, its new session events sync back to Work Board.
+- **In-app Follow Up** — send another prompt from Work details after active Runs finish. Work Board resumes the latest session with inherited execution settings, or starts the first session automatically, appends the message to `PROMPT.md`, and links parent/child Runs for navigation.
 - **Session compatibility repair** — read legacy Copilot permission events during Sync and safely upgrade them before Resume, with an atomic backup and active-process protection.
 - **Portable results** — every Work, Experiment, terminal-resume, and Automation run writes `result.md`, `transcript.jsonl`, `diff.patch`, `run.json`, `stdout.log`, and `stderr.log`.
 - **Archive without deleting** — completed Work and Automations can be archived and restored while keeping directories, sessions, and history.
@@ -75,11 +78,11 @@ my-work/
 - Node.js and npm
 - The [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) installed and authenticated (interactive `/login`, or a `GH_TOKEN`/`GITHUB_TOKEN` env var with the "Copilot Requests" permission)
 - `git` on your `PATH`
-- A Microsoft Entra ID (Azure AD) app registration for sign-in — see [Authentication setup](#authentication-setup) below
+- Optional: a Microsoft Entra ID (Azure AD) app registration when sign-in is required — see [Authentication setup](#authentication-setup) below
 
 ### Run in dev mode
 
-Copy `.env.example` to `.env` and fill in the Microsoft Entra ID credentials and `AUTH_SECRET` before starting the app.
+Copy `.env.example` to `.env`. Leave both Microsoft Entra credential values empty for login-free local mode, or fill in both credentials and `AUTH_SECRET` to require sign-in.
 
 ```bash
 npm install
@@ -122,14 +125,22 @@ The terminal can be closed after the command reports that Work Board started. Ma
 ```bash
 npm run background:status
 npm run background:logs
+npm run background:restart
 npm run background:stop
 ```
 
-After the first build, use `npm run background:start:fast` to restart the existing release without rebuilding it. Run the full `background:start` command again after pulling code, changing dependencies, or adding migrations.
+Use `npm run background:restart` after pulling code, changing dependencies, or adding migrations; it stops Work Board, generates Prisma, applies migrations, rebuilds, and starts the new release. Use `npm run background:restart:fast` to restart the existing build without rebuilding it. `background:start:fast` remains available when Work Board is stopped and the release is already built.
 
 ## Authentication setup
 
-Work Board requires signing in with a Microsoft account before any UI page or API route (other than auth, GitHub webhook, external-trigger, and protected terminal callback endpoints) becomes accessible. This needs a Microsoft Entra ID app registration:
+Work Board chooses its authentication mode from the two Microsoft Entra environment variables:
+
+- **Login-free local mode:** leave both `AUTH_MICROSOFT_ENTRA_ID_ID` and `AUTH_MICROSOFT_ENTRA_ID_SECRET` empty. All Next.js entrypoints bind to `127.0.0.1`, requests must use a loopback host, and data is owned by a persistent `workboard-local-user` database record. `AUTH_SECRET` is not required.
+- **Microsoft Entra mode:** set both variables and `AUTH_SECRET`. The existing Microsoft sign-in and per-user ownership behavior remains enabled. Setting only one Entra variable is rejected at startup.
+
+Local and Entra users have different owner IDs, so switching modes does not merge or expose one mode's Works, Automations, tokens, or settings in the other mode.
+
+To configure Microsoft Entra mode:
 
 1. **Create the app registration** (supports both work/school and personal Microsoft accounts):
    ```bash
@@ -168,9 +179,9 @@ Scheduled tasks are driven entirely by the Node.js server process (`instrumentat
 | --------------------------------- | --------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                    | SQLite connection string, defaults to `file:./dev.db` (see `.env`)                            |
 | `GH_TOKEN` / `GITHUB_TOKEN`       | Optional PAT for headless Copilot CLI auth (needs "Copilot Requests" permission)              |
-| `AUTH_MICROSOFT_ENTRA_ID_ID`      | Client (application) ID of the Microsoft Entra ID app registration used for sign-in           |
-| `AUTH_MICROSOFT_ENTRA_ID_SECRET`  | Client secret for that app registration                                                       |
-| `AUTH_SECRET`                     | Random secret Auth.js uses to sign/encrypt session tokens — required in production            |
+| `AUTH_MICROSOFT_ENTRA_ID_ID`      | Optional client ID; leave this and the client secret empty for loopback-only local mode       |
+| `AUTH_MICROSOFT_ENTRA_ID_SECRET`  | Optional client secret; must be set together with the client ID                               |
+| `AUTH_SECRET`                     | Random Auth.js session secret; required when Microsoft Entra mode is enabled                  |
 | `AUTH_URL`                        | Base URL of the deployment (e.g. `http://localhost:3100`), used to build OAuth callback URLs  |
 | `AUTH_TRUST_HOST`                 | Set to `true` when running behind a reverse proxy or on a non-standard host/port              |
 | `CODEBOARD_PREVENT_SLEEP`         | Set to `false` to disable automatic Windows/macOS idle-sleep prevention                       |

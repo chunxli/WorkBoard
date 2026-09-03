@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import "dotenv/config";
+
 import {
   closeSync,
   mkdirSync,
@@ -12,6 +14,7 @@ import { createConnection } from "node:net";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
+import { nextHostnameArgs, resolveRuntimeAuthMode } from "./auth-mode.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const dataDir = path.join(root, "data");
@@ -187,7 +190,7 @@ async function start() {
   const stderr = openSync(stderrLog, "a");
   const child = spawn(
     process.execPath,
-    [nextBin, "start", "-p", String(port)],
+    [nextBin, "start", "-p", String(port), ...nextHostnameArgs()],
     {
       cwd: root,
       detached: true,
@@ -227,6 +230,9 @@ async function start() {
   console.log(
     `Work Board started in the background (PID ${child.pid}) at http://localhost:${port}.`,
   );
+  if (resolveRuntimeAuthMode() === "local") {
+    console.log("Login-free local mode is bound to 127.0.0.1 only.");
+  }
   console.log(`Logs: ${stdoutLog} and ${stderrLog}`);
 }
 
@@ -326,12 +332,20 @@ function logs() {
   }
 }
 
+async function restart() {
+  await stop();
+  await start();
+}
+
 switch (action) {
   case "start":
     await start();
     break;
   case "stop":
     await stop();
+    break;
+  case "restart":
+    await restart();
     break;
   case "status":
     status();
@@ -341,7 +355,7 @@ switch (action) {
     break;
   default:
     console.error(
-      "Usage: node scripts/codeboard-background.mjs <start|stop|status|logs> [--skip-build]",
+      "Usage: node scripts/codeboard-background.mjs <start|stop|restart|status|logs> [--skip-build]",
     );
     process.exit(1);
 }

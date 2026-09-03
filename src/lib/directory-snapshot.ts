@@ -14,16 +14,36 @@ import path from "node:path";
 import { createTwoFilesPatch } from "diff";
 
 const TEXT_CAPTURE_LIMIT = 1024 * 1024;
+const IGNORED_DIRECTORY_NAMES = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".output",
+  ".turbo",
+  ".venv",
+  ".workboard",
+  "__pycache__",
+  "coverage",
+  "node_modules",
+]);
+
+function isIgnoredSnapshotPath(relativePath: string): boolean {
+  return relativePath
+    .split("/")
+    .some((segment) => IGNORED_DIRECTORY_NAMES.has(segment.toLowerCase()));
+}
 
 interface DirectorySnapshotEntry {
   kind: "file" | "symlink";
   size: number;
   sha256: string;
   text?: string;
+  mtimeMs?: number;
 }
 
 export interface DirectorySnapshot {
   schemaVersion: 1;
+  capturedAtMs?: number;
   entries: Record<string, DirectorySnapshotEntry>;
 }
 
@@ -46,14 +66,17 @@ function decodeText(content: Buffer): string | undefined {
   }
 }
 
-export async function captureDirectorySnapshot(rootPath: string): Promise<DirectorySnapshot> {
+export async function captureDirectorySnapshot(
+  rootPath: string,
+  previous?: DirectorySnapshot
+): Promise<DirectorySnapshot> {
   const entries: Record<string, DirectorySnapshotEntry> = {};
 
   async function visit(directoryPath: string, relativeDirectory: string): Promise<void> {
     const children = await readdir(directoryPath, { withFileTypes: true });
     children.sort((left, right) => left.name.localeCompare(right.name));
     for (const child of children) {
-      if (!relativeDirectory && child.name === ".workboard") continue;
+      if (child.isDirectory() && IGNORED_DIRECTORY_NAMES.has(child.name.toLowerCase())) continue;
       const absolutePath = path.join(directoryPath, child.name);
       const relativePath = path.join(relativeDirectory, child.name).replaceAll("\\", "/");
       const info = await lstat(absolutePath).catch(() => null);
@@ -69,10 +92,24 @@ export async function captureDirectorySnapshot(rootPath: string): Promise<Direct
       } else if (info.isDirectory()) {
         await visit(absolutePath, relativePath);
       } else if (info.isFile()) {
+        const prior = previous?.entries[relativePath];
+        const unchanged = prior?.kind === "file" && prior.size === info.size && (
+          prior.mtimeMs !== undefined
+            ? prior.mtimeMs === info.mtimeMs
+            : previous?.capturedAtMs !== undefined && info.mtimeMs <= previous.capturedAtMs
+        );
+        if (unchanged) {
+          entries[relativePath] = {
+            ...prior,
+            mtimeMs: info.mtimeMs,
+          };
+          continue;
+        }
         const entry: DirectorySnapshotEntry = {
           kind: "file",
           size: info.size,
           sha256: await hashFile(absolutePath),
+          mtimeMs: info.mtimeMs,
         };
         if (info.size <= TEXT_CAPTURE_LIMIT) {
           entry.text = decodeText(await readFile(absolutePath));
@@ -83,7 +120,7 @@ export async function captureDirectorySnapshot(rootPath: string): Promise<Direct
   }
 
   await visit(rootPath, "");
-  return { schemaVersion: 1, entries };
+  return { schemaVersion: 1, capturedAtMs: Date.now(), entries };
 }
 
 function displayPath(relativePath: string, side: "a" | "b", exists: boolean): string {
@@ -94,7 +131,9 @@ export function createDirectorySnapshotDiff(
   before: DirectorySnapshot,
   after: DirectorySnapshot
 ): string {
-  const paths = [...new Set([...Object.keys(before.entries), ...Object.keys(after.entries)])].sort();
+  const paths = [...new Set([...Object.keys(before.entries), ...Object.keys(after.entries)])]
+    .filter((relativePath) => !isIgnoredSnapshotPath(relativePath))
+    .sort();
   const patches: string[] = [];
   for (const relativePath of paths) {
     const previous = before.entries[relativePath];
@@ -142,7 +181,10 @@ export async function writeDirectorySnapshot(
 }
 
 export async function readDirectorySnapshot(filePath: string): Promise<DirectorySnapshot> {
-  return JSON.parse(await readFile(filePath, "utf8")) as DirectorySnapshot;
+  const [content, fileInfo] = await Promise.all([readFile(filePath, "utf8"), lstat(filePath)]);
+  const snapshot = JSON.parse(content) as DirectorySnapshot;
+  snapshot.capturedAtMs ??= fileInfo.mtimeMs;
+  return snapshot;
 }
 
 export async function removeDirectorySnapshot(filePath: string): Promise<void> {

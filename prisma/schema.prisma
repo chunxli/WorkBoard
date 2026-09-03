@@ -39,6 +39,7 @@ enum RunTrigger {
   WORK
   TERMINAL_RESUME
   EXPERIMENT
+  FOLLOW_UP
 }
 
 enum ExperimentStatus {
@@ -270,6 +271,14 @@ model Run {
   // pidusage sample taken while the process was alive (not available after the process exits).
   cpuTimeMs    Int?
   peakMemoryMb Float?
+  // Copilot session shutdown usage for this Run. inputTokens includes cached input;
+  // cacheReadTokens/cacheWriteTokens provide the corresponding breakdown.
+  inputTokens      Int?
+  outputTokens     Int?
+  cacheReadTokens  Int?
+  cacheWriteTokens Int?
+  reasoningTokens  Int?
+  modelsUsed       String?
   // Hostname of the machine that actually executed this run (set once it starts) — a PENDING run
   // that hasn't started yet has no value here; fall back to the task's repo hostname in the UI.
   hostname     String?

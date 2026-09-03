@@ -49,6 +49,20 @@ function getSessionPaths(sessionId: string, baseDirectory?: string) {
   return { directory, eventsPath: path.join(directory, "events.jsonl") };
 }
 
+export async function copilotSessionExists(
+  sessionId: string,
+  baseDirectory?: string
+): Promise<boolean> {
+  const { eventsPath } = getSessionPaths(sessionId, baseDirectory);
+  try {
+    return (await stat(eventsPath)).isFile();
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function legacyModeValue(value: unknown, field: string): boolean {
   if (value === "allow-all") return true;
   if (value === "manual") return false;

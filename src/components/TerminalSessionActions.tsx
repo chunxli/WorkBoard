@@ -19,16 +19,31 @@ export default function TerminalSessionActions({
   async function invoke(action: "resume" | "sync") {
     setBusy(action);
     setError(null);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
     try {
       const endpoint = action === "resume" ? "resume-terminal" : "sync-session";
-      const response = await fetch(`/api/runs/${runId}/${endpoint}`, { method: "POST" });
+      const response = await fetch(`/api/runs/${runId}/${endpoint}`, {
+        method: "POST",
+        signal: controller.signal,
+      });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Action failed");
-      if (action === "resume" && body.runId) router.push(`/runs/${body.runId}`);
-      else router.refresh();
+      if (action === "resume") {
+        if (typeof body.runId !== "string") throw new Error("Terminal Resume did not start");
+        router.push(`/runs/${body.runId}`);
+      } else {
+        if (body.ok !== true) throw new Error("Session Sync did not complete");
+        router.refresh();
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(
+        reason instanceof DOMException && reason.name === "AbortError"
+          ? "The request timed out. Sync may still complete; refresh the page to check its status."
+          : reason instanceof Error ? reason.message : String(reason)
+      );
     } finally {
+      clearTimeout(timeout);
       setBusy(null);
     }
   }

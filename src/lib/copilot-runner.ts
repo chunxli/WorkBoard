@@ -4,6 +4,11 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import pidusage from "pidusage";
 import { CopilotCompletionTracker } from "@/lib/copilot-completion";
+import {
+  readCopilotSessionInsights,
+  subtractCopilotTokenUsage,
+  type CopilotTokenUsage,
+} from "@/lib/copilot-session-insights";
 
 export const RUN_LOG_DIR = path.join(process.cwd(), "data", "runs");
 
@@ -20,6 +25,7 @@ export interface StartCopilotRunOptions {
   repoPath: string;
   prompt: string;
   sessionId?: string | null;
+  resumeSession?: boolean;
   agent?: string | null;
   model?: string | null;
   fallbackModel?: string | null;
@@ -194,11 +200,12 @@ const INCOMPLETE_SESSION_PROMPT = `Continue and complete the original task. The 
 function buildArgs(
   opts: StartCopilotRunOptions,
   model: string | null,
-  resumeSession: boolean
+  resumeSession: boolean,
+  automaticContinuation: boolean
 ): string[] {
   const args: string[] = [
     "-p",
-    resumeSession ? INCOMPLETE_SESSION_PROMPT : opts.prompt,
+    automaticContinuation ? INCOMPLETE_SESSION_PROMPT : opts.prompt,
     "--output-format",
     opts.outputFormat ?? "text",
   ];
@@ -242,6 +249,7 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
   incomplete: boolean;
   incompleteReason: string | null;
   continuationCount: number;
+  usage: CopilotTokenUsage | null;
 }> {
   await mkdir(RUN_LOG_DIR, { recursive: true });
   const logPath = getRunLogPath(opts.runId);
@@ -262,8 +270,13 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
       incomplete: false,
       incompleteReason: null,
       continuationCount: 0,
+      usage: null,
     };
   }
+
+  const sessionBaseline = opts.sessionId
+    ? await readCopilotSessionInsights(opts.sessionId).catch(() => null)
+    : null;
 
   const emitter = createRunEmitter(opts.runId);
 
@@ -279,9 +292,11 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
     const startAttempt = (
       model: string | null,
       continuationCount = 0,
-      resumeSession = false
+      resumeSession = false,
+      automaticContinuation = false,
+      sessionEventCursor = sessionBaseline?.eventCount ?? 0
     ) => {
-      const args = buildArgs(opts, model, resumeSession);
+      const args = buildArgs(opts, model, resumeSession, automaticContinuation);
       const testExecutable = process.env.NODE_ENV === "test" ? opts.executable : undefined;
       const testExecutableArgs = process.env.NODE_ENV === "test" ? opts.executableArgs : undefined;
       const processArgs = [...(testExecutableArgs ?? []), ...args];
@@ -366,6 +381,9 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
         incompleteReason: string | null = null
       ) => {
         await pendingWrites;
+        const finalSessionInsights = opts.sessionId
+          ? await readCopilotSessionInsights(opts.sessionId).catch(() => null)
+          : null;
         const finalStats = runStats.get(opts.runId);
         runProcesses.delete(opts.runId);
         runStats.delete(opts.runId);
@@ -395,6 +413,10 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
           incomplete: incompleteReason !== null,
           incompleteReason,
           continuationCount,
+          usage: subtractCopilotTokenUsage(
+            finalSessionInsights?.usage ?? null,
+            sessionBaseline?.usage ?? null
+          ),
         });
       };
 
@@ -412,7 +434,11 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
         clearTimeout(timer);
         clearInterval(statsTimer);
         const cancelled = cancelledRunIds.has(opts.runId);
-        const completion = completionTracker.finish();
+        const outputCompletion = completionTracker.finish();
+        const sessionAttemptInsights = opts.sessionId
+          ? await readCopilotSessionInsights(opts.sessionId, sessionEventCursor).catch(() => null)
+          : null;
+        const completion = sessionAttemptInsights?.completion ?? outputCompletion;
         const shouldFallback =
           code !== 0 &&
           !timedOut &&
@@ -429,20 +455,42 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
           const notice = `[CodeBoard] Model "${model}" is unavailable; retrying with fallback "${fallbackModel}".`;
           emitter.emit("event", { type: "line", data: notice } satisfies CopilotRunEvent);
           await appendFile(logPath, `${notice}\n`).catch(() => {});
-          startAttempt(fallbackModel, continuationCount, resumeSession);
+          const nextSessionCursor = sessionAttemptInsights?.eventCount ?? sessionEventCursor;
+          startAttempt(
+            fallbackModel,
+            continuationCount,
+            resumeSession,
+            automaticContinuation,
+            nextSessionCursor
+          );
           return;
         }
 
         const completionEvidenceMissing =
           !completion.taskComplete && completion.rootFinalOutput === null;
+        const cancelledWithoutFinal =
+          completion.cancelledSubagents.length > 0 && completionEvidenceMissing;
+        const failedWithoutFinal =
+          completion.failedSubagents.length > 0 && completionEvidenceMissing;
+        const abortedWithoutFinal = completion.aborted && completionEvidenceMissing;
+        const sessionEvidenceUnavailable =
+          (opts.outputFormat ?? "text") === "text" &&
+          Boolean(opts.sessionId) &&
+          sessionAttemptInsights === null;
+        const completionEvidenceAvailable =
+          (opts.outputFormat ?? "text") === "json" || sessionAttemptInsights !== null;
         const incompleteRun =
           code === 0 &&
           !timedOut &&
           !cancelled &&
-          (opts.outputFormat ?? "text") === "json" &&
-          (completion.openSubagents.length > 0 ||
-            completion.openTools.length > 0 ||
-            completionEvidenceMissing);
+          (sessionEvidenceUnavailable ||
+            (completionEvidenceAvailable &&
+              (completion.openSubagents.length > 0 ||
+                completion.openTools.length > 0 ||
+                cancelledWithoutFinal ||
+                failedWithoutFinal ||
+                abortedWithoutFinal ||
+                completionEvidenceMissing)));
         if (
           incompleteRun &&
           opts.sessionId &&
@@ -455,6 +503,14 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
             ? `${completion.openSubagents.length} background sub-agent(s) were still active (${completion.openSubagents.map((agent) => agent.name).join(", ")})`
             : completion.openTools.length
               ? `${completion.openTools.length} tool call(s) were still active (${completion.openTools.map((tool) => tool.name).join(", ")})`
+              : completion.cancelledSubagents.length
+                ? `${completion.cancelledSubagents.length} background sub-agent(s) were cancelled (${completion.cancelledSubagents.map((agent) => agent.name).join(", ")})`
+                : completion.failedSubagents.length
+                  ? `${completion.failedSubagents.length} background sub-agent(s) failed (${completion.failedSubagents.map((agent) => agent.name).join(", ")})`
+                  : completion.aborted
+                    ? "the session aborted before a root-level final response"
+                    : sessionEvidenceUnavailable
+                      ? "session completion evidence could not be read"
             : "no root-level final response was emitted";
           const notice = `[Work Board] Copilot exited before completion: ${issue}. Resuming the same session (${continuationCount + 1}/${maxIncompleteContinuations}).`;
           emitter.emit("event", { type: "line", data: notice } satisfies CopilotRunEvent);
@@ -462,7 +518,13 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
           if (opts.stdoutLogPath) {
             await appendFile(opts.stdoutLogPath, `${notice}\n`).catch(() => {});
           }
-          startAttempt(model, continuationCount + 1, true);
+          startAttempt(
+            model,
+            continuationCount + 1,
+            true,
+            true,
+            sessionAttemptInsights?.eventCount ?? sessionEventCursor
+          );
           return;
         }
 
@@ -471,6 +533,14 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
             ? `Copilot exited with ${completion.openSubagents.length} unfinished background sub-agent(s) after ${continuationCount} automatic continuation attempt(s).`
             : completion.openTools.length
               ? `Copilot exited with ${completion.openTools.length} unfinished tool call(s) after ${continuationCount} automatic continuation attempt(s).`
+              : completion.cancelledSubagents.length
+                ? `Copilot exited after cancelling ${completion.cancelledSubagents.length} background sub-agent(s) and exhausting ${continuationCount} automatic continuation attempt(s).`
+                : completion.failedSubagents.length
+                  ? `Copilot exited after ${completion.failedSubagents.length} background sub-agent(s) failed and exhausting ${continuationCount} automatic continuation attempt(s).`
+                  : completion.aborted
+                    ? `Copilot aborted before a root-level final response after ${continuationCount} automatic continuation attempt(s).`
+                    : sessionEvidenceUnavailable
+                      ? `Copilot session completion evidence remained unavailable after ${continuationCount} automatic continuation attempt(s).`
             : `Copilot exited without a root-level final response after ${continuationCount} automatic continuation attempt(s).`
           : null;
 
@@ -478,7 +548,13 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
       });
     };
 
-    startAttempt(requestedModel);
+    startAttempt(
+      requestedModel,
+      0,
+      opts.resumeSession === true,
+      false,
+      sessionBaseline?.eventCount ?? 0
+    );
   });
 }
 
