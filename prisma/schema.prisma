@@ -37,6 +37,7 @@ enum RunTrigger {
   WEBHOOK
   API
   WORK
+  TERMINAL_START
   TERMINAL_RESUME
   EXPERIMENT
   FOLLOW_UP
@@ -279,6 +280,10 @@ model Run {
   cacheWriteTokens Int?
   reasoningTokens  Int?
   modelsUsed       String?
+  notificationClaimedAt    DateTime?
+  notificationSentAt       DateTime?
+  notificationSuppressedAt DateTime?
+  notificationError        String?
   // Hostname of the machine that actually executed this run (set once it starts) — a PENDING run
   // that hasn't started yet has no value here; fall back to the task's repo hostname in the UI.
   hostname     String?
@@ -289,6 +294,7 @@ model Run {
   @@index([status, createdAt])
   @@index([resumedFromRunId])
   @@index([experimentVariantId])
+  @@index([notificationClaimedAt, finishedAt])
 }
 
 model Experiment {
@@ -301,12 +307,18 @@ model Experiment {
   status         ExperimentStatus    @default(PROVISIONING)
   basePath       String?
   errorMessage   String?
+  finishedAt     DateTime?
+  notificationClaimedAt    DateTime?
+  notificationSentAt       DateTime?
+  notificationSuppressedAt DateTime?
+  notificationError        String?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
   variants       ExperimentVariant[]
 
   @@index([workId, createdAt])
+  @@index([notificationClaimedAt, finishedAt])
 }
 
 model ExperimentVariant {
@@ -405,6 +417,7 @@ model UserExecutionSettings {
   automationTimeoutSeconds Int     @default(1800)
   useSafeBranch         Boolean    @default(true)
   waitForPreviousRuns   Boolean    @default(false)
+  systemNotificationsEnabled Boolean @default(true)
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
 }

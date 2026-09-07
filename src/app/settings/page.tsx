@@ -9,6 +9,8 @@ import WorkPathShortcutsSettings from "@/components/WorkPathShortcutsSettings";
 import PageHeader from "@/components/PageHeader";
 import ExecutionDefaultsSettings from "@/components/ExecutionDefaultsSettings";
 import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
+import SystemNotificationSettings from "@/components/SystemNotificationSettings";
+import { getSystemNotificationSettings } from "@/lib/notification-settings";
 
 function SettingsSection({
   id,
@@ -33,7 +35,15 @@ export default async function SettingsPage() {
   const userId = await getSessionUserId();
   if (!userId) redirect("/api/auth/signin");
 
-  const [repos, webhooks, tokens, workPathShortcuts, promptTemplates, executionDefaults] = await Promise.all([
+  const [
+    repos,
+    webhooks,
+    tokens,
+    workPathShortcuts,
+    promptTemplates,
+    executionDefaults,
+    notificationSettings,
+  ] = await Promise.all([
     prisma.repo.findMany({ where: { userId }, orderBy: { createdAt: "desc" } }),
     prisma.webhookConfig.findMany({ where: { repo: { userId } }, include: { repo: true } }),
     prisma.apiToken.findMany({ where: { userId }, orderBy: { createdAt: "desc" } }),
@@ -47,6 +57,7 @@ export default async function SettingsPage() {
       select: { id: true, name: true, description: true, content: true },
     }),
     getUserExecutionDefaults(userId),
+    getSystemNotificationSettings(userId),
   ]);
 
   return (
@@ -55,6 +66,10 @@ export default async function SettingsPage() {
 
       <SettingsSection id="execution-defaults" title="Execution defaults">
         <ExecutionDefaultsSettings initialValue={executionDefaults} />
+      </SettingsSection>
+
+      <SettingsSection id="notifications" title="Notifications">
+        <SystemNotificationSettings initialEnabled={notificationSettings.enabled} />
       </SettingsSection>
 
       <SettingsSection title="Work directories">

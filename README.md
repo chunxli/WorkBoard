@@ -6,6 +6,8 @@ Work Board is a local-first workspace for quickly creating, running, comparing, 
 
 The existing scheduled task system remains available as **Automations**. The application is still a single Next.js process: UI, API routes, queue, and cron scheduler run together.
 
+Once Work Board is running, open the bilingual [in-app Docs](http://localhost:3100/docs) at `/docs` for the complete feature guide, operational boundaries, and Release Notes.
+
 ## Application tour
 
 ### Work Board
@@ -24,7 +26,8 @@ Work cards show the latest Run's actual model usage and total input + output tok
 
 ## Features
 
-- **Fast Work creation** — enter or browse to a directory, write a prompt, then create and run in one action. Missing directories are created automatically.
+- **Fast Work creation** — enter or browse to a directory, create and automatically select a child folder when needed, write a prompt, then create and run in one action. Missing directories are created automatically.
+- **First Run in Terminal** — create a Work and open a new interactive Copilot session in Windows Terminal with the saved Prompt and CLI settings. Closing Terminal syncs the session, result, usage, and artifacts back to Work Board.
 - **Draggable Work cards** — scan Current Work as a responsive card grid and drag cards into a persistent custom order with pointer, touch, or keyboard controls.
 - **Card-level local actions** — open a Work directory in Windows Explorer or resume its latest eligible Copilot session in Windows Terminal directly from the card. Active terminal sessions are identified as **IN TERMINAL**.
 - **Common Root directories** — save frequently used roots in New Work, browse their immediate child folders, select a Work directory, or open a root or child folder directly in Windows Explorer.
@@ -41,6 +44,7 @@ Work cards show the latest Run's actual model usage and total input + output tok
 - **In-app Follow Up** — send another prompt from Work details after active Runs finish. Work Board resumes the latest session with inherited execution settings, or starts the first session automatically, appends the message to `PROMPT.md`, and links parent/child Runs for navigation.
 - **Session compatibility repair** — read legacy Copilot permission events during Sync and safely upgrade them before Resume, with an atomic backup and active-process protection.
 - **Portable results** — every Work, Experiment, terminal-resume, and Automation run writes `result.md`, `transcript.jsonl`, `diff.patch`, `run.json`, `stdout.log`, and `stderr.log`.
+- **Background system notifications** — receive host OS notifications for successful, failed, or timed-out Work and Automation Runs even when every browser tab is closed. Experiments notify once after all variants settle; configure or test notifications in Settings.
 - **Archive without deleting** — completed Work and Automations can be archived and restored while keeping directories, sessions, and history.
 - **Automations** — existing manual, cron, signed GitHub webhook, and token-authenticated API triggers remain compatible.
 - **Inline Resources** — select, add, edit, or remove an Automation Resource directly in New Automation; there is no separate Resource workspace to manage.
@@ -130,6 +134,8 @@ npm run background:stop
 ```
 
 Use `npm run background:restart` after pulling code, changing dependencies, or adding migrations; it stops Work Board, generates Prisma, applies migrations, rebuilds, and starts the new release. Use `npm run background:restart:fast` to restart the existing build without rebuilding it. `background:start:fast` remains available when Work Board is stopped and the release is already built.
+
+System notifications are emitted by this background process, not by the browser. They appear on the machine running Work Board and require an interactive desktop session plus OS notification permission. Delivery is at-most-once: a claimed notification is never repeated after restart.
 
 ## Authentication setup
 

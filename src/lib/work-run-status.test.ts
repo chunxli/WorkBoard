@@ -6,6 +6,9 @@ describe("getWorkRunDisplayStatus", () => {
     expect(
       getWorkRunDisplayStatus({ status: "RUNNING", trigger: "TERMINAL_RESUME" })
     ).toBe("IN_TERMINAL");
+    expect(
+      getWorkRunDisplayStatus({ status: "RUNNING", trigger: "TERMINAL_START" })
+    ).toBe("IN_TERMINAL");
     expect(getWorkRunDisplayStatus({ status: "RUNNING", trigger: "WORK" })).toBe(
       "RUNNING"
     );
@@ -14,6 +17,9 @@ describe("getWorkRunDisplayStatus", () => {
   it("preserves terminal completion states", () => {
     expect(
       getWorkRunDisplayStatus({ status: "SUCCESS", trigger: "TERMINAL_RESUME" })
+    ).toBe("SUCCESS");
+    expect(
+      getWorkRunDisplayStatus({ status: "SUCCESS", trigger: "TERMINAL_START" })
     ).toBe("SUCCESS");
     expect(getWorkRunDisplayStatus(null)).toBeNull();
   });

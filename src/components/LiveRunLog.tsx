@@ -38,9 +38,6 @@ export default function LiveRunLog({
 
   useEffect(() => {
     if (!isLive) return;
-    if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      void Notification.requestPermission();
-    }
 
     let source: EventSource;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -58,20 +55,6 @@ export default function LiveRunLog({
           setFinished(true);
           source.close();
           router.refresh();
-
-          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-            const title =
-              event.type === "error"
-                ? "Work Board run failed to start"
-                : event.cancelled
-                  ? "Work Board run cancelled"
-                  : event.timedOut
-                    ? "Work Board run timed out"
-                    : event.code === 0
-                      ? "Work Board run succeeded"
-                      : "Work Board run failed";
-            new Notification(title, { body: `Run ${runId.slice(0, 8)}` });
-          }
         }
       };
 

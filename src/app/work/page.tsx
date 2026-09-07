@@ -11,6 +11,7 @@ import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { getWorkRunDisplayStatus } from "@/lib/work-run-status";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export default async function WorkBoardPage() {
   const userId = await getSessionUserId();
@@ -96,7 +97,7 @@ export default async function WorkBoardPage() {
       (!latestRun.hostname || latestRun.hostname === localHostname) &&
       work.status !== "ARCHIVED"
     ) {
-      if (runIsActive && latestRun.trigger === "TERMINAL_RESUME") {
+      if (runIsActive && isTerminalRunTrigger(latestRun.trigger)) {
         terminalResumeState = "active";
       } else if (!runIsActive && await isTerminalResumeReady({
         id: latestRun.id,

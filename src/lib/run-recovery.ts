@@ -17,6 +17,7 @@ import { hashWorkContent } from "@/lib/work-files";
 import { captureRunSourceDiff } from "@/lib/run-source-snapshot";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { TERMINAL_RUN_TRIGGERS } from "@/lib/terminal-run";
 
 const globalForRecovery = globalThis as unknown as { workBoardRecoveryStarted?: boolean };
 
@@ -26,7 +27,7 @@ export async function recoverRuns(): Promise<void> {
   await cleanupTerminalLaunchFiles();
 
   const interrupted = await prisma.run.findMany({
-    where: { status: "RUNNING", trigger: { not: "TERMINAL_RESUME" } },
+    where: { status: "RUNNING", trigger: { notIn: [...TERMINAL_RUN_TRIGGERS] } },
     include: { work: true },
   });
   for (const run of interrupted) {
@@ -148,19 +149,12 @@ async function cleanupTerminalLaunchFiles(): Promise<void> {
     select: { id: true, status: true, expiresAt: true },
   });
   const byId = new Map(launches.map((launch) => [launch.id, launch]));
-  const now = new Date();
 
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     const launch = byId.get(file.slice(0, -5));
-    if (!launch || launch.status === "COMPLETED" || launch.expiresAt <= now) {
+    if (!launch || launch.status === "COMPLETED") {
       await rm(path.join(directory, file), { force: true }).catch(() => {});
-      if (launch && launch.status !== "COMPLETED" && launch.expiresAt <= now) {
-        await prisma.terminalLaunch.update({
-          where: { id: launch.id },
-          data: { status: "FAILED", errorMessage: "Terminal callback token expired" },
-        });
-      }
     }
   }
 }

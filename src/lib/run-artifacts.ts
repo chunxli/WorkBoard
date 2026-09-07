@@ -3,8 +3,11 @@ import { copyFile, mkdir, open, readFile, rename, stat, writeFile } from "node:f
 import path from "node:path";
 
 const RUN_LOG_TAIL_BYTES = 512 * 1024;
+const RUN_DIFF_PREVIEW_BYTES = 512 * 1024;
 const RUN_LOG_TRUNCATED_MESSAGE =
   "[Earlier output omitted. Download stdout.log for the complete output.]";
+const RUN_DIFF_TRUNCATED_MESSAGE =
+  "[Diff preview truncated. Download diff.patch for the complete diff.]";
 
 const globalForRunArtifacts = globalThis as unknown as {
   runFinalizationQueues?: Map<string, Promise<unknown>>;
@@ -84,6 +87,28 @@ export async function readRunLogTail(
       ? buffer.subarray(firstNewline + 1).toString("utf8")
       : "";
     return `${RUN_LOG_TRUNCATED_MESSAGE}\n${completeTail}`;
+  } finally {
+    await file.close();
+  }
+}
+
+export async function readRunDiffPreview(
+  filePath: string,
+  maxBytes = RUN_DIFF_PREVIEW_BYTES
+): Promise<string> {
+  const file = await open(filePath, "r");
+  try {
+    const fileInfo = await file.stat();
+    const length = Math.min(fileInfo.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    await file.read(buffer, 0, length, 0);
+    if (fileInfo.size <= maxBytes) return buffer.toString("utf8");
+
+    const lastNewline = buffer.lastIndexOf(0x0a);
+    const completePreview = lastNewline >= 0
+      ? buffer.subarray(0, lastNewline + 1).toString("utf8")
+      : buffer.toString("utf8");
+    return `${completePreview}${RUN_DIFF_TRUNCATED_MESSAGE}\n`;
   } finally {
     await file.close();
   }

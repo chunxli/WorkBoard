@@ -5,12 +5,14 @@ import {
   ArrowUp,
   Folder,
   FolderOpen,
+  FolderPlus,
   FolderRoot,
   LoaderCircle,
   Plus,
   RefreshCw,
   Trash2,
 } from "lucide-react";
+import CreateFolderControl from "@/components/CreateFolderControl";
 
 export interface RootDirectoryOption {
   id: string;
@@ -54,6 +56,7 @@ export default function RootDirectoryPicker({
   const [loading, setLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedRoot = roots.find((root) => root.path === rootPath) ?? null;
@@ -184,6 +187,7 @@ export default function RootDirectoryPicker({
           onChange={(event) => {
             setRootPath(event.target.value);
             setBrowsePath(event.target.value);
+            setCreatingFolder(false);
           }}
           className="min-h-8 min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 text-xs text-neutral-300"
         >
@@ -200,6 +204,21 @@ export default function RootDirectoryPicker({
           className="grid size-8 place-items-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-white disabled:opacity-40"
         >
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setCreatingFolder((current) => !current)}
+          disabled={!browsePath || loading}
+          aria-label="Create folder in current directory"
+          aria-expanded={creatingFolder}
+          title="Create folder"
+          className={`grid size-8 place-items-center rounded disabled:cursor-not-allowed disabled:opacity-40 ${
+            creatingFolder
+              ? "bg-emerald-950/60 text-emerald-300"
+              : "text-neutral-500 hover:bg-neutral-800 hover:text-white"
+          }`}
+        >
+          <FolderPlus size={14} aria-hidden="true" />
         </button>
         {canOpenExplorer && (
           <button
@@ -237,11 +256,26 @@ export default function RootDirectoryPicker({
         </button>
       </div>
 
+      {creatingFolder && browsePath && (
+        <CreateFolderControl
+          parentPath={browsePath}
+          onCancel={() => setCreatingFolder(false)}
+          onCreated={(createdPath) => {
+            setCreatingFolder(false);
+            setBrowsePath(createdPath);
+            onSelect(createdPath);
+          }}
+        />
+      )}
+
       <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-neutral-500">
         {parentPath && browsePath !== rootPath && (
           <button
             type="button"
-            onClick={() => setBrowsePath(parentPath)}
+            onClick={() => {
+              setBrowsePath(parentPath);
+              setCreatingFolder(false);
+            }}
             aria-label="Go to parent folder"
             title="Go to parent folder"
             className="grid size-7 shrink-0 place-items-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
@@ -277,7 +311,10 @@ export default function RootDirectoryPicker({
               <button
                 type="button"
                 onClick={() => onSelect(entry.path)}
-                onDoubleClick={() => setBrowsePath(entry.path)}
+                onDoubleClick={() => {
+                  setBrowsePath(entry.path);
+                  setCreatingFolder(false);
+                }}
                 title={entry.path}
                 className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1.5 text-left text-xs text-neutral-300"
               >

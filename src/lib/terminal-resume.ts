@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "@/lib/prisma";
 import { buildCopilotEnvironment } from "@/lib/copilot-runner";
@@ -20,21 +20,27 @@ import {
   getWorkRunArtifactPaths,
   prepareRunArtifacts,
   readWorkRunSnapshot,
+  serializeRunFinalization,
   type WorkRunSnapshot,
 } from "@/lib/run-artifacts";
 import {
+  captureRunSourceBaseline,
   captureRunSourceDiff,
   inheritRunSourceBaseline,
   isRunSourceBaselineReady,
 } from "@/lib/run-source-snapshot";
 import { getRepoWorkdirPath } from "@/lib/repo-workdir";
-import { hashWorkContent } from "@/lib/work-files";
+import { hashWorkContent, readWorkPrompt } from "@/lib/work-files";
 import { RunStartInProgressError, withRunStartLock } from "@/lib/run-start-lock";
 import {
   analyzeCopilotSessionEvents,
   serializeCopilotTokenUsage,
   subtractCopilotTokenUsage,
 } from "@/lib/copilot-session-insights";
+import type { CopilotCompletionSummary } from "@/lib/copilot-completion";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { findActiveRunConflicts } from "@/lib/run-access";
+import { getDirectorySnapshotPath } from "@/lib/directory-snapshot";
 
 export class TerminalResumeInProgressError extends Error {
   constructor() {
@@ -55,6 +61,79 @@ export class TerminalSyncInProgressError extends Error {
     super("This terminal session is already being synchronized");
     this.name = "TerminalSyncInProgressError";
   }
+}
+
+const UNKNOWN_TERMINAL_EXIT_ERROR =
+  "Terminal closed before reporting its exit status, and the Copilot session did not record a complete response";
+
+export interface TerminalRunOutcome {
+  status: "SUCCESS" | "FAILED";
+  exitCode: number | null;
+  errorMessage: string | null;
+}
+
+export function resolveTerminalRunOutcome(
+  exitCode: number | null,
+  completion: CopilotCompletionSummary
+): TerminalRunOutcome {
+  if (exitCode !== null) {
+    return {
+      status: exitCode === 0 ? "SUCCESS" : "FAILED",
+      exitCode,
+      errorMessage: exitCode === 0 ? null : `Copilot exited with code ${exitCode}`,
+    };
+  }
+
+  const hasCompletionEvidence =
+    completion.taskComplete || completion.rootFinalOutput !== null;
+  const isComplete =
+    hasCompletionEvidence &&
+    completion.openSubagents.length === 0 &&
+    completion.openTools.length === 0;
+  return {
+    status: isComplete ? "SUCCESS" : "FAILED",
+    exitCode: null,
+    errorMessage: isComplete ? null : UNKNOWN_TERMINAL_EXIT_ERROR,
+  };
+}
+
+const MAX_WINDOWS_INITIAL_PROMPT_CHARACTERS = 20_000;
+
+export interface NewTerminalSessionOptions {
+  sessionId: string;
+  workName: string;
+  prompt: string;
+  promptFileName: string;
+  agent: string | null;
+  model: string | null;
+  contextTier: string | null;
+  reasoningEffort: string | null;
+  permissionMode: string | null;
+}
+
+export function buildNewTerminalSessionArgs(
+  options: NewTerminalSessionOptions
+): string[] {
+  const initialPrompt = options.prompt.length <= MAX_WINDOWS_INITIAL_PROMPT_CHARACTERS
+    ? options.prompt
+    : `Read ${options.promptFileName} in the current directory and complete all instructions in it.`;
+  const args = [
+    "--session-id",
+    options.sessionId,
+    "--name",
+    options.workName,
+    "-i",
+    initialPrompt,
+    "--output-format",
+    "text",
+    options.permissionMode === "full" ? "--allow-all" : "--allow-all-tools",
+  ];
+  if (options.agent) args.push("--agent", options.agent);
+  if (options.model) args.push("--model", options.model);
+  if (options.contextTier) args.push("--context", options.contextTier);
+  if (options.reasoningEffort) args.push("--effort", options.reasoningEffort);
+  args.push("--secret-env-vars", "GH_TOKEN,GITHUB_TOKEN");
+  return args;
 }
 
 function spawnDetached(executable: string, args: string[], cwd: string): Promise<number | null> {
@@ -303,8 +382,8 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
       ],
       executionPath
     );
-    await prisma.terminalLaunch.update({
-      where: { id: launchId },
+    await prisma.terminalLaunch.updateMany({
+      where: { id: launchId, status: "PENDING" },
       data: { status: "LAUNCHED", launcherPid, launchedAt: new Date() },
     });
     return { runId, launcherPid };
@@ -355,13 +434,100 @@ export async function isTerminalResumeReady(run: {
   });
 }
 
+export async function finalizeFailedTerminalRun(
+  runId: string,
+  errorMessage: string,
+  finishedAt = new Date()
+): Promise<boolean> {
+  return serializeRunFinalization(runId, async () => {
+    const run = await prisma.run.findUnique({
+      where: { id: runId },
+      include: { work: true, task: { include: { repo: true } } },
+    });
+    if (!run || !isTerminalRunTrigger(run.trigger)) return false;
+    if (run.status !== "RUNNING") return false;
+
+    const paths = run.task
+      ? getAutomationRunArtifactPaths(run.id)
+      : run.work
+        ? getWorkRunArtifactPaths(run.work.directoryPath, run.id)
+        : null;
+    const executionPath =
+      run.executionPath ??
+      run.work?.directoryPath ??
+      (run.task ? getRepoWorkdirPath(run.task.repo) : null);
+    if (paths && executionPath) {
+      const snapshot = await readWorkRunSnapshot(paths.snapshot).catch(() => null);
+      if (snapshot) {
+        const artifactRoot = run.task ? paths.outputDirectory : run.work!.directoryPath;
+        const sourceDiff = await captureRunSourceDiff({
+          executionPath,
+          workDirectory: artifactRoot,
+          runId: run.id,
+          beforeGitTree: snapshot.gitBeforeTree,
+        }).catch(() => ({ afterGitTree: null, diff: "" }));
+        await finalizeWorkRunArtifacts({
+          paths,
+          snapshot: {
+            ...snapshot,
+            status: "FAILED",
+            finishedAt: finishedAt.toISOString(),
+            errorMessage,
+            gitAfterTree: sourceDiff.afterGitTree,
+          },
+          finalOutput: null,
+          diff: sourceDiff.diff,
+        }).catch(() => {});
+      }
+    }
+
+    const updated = await prisma.run.updateMany({
+      where: { id: run.id, status: "RUNNING" },
+      data: { status: "FAILED", errorMessage, finishedAt },
+    });
+    if (updated.count === 0) return false;
+    if (run.work) {
+      const activeRuns = await prisma.run.count({
+        where: {
+          workId: run.work.id,
+          id: { not: run.id },
+          status: { in: ["PENDING", "RUNNING"] },
+        },
+      });
+      if (activeRuns === 0) {
+        await prisma.work.update({
+          where: { id: run.work.id },
+          data: { status: "ACTIVE" },
+        });
+      }
+    }
+    return true;
+  });
+}
+
 export async function syncTerminalRun(
   runId: string,
-  exitCode = 0
+  exitCode?: number
 ): Promise<"synced" | "already-synced"> {
   try {
     return await withRunStartLock([`terminal-sync:${runId}`], () =>
-      syncTerminalRunUnlocked(runId, exitCode)
+      syncTerminalRunUnlocked(runId, exitCode, false)
+    );
+  } catch (error) {
+    if (error instanceof RunStartInProgressError) {
+      throw new TerminalSyncInProgressError();
+    }
+    throw error;
+  }
+}
+
+export async function syncExpiredTerminalRun(
+  runId: string,
+  exitCode: number
+): Promise<"synced" | "already-synced"> {
+  try {
+    return await withRunStartLock([`terminal-sync:${runId}`], () =>
+      syncTerminalRunUnlocked(runId, exitCode, true)
     );
   } catch (error) {
     if (error instanceof RunStartInProgressError) {
@@ -373,24 +539,41 @@ export async function syncTerminalRun(
 
 async function syncTerminalRunUnlocked(
   runId: string,
-  exitCode: number
+  exitCode: number | undefined,
+  allowExpired: boolean
 ): Promise<"synced" | "already-synced"> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
     include: { work: true, task: { include: { repo: true } } },
   });
-  if ((!run.work && !run.task) || !run.copilotSessionId || run.trigger !== "TERMINAL_RESUME") {
+  if ((!run.work && !run.task) || !run.copilotSessionId || !isTerminalRunTrigger(run.trigger)) {
     throw new Error("Run is not a resumable terminal session");
   }
   await assertCopilotSessionNotInUse(run.copilotSessionId);
 
+  const terminalLaunch = await prisma.terminalLaunch.findUniqueOrThrow({
+    where: { runId },
+    select: { id: true },
+  });
+  const persistedExitCode = exitCode ?? await tryReadTerminalLaunchExitCode(terminalLaunch.id);
+
+  const now = new Date();
   const claim = await prisma.terminalLaunch.updateMany({
-    where: { runId, status: { in: ["PENDING", "LAUNCHED", "SYNCING", "FAILED"] } },
-    data: { status: "SYNCING", errorMessage: null },
+    where: {
+      runId,
+      status: { in: ["PENDING", "LAUNCHED", "SYNCING", "FAILED"] },
+      ...(allowExpired
+        ? { expiresAt: { lte: now }, run: { status: "RUNNING" as const } }
+        : { completedAt: null, expiresAt: { gt: now } }),
+    },
+    data: { status: "SYNCING", completedAt: null, errorMessage: null },
   });
   if (claim.count === 0) {
     const launch = await prisma.terminalLaunch.findUnique({ where: { runId } });
     if (launch?.status === "COMPLETED") return "already-synced";
+    if (launch?.completedAt || launch && launch.expiresAt <= now) {
+      throw new Error("This terminal session has expired and can no longer be synchronized");
+    }
     throw new Error("This terminal session is already being synchronized");
   }
 
@@ -429,19 +612,22 @@ async function syncTerminalRunUnlocked(
     const afterTree = sourceDiff.afterGitTree;
     const finalCommit = await getHeadCommit(executionPath).catch(() => null);
     const diff = sourceDiff.diff;
-    const finalOutput = lastAssistantMessage(events);
+    const finalOutput = currentInsights.completion.rootFinalOutput ?? lastAssistantMessage(events);
     const finishedAt = new Date();
-    const status = exitCode === 0 ? "SUCCESS" : "FAILED";
+    const outcome = resolveTerminalRunOutcome(
+      persistedExitCode,
+      currentInsights.completion
+    );
 
     await finalizeWorkRunArtifacts({
       paths,
       snapshot: {
         ...priorSnapshot,
-        status,
-        exitCode,
+        status: outcome.status,
+        exitCode: outcome.exitCode,
         finishedAt: finishedAt.toISOString(),
         gitAfterTree: afterTree,
-        errorMessage: exitCode === 0 ? null : `Copilot exited with code ${exitCode}`,
+        errorMessage: outcome.errorMessage,
         ...usageData,
       },
       finalOutput,
@@ -451,12 +637,12 @@ async function syncTerminalRunUnlocked(
       prisma.run.update({
         where: { id: run.id },
         data: {
-          status,
-          exitCode,
+          status: outcome.status,
+          exitCode: outcome.exitCode,
           finalOutput,
           finalCommit,
           finishedAt,
-          errorMessage: exitCode === 0 ? null : `Copilot exited with code ${exitCode}`,
+          errorMessage: outcome.errorMessage,
           ...usageData,
         },
       }),
@@ -468,13 +654,16 @@ async function syncTerminalRunUnlocked(
     if (run.work) {
       await prisma.work.update({
         where: { id: run.work.id },
-        data: { status: exitCode === 0 ? "REVIEW" : "ACTIVE" },
+        data: { status: outcome.status === "SUCCESS" ? "REVIEW" : "ACTIVE" },
       });
     }
+    await rm(
+      path.join(process.cwd(), "data", "terminal-launches", `${terminalLaunch.id}.json`),
+      { force: true }
+    ).catch(() => {});
     return "synced";
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const finishedAt = new Date();
     await prisma.$transaction([
       prisma.terminalLaunch.updateMany({
         where: { runId: run.id, status: "SYNCING" },
@@ -482,12 +671,254 @@ async function syncTerminalRunUnlocked(
       }),
       prisma.run.update({
         where: { id: run.id },
-        data: { status: "FAILED", errorMessage, finishedAt },
+        data: { errorMessage, finishedAt: null },
       }),
     ]);
-    if (run.work) {
-      await prisma.work.update({ where: { id: run.work.id }, data: { status: "ACTIVE" } });
+    throw error;
+  }
+}
+
+export function parseTerminalLaunchExitCode(content: string): number {
+  const launch = JSON.parse(content.replace(/^\uFEFF/, "")) as { exitCode?: unknown };
+  if (
+    typeof launch.exitCode !== "number" ||
+    !Number.isInteger(launch.exitCode) ||
+    launch.exitCode < -1 ||
+    launch.exitCode > 2_147_483_647
+  ) {
+    throw new Error("Terminal exit status is unavailable; wait for the terminal callback or retry.");
+  }
+  return launch.exitCode;
+}
+
+async function readTerminalLaunchExitCode(launchId: string): Promise<number> {
+  const launchFile = path.join(
+    process.cwd(),
+    "data",
+    "terminal-launches",
+    `${launchId}.json`
+  );
+  try {
+    return parseTerminalLaunchExitCode(await readFile(launchFile, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("Terminal exit status could not be read; retry after the terminal closes.");
     }
     throw error;
+  }
+}
+
+export class TerminalStartError extends Error {
+  constructor(message: string, readonly status = 409) {
+    super(message);
+    this.name = "TerminalStartError";
+  }
+}
+
+function describeTerminalCommand(copilotArgs: string[]): string {
+  return `copilot ${copilotArgs
+    .map((argument, index) => copilotArgs[index - 1] === "-i" ? "<prompt>" : argument)
+    .join(" ")}`;
+}
+
+export async function launchNewWorkTerminal(
+  userId: string,
+  workId: string
+): Promise<{ runId: string; launcherPid: number | null }> {
+  try {
+    return await withRunStartLock([`work:${workId}`], async () => {
+      const work = await prisma.work.findFirst({ where: { id: workId, userId } });
+      if (!work) throw new TerminalStartError("Work not found", 404);
+      if (work.status === "ARCHIVED") {
+        throw new TerminalStartError("Restore this Work before opening Terminal");
+      }
+      const priorRun = await prisma.run.findFirst({
+        where: { workId: work.id },
+        select: { id: true },
+      });
+      if (priorRun) {
+        throw new TerminalStartError("A first Terminal session can only be opened before the Work has run");
+      }
+      if ((await findActiveRunConflicts(userId, work.directoryPath)).length > 0) {
+        throw new TerminalStartError("Wait for the active Run in this Work directory to finish");
+      }
+
+      const savedPrompt = await readWorkPrompt(work);
+      const runId = randomUUID();
+      const launchId = randomUUID();
+      const sessionId = randomUUID();
+      const callbackToken = generateSecret();
+      const callbackUrl = new URL(
+        "/api/terminal/callback",
+        process.env.WORKBOARD_LOCAL_URL ?? "http://127.0.0.1:3100"
+      ).toString();
+      const paths = getWorkRunArtifactPaths(work.directoryPath, runId);
+      const beforeTree = await captureRunSourceBaseline(
+        work.directoryPath,
+        work.directoryPath,
+        runId
+      );
+      const baseCommit = await getHeadCommit(work.directoryPath).catch(() => null);
+      const startedAt = new Date();
+      const copilotArgs = buildNewTerminalSessionArgs({
+        sessionId,
+        workName: work.name,
+        prompt: savedPrompt.content,
+        promptFileName: work.promptFileName,
+        agent: work.agent,
+        model: work.model,
+        contextTier: work.contextTier,
+        reasoningEffort: work.reasoningEffort,
+        permissionMode: work.permissionMode,
+      });
+      const command = describeTerminalCommand(copilotArgs);
+      const snapshot: WorkRunSnapshot = {
+        schemaVersion: 1,
+        runId,
+        workId: work.id,
+        workName: work.name,
+        promptFileName: work.promptFileName,
+        prompt: savedPrompt.content,
+        promptHash: savedPrompt.hash,
+        engine: "CLI",
+        sessionId,
+        executionPath: work.directoryPath,
+        concurrencyMode: "EXTERNAL_TERMINAL",
+        trigger: "TERMINAL_START",
+        resumedFromRunId: null,
+        status: "RUNNING",
+        startedAt: startedAt.toISOString(),
+        finishedAt: null,
+        exitCode: null,
+        errorMessage: null,
+        gitBeforeTree: beforeTree,
+        gitAfterTree: null,
+        sessionEventCursorStart: 0,
+        agent: work.agent,
+        model: work.model,
+        fallbackModel: null,
+        contextTier: work.contextTier,
+        reasoningEffort: work.reasoningEffort,
+        permissionMode: work.permissionMode,
+        outputFormat: "text",
+        timeoutSeconds: null,
+      };
+      await prepareRunArtifacts(paths, snapshot);
+      await prisma.$transaction([
+        prisma.run.create({
+          data: {
+            id: runId,
+            workId: work.id,
+            status: "RUNNING",
+            trigger: "TERMINAL_START",
+            engine: "CLI",
+            executionPath: work.directoryPath,
+            promptSnapshot: savedPrompt.content,
+            outputFormat: "text",
+            agent: work.agent,
+            model: work.model,
+            fallbackModel: null,
+            contextTier: work.contextTier,
+            reasoningEffort: work.reasoningEffort,
+            permissionMode: work.permissionMode,
+            outputDir: paths.outputDirectory,
+            logPath: paths.stdout,
+            copilotSessionId: sessionId,
+            concurrencyMode: "EXTERNAL_TERMINAL",
+            baseCommit,
+            startedAt,
+            hostname: hostname(),
+            command,
+          },
+        }),
+        prisma.terminalLaunch.create({
+          data: {
+            id: launchId,
+            runId,
+            tokenHash: hashToken(callbackToken),
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          },
+        }),
+      ]);
+
+      const launchFile = path.join(
+        process.cwd(),
+        "data",
+        "terminal-launches",
+        `${launchId}.json`
+      );
+      const launcherScript = path.join(process.cwd(), "scripts", "workboard-resume.ps1");
+      let launcherPid: number | null;
+      try {
+        await mkdir(path.dirname(launchFile), { recursive: true });
+        await writeFile(
+          launchFile,
+          JSON.stringify({
+            mode: "new",
+            sessionId,
+            workingDirectory: work.directoryPath,
+            callbackUrl,
+            callbackToken,
+            copilotArgs,
+          }),
+          { encoding: "utf8", flag: "wx" }
+        );
+        launcherPid = await spawnDetached(
+          "wt.exe",
+          [
+            "--window",
+            "new",
+            "new-tab",
+            "--startingDirectory",
+            work.directoryPath,
+            "--title",
+            `Work Board ${runId.slice(0, 8)}`,
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            launcherScript,
+            "-LaunchFile",
+            launchFile,
+          ],
+          work.directoryPath
+        );
+      } catch (error) {
+        await prisma.$transaction([
+          prisma.terminalLaunch.deleteMany({ where: { id: launchId } }),
+          prisma.run.deleteMany({ where: { id: runId } }),
+        ]);
+        await Promise.all([
+          rm(launchFile, { force: true }).catch(() => {}),
+          rm(paths.outputDirectory, { recursive: true, force: true }).catch(() => {}),
+          rm(getDirectorySnapshotPath(work.directoryPath, runId), { force: true }).catch(() => {}),
+        ]);
+        throw error;
+      }
+      await prisma.terminalLaunch.updateMany({
+        where: { id: launchId, status: "PENDING" },
+        data: { status: "LAUNCHED", launcherPid, launchedAt: new Date() },
+      }).catch((error) => {
+        console.warn(`[terminal] Run ${runId} opened but launch metadata was not updated:`, error);
+      });
+      return { runId, launcherPid };
+    });
+  } catch (error) {
+    if (error instanceof RunStartInProgressError) {
+      throw new TerminalStartError("A Run is already being started for this Work");
+    }
+    throw error;
+  }
+}
+
+export async function tryReadTerminalLaunchExitCode(
+  launchId: string
+): Promise<number | null> {
+  try {
+    return await readTerminalLaunchExitCode(launchId);
+  } catch {
+    return null;
   }
 }

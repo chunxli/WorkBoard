@@ -16,6 +16,13 @@ interface ProcessInfo {
   timeoutLabel?: string | null;
 }
 
+export function mergeProcessInfo(
+  current: ProcessInfo,
+  update: Partial<ProcessInfo>
+): ProcessInfo {
+  return { ...current, ...update };
+}
+
 function formatCpuTime(ms: number | null): string {
   if (ms == null) return "-";
   const totalSeconds = ms / 1000;
@@ -54,11 +61,24 @@ export default function ProcessInfoPanel({
 
   useEffect(() => {
     if (!isLive) return;
-    const id = setInterval(async () => {
-      const res = await fetch(`/api/runs/${runId}/process`);
-      if (res.ok) setInfo(await res.json());
-    }, 3000);
-    return () => clearInterval(id);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/runs/${runId}/process`);
+        if (!stopped && res.ok) {
+          const update = await res.json() as Partial<ProcessInfo>;
+          setInfo((current) => mergeProcessInfo(current, update));
+        }
+      } finally {
+        if (!stopped) timer = setTimeout(poll, 3000);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
   }, [runId, isLive]);
 
   if (!info.pid && !info.command) return null;

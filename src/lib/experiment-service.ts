@@ -134,10 +134,11 @@ export async function createAndRunExperiment(options: CreateExperimentOptions): 
     return { experimentId, runIds };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const finishedAt = new Date();
     await prisma.$transaction([
       prisma.experiment.update({
         where: { id: experimentId },
-        data: { status: "FAILED", errorMessage },
+        data: { status: "FAILED", errorMessage, finishedAt },
       }),
       prisma.experimentVariant.updateMany({
         where: { experimentId, status: { in: ["COPYING", "READY"] } },

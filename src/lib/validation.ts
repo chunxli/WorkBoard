@@ -147,6 +147,10 @@ export const createPromptTemplateSchema = z.object({
 
 export const updatePromptTemplateSchema = createPromptTemplateSchema.partial();
 
+export const systemNotificationSettingsSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
+
 export const executionDefaultsSchema = z
   .object({
     defaultEngine: z.enum(["CLI", "SDK"]),

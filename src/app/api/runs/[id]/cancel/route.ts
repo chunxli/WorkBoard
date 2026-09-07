@@ -6,6 +6,7 @@ import { getSessionUserId } from "@/lib/session";
 import { ownedRunWhere } from "@/lib/run-access";
 import { finalizeCancelledWorkRun } from "@/lib/work-executor";
 import { finalizeAutomationRun } from "@/lib/task-executor";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export async function POST(
   _req: NextRequest,
@@ -19,7 +20,7 @@ export async function POST(
   if (!run) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   if (run.status === "RUNNING") {
-    if (run.trigger === "TERMINAL_RESUME") {
+    if (isTerminalRunTrigger(run.trigger)) {
       return NextResponse.json(
         { error: "Close the external terminal, then synchronize the session" },
         { status: 409 }

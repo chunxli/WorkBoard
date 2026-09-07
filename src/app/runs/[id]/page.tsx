@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { hostname } from "node:os";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import { getRunDiff, getRemoteUrl } from "@/lib/git-safety";
+import { getRunProcessStats } from "@/lib/copilot-runner";
 import { getRepoWorkdirPath } from "@/lib/repo-workdir";
 import { formatDuration } from "@/lib/format";
 import StatusBadge from "@/components/StatusBadge";
@@ -19,11 +19,12 @@ import { ownedRunWhere } from "@/lib/run-access";
 import TerminalSessionActions from "@/components/TerminalSessionActions";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
-import { readRunLogTail } from "@/lib/run-artifacts";
+import { readRunDiffPreview, readRunLogTail } from "@/lib/run-artifacts";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
 import MarkdownResult from "@/components/MarkdownResult";
 import { ArrowLeft, Clock3, Download, FileText, GitBranch, GitCompareArrows, GitCommitHorizontal, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export default async function RunDetailPage({
   params,
@@ -52,7 +53,7 @@ export default async function RunDetailPage({
   const log = run.logPath ? await readRunLogTail(run.logPath).catch(() => "") : "";
 
   const diff = run.outputDir
-    ? await readFile(path.join(run.outputDir, "diff.patch"), "utf8").catch(() => "")
+    ? await readRunDiffPreview(path.join(run.outputDir, "diff.patch")).catch(() => "")
     : await getRunDiff(run);
 
   const workdirPath =
@@ -60,6 +61,7 @@ export default async function RunDetailPage({
   const remoteUrl = workdirPath ? await getRemoteUrl(workdirPath) : null;
 
   const isLive = run.status === "PENDING" || run.status === "RUNNING";
+  const liveProcess = isLive ? getRunProcessStats(run.id) : undefined;
   const requestHost = (await headers()).get("host") ?? "";
   const sameMachine = !run.hostname || run.hostname === hostname();
   const ownerArchived = run.work?.status === "ARCHIVED" || Boolean(run.task?.archivedAt);
@@ -101,7 +103,8 @@ export default async function RunDetailPage({
               runId={run.id}
               canResume={!ownerArchived && resumeReady}
               canSync={
-                run.trigger === "TERMINAL_RESUME" &&
+                run.status === "RUNNING" &&
+                isTerminalRunTrigger(run.trigger) &&
                 terminalLaunchStatus !== undefined &&
                 terminalLaunchStatus !== "COMPLETED"
               }
@@ -169,8 +172,8 @@ export default async function RunDetailPage({
         initial={{
           pid: run.pid,
           command: run.command,
-          cpuTimeMs: run.cpuTimeMs,
-          memoryMb: run.peakMemoryMb,
+          cpuTimeMs: liveProcess?.cpuTimeMs ?? run.cpuTimeMs,
+          memoryMb: liveProcess?.memoryMb ?? run.peakMemoryMb,
           agent: run.agent ?? run.task?.agent,
           model: run.model ?? run.task?.model,
           fallbackModel: run.fallbackModel ?? run.task?.fallbackModel,

@@ -8,6 +8,7 @@ import { captureWorktreeTree, getWorktreeSnapshotDiff } from "./git-safety";
 import {
   finalizeWorkRunArtifacts,
   prepareWorkRunArtifacts,
+  readRunDiffPreview,
   readRunLogTail,
   type WorkRunSnapshot,
 } from "./run-artifacts";
@@ -151,6 +152,18 @@ describe("Run artifacts", () => {
     expect(tail).toContain("Earlier output omitted");
     expect(tail).toContain("tail-one\ntail-two\n");
     expect(tail).not.toContain("x".repeat(16));
+  });
+
+  it("limits large diff previews to complete lines", async () => {
+    const work = await temporaryDirectory();
+    const diffPath = path.join(work, "diff.patch");
+    await writeFile(diffPath, `diff --git a/file b/file\n${"x".repeat(128)}\nsecond\n`, "utf8");
+
+    const preview = await readRunDiffPreview(diffPath, 32);
+
+    expect(preview).toBe(
+      "diff --git a/file b/file\n[Diff preview truncated. Download diff.patch for the complete diff.]\n"
+    );
   });
 
   it("generates a patch for changed, added, deleted, and binary files outside Git", async () => {

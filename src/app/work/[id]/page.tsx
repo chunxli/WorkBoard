@@ -29,6 +29,7 @@ import type {
   WorkReasoningEffort,
 } from "@/components/WorkExecutionFields";
 import { readRunLogTail } from "@/lib/run-artifacts";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export default async function WorkDetailPage({
   params,
@@ -269,7 +270,8 @@ export default async function WorkDetailPage({
                     work.status !== "ARCHIVED"
                   }
                   canSync={
-                    latestRun.trigger === "TERMINAL_RESUME" &&
+                    latestRun.status === "RUNNING" &&
+                    isTerminalRunTrigger(latestRun.trigger) &&
                     latestRun.terminalLaunches[0] !== undefined &&
                     latestRun.terminalLaunches[0].status !== "COMPLETED"
                   }

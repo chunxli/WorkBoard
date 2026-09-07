@@ -136,12 +136,14 @@ export default function WorkBoard({
   const [copyingFolder, setCopyingFolder] = useState(false);
   const [copiedFolderPath, setCopiedFolderPath] = useState<string | null>(null);
   const [openingCopiedFolder, setOpeningCopiedFolder] = useState(false);
-  const [submitting, setSubmitting] = useState<"create" | "run" | null>(null);
+  const [submitting, setSubmitting] = useState<"create" | "run" | "terminal" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [openingWorkPath, setOpeningWorkPath] = useState<string | null>(null);
   const [resumingRunId, setResumingRunId] = useState<string | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [archivingWorkId, setArchivingWorkId] = useState<string | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [view, setView] = useState<"current" | "archived">("current");
@@ -321,7 +323,9 @@ export default function WorkBoard({
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
-    const action = submitter?.value === "create" ? "create" : "run";
+    const action = submitter?.value === "create" || submitter?.value === "terminal"
+      ? submitter.value
+      : "run";
     setSubmitting(action);
     setError(null);
     try {
@@ -359,6 +363,20 @@ export default function WorkBoard({
           router.push(`/work/${body.id}?startError=${encodeURIComponent(startError)}`);
           return;
         }
+      } else if (action === "terminal") {
+        const terminalResponse = await fetch(`/api/works/${body.id}/start-terminal`, {
+          method: "POST",
+        });
+        const terminalBody = await terminalResponse.json().catch(() => ({}));
+        if (!terminalResponse.ok || typeof terminalBody.runId !== "string") {
+          const startError = typeof terminalBody.error === "string"
+            ? terminalBody.error
+            : "Work was created but Terminal failed to open";
+          router.push(`/work/${body.id}?startError=${encodeURIComponent(startError)}`);
+          return;
+        }
+        router.push(`/runs/${terminalBody.runId}`);
+        return;
       }
       router.push(`/work/${body.id}`);
     } catch (reason) {
@@ -409,6 +427,45 @@ export default function WorkBoard({
       setTerminalError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setResumingRunId(null);
+    }
+  }
+
+  async function archiveWork(work: WorkSummary) {
+    if (work.status === "ARCHIVED" || archivingWorkId !== null) return;
+    if (!confirm(`Archive ${work.name}? Its directory and Run history will be kept.`)) return;
+
+    setArchivingWorkId(work.id);
+    setArchiveError(null);
+    try {
+      const response = await fetch(`/api/works/${work.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "ARCHIVED" }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof body.error === "string" ? body.error : "Failed to archive Work"
+        );
+      }
+      const updatedAt = typeof body.updatedAt === "string"
+        ? body.updatedAt
+        : new Date().toISOString();
+      setOrderedWorks((current) => current.map((candidate) =>
+        candidate.id === work.id
+          ? {
+              ...candidate,
+              status: "ARCHIVED",
+              updatedAt,
+              updatedAtLabel: new Date(updatedAt).toLocaleString("zh-CN", { hour12: false }),
+            }
+          : candidate
+      ));
+      router.refresh();
+    } catch (reason) {
+      setArchiveError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setArchivingWorkId(null);
     }
   }
 
@@ -700,11 +757,26 @@ export default function WorkBoard({
             type="submit"
             value="run"
             disabled={submitting !== null || copyingFolder}
-            className="order-2 flex items-center gap-2 rounded-md bg-emerald-400 px-4 py-2.5 text-sm font-bold text-[var(--on-accent)] shadow-[0_8px_24px_rgba(67,209,158,0.14)] hover:-translate-y-px hover:bg-emerald-300 disabled:translate-y-0 disabled:opacity-50"
+            className="order-3 flex items-center gap-2 rounded-md bg-emerald-400 px-4 py-2.5 text-sm font-bold text-[var(--on-accent)] shadow-[0_8px_24px_rgba(67,209,158,0.14)] hover:-translate-y-px hover:bg-emerald-300 disabled:translate-y-0 disabled:opacity-50"
           >
             <Play size={15} fill="currentColor" aria-hidden="true" />
             {submitting === "run" ? "Creating & starting..." : "Create & Run"}
           </button>
+          {canOpenExplorer && (
+            <button
+              type="submit"
+              value="terminal"
+              disabled={submitting !== null || copyingFolder}
+              className="ui-secondary-button order-2 min-h-10 px-4 py-2.5 font-semibold disabled:opacity-50"
+            >
+              {submitting === "terminal" ? (
+                <LoaderCircle size={15} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <TerminalSquare size={15} aria-hidden="true" />
+              )}
+              {submitting === "terminal" ? "Creating & opening..." : "Create & Open Terminal"}
+            </button>
+          )}
           <button
             type="submit"
             value="create"
@@ -785,6 +857,11 @@ export default function WorkBoard({
               {terminalError}
             </p>
           )}
+          {archiveError && (
+            <p role="alert" className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-400">
+              {archiveError}
+            </p>
+          )}
           {orderError && (
             <p role="alert" className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-400">
               {orderError}
@@ -813,6 +890,9 @@ export default function WorkBoard({
                     onOpenExplorer={(path) => void openWorkInExplorer(path)}
                     resumingRunId={resumingRunId}
                     onResumeInTerminal={(selectedWork) => void resumeWorkInTerminal(selectedWork)}
+                    canArchive={view === "current"}
+                    archivingWorkId={archivingWorkId}
+                    onArchive={(selectedWork) => void archiveWork(selectedWork)}
                   />
                 ))}
               </div>
@@ -846,6 +926,9 @@ function SortableWorkCard({
   onOpenExplorer,
   resumingRunId,
   onResumeInTerminal,
+  canArchive,
+  archivingWorkId,
+  onArchive,
 }: {
   work: WorkSummary;
   draggable: boolean;
@@ -854,6 +937,9 @@ function SortableWorkCard({
   onOpenExplorer: (directoryPath: string) => void;
   resumingRunId: string | null;
   onResumeInTerminal: (work: WorkSummary) => void;
+  canArchive: boolean;
+  archivingWorkId: string | null;
+  onArchive: (work: WorkSummary) => void;
 }) {
   const {
     attributes,
@@ -998,6 +1084,22 @@ function SortableWorkCard({
               <TerminalSquare size={15} aria-hidden="true" />
             )}
           </button>
+          {canArchive && (
+            <button
+              type="button"
+              onClick={() => onArchive(work)}
+              disabled={archivingWorkId !== null}
+              aria-label={`Archive ${work.name}`}
+              title="Archive Work"
+              className="grid size-8 place-items-center rounded-md text-neutral-600 hover:bg-neutral-800 hover:text-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {archivingWorkId === work.id ? (
+                <LoaderCircle size={15} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <Archive size={15} aria-hidden="true" />
+              )}
+            </button>
+          )}
           <Link
             href={`/work/${work.id}`}
             aria-label={`Open ${work.name}`}

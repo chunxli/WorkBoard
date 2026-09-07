@@ -19,9 +19,24 @@ export async function GET(
       command: true,
       cpuTimeMs: true,
       peakMemoryMb: true,
+      agent: true,
       model: true,
+      fallbackModel: true,
       contextTier: true,
       reasoningEffort: true,
+      permissionMode: true,
+      timeoutSeconds: true,
+      task: {
+        select: {
+          agent: true,
+          model: true,
+          fallbackModel: true,
+          contextTier: true,
+          reasoningEffort: true,
+          permissionMode: true,
+          timeoutSeconds: true,
+        },
+      },
     },
   });
   if (!run) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -34,8 +49,16 @@ export async function GET(
     command: run.command,
     cpuTimeMs: live?.cpuTimeMs ?? run.cpuTimeMs,
     memoryMb: live?.memoryMb ?? run.peakMemoryMb,
-    model: run.model,
-    contextTier: run.contextTier,
-    reasoningEffort: run.reasoningEffort,
+    agent: run.agent ?? run.task?.agent,
+    model: run.model ?? run.task?.model,
+    fallbackModel: run.fallbackModel ?? run.task?.fallbackModel,
+    contextTier: run.contextTier ?? run.task?.contextTier,
+    reasoningEffort: run.reasoningEffort ?? run.task?.reasoningEffort,
+    permissionMode: run.permissionMode ?? run.task?.permissionMode,
+    timeoutLabel: run.task
+      ? `${run.timeoutSeconds ?? run.task.timeoutSeconds}s`
+      : run.timeoutSeconds
+        ? `${run.timeoutSeconds}s`
+        : "None",
   });
 }

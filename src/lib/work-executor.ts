@@ -491,9 +491,16 @@ export async function refreshExperimentStatus(experimentId: string): Promise<voi
   const active = variants.some((variant) =>
     ["COPYING", "READY", "RUNNING"].includes(variant.status)
   );
-  await prisma.experiment.update({
-    where: { id: experimentId },
-    data: { status: active ? "RUNNING" : "COMPLETED" },
+  if (active) {
+    await prisma.experiment.updateMany({
+      where: { id: experimentId, status: { in: ["PROVISIONING", "RUNNING"] } },
+      data: { status: "RUNNING" },
+    });
+    return;
+  }
+  await prisma.experiment.updateMany({
+    where: { id: experimentId, status: { in: ["PROVISIONING", "RUNNING"] } },
+    data: { status: "COMPLETED", finishedAt: new Date() },
   });
 }
 

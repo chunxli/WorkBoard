@@ -2,7 +2,8 @@
 
 import { createPortal } from "react-dom";
 import { useEffect, useId, useState } from "react";
-import { ArrowUp, Check, Folder, HardDrive, X } from "lucide-react";
+import { ArrowUp, Check, Folder, FolderPlus, HardDrive, X } from "lucide-react";
+import CreateFolderControl from "@/components/CreateFolderControl";
 
 interface BrowseEntry {
   name: string;
@@ -26,11 +27,13 @@ export default function FolderBrowserModal({
 }) {
   const [data, setData] = useState<BrowseResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const titleId = useId();
   const portalTarget = typeof document === "undefined" ? null : document.body;
 
   async function load(dirPath?: string) {
     setLoading(true);
+    setCreatingFolder(false);
     try {
       const url = dirPath ? `/api/fs/browse?path=${encodeURIComponent(dirPath)}` : "/api/fs/browse";
       const res = await fetch(url);
@@ -79,9 +82,26 @@ export default function FolderBrowserModal({
             <Folder size={16} className="text-emerald-400" aria-hidden="true" />
             选择本地文件夹
           </h3>
-          <button onClick={onClose} aria-label="关闭" title="关闭" className="grid size-8 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-white">
-            <X size={15} aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setCreatingFolder((current) => !current)}
+              disabled={loading || !data?.current || Boolean(data.error)}
+              aria-label="在当前目录创建文件夹"
+              aria-expanded={creatingFolder}
+              title="创建文件夹"
+              className={`grid size-8 place-items-center rounded-md disabled:opacity-40 ${
+                creatingFolder
+                  ? "bg-emerald-950/60 text-emerald-300"
+                  : "text-neutral-500 hover:bg-neutral-800 hover:text-white"
+              }`}
+            >
+              <FolderPlus size={15} aria-hidden="true" />
+            </button>
+            <button onClick={onClose} aria-label="关闭" title="关闭" className="grid size-8 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-white">
+              <X size={15} aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col p-4">
@@ -89,6 +109,16 @@ export default function FolderBrowserModal({
         <p className="mb-3 truncate rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 font-mono text-xs text-neutral-300">
           {data?.current ?? "..."}
         </p>
+
+        {creatingFolder && data?.current && (
+          <div className="mb-3 overflow-hidden rounded-md border border-neutral-800">
+            <CreateFolderControl
+              parentPath={data.current}
+              onCancel={() => setCreatingFolder(false)}
+              onCreated={onSelect}
+            />
+          </div>
+        )}
 
         <div className="mb-2 flex flex-wrap gap-1.5">
           {data?.roots.map((root) => (

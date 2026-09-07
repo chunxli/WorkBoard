@@ -4,6 +4,7 @@ import { ownedRunWhere } from "@/lib/run-access";
 import { getSessionUserId } from "@/lib/session";
 import { syncTerminalRun, TerminalSyncInProgressError } from "@/lib/terminal-resume";
 import { CopilotSessionInUseError } from "@/lib/copilot-session-compat";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export async function POST(
   _req: NextRequest,
@@ -18,8 +19,8 @@ export async function POST(
     select: { id: true, trigger: true },
   });
   if (!run) return NextResponse.json({ error: "Run not found" }, { status: 404 });
-  if (run.trigger !== "TERMINAL_RESUME") {
-    return NextResponse.json({ error: "Run is not a terminal resume" }, { status: 409 });
+  if (!isTerminalRunTrigger(run.trigger)) {
+    return NextResponse.json({ error: "Run is not an external terminal session" }, { status: 409 });
   }
 
   try {

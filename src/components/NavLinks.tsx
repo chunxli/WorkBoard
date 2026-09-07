@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BookOpen,
   History,
   ListTodo,
   Settings,
@@ -14,6 +15,7 @@ const links: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/work", label: "Work", icon: SquareKanban },
   { href: "/tasks", label: "Automations", icon: ListTodo },
   { href: "/runs", label: "Runs", icon: History },
+  { href: "/docs", label: "Docs", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
