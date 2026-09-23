@@ -175,6 +175,8 @@ export async function finalizeWorkRunArtifacts(options: {
   const { paths, snapshot } = options;
   const result = options.finalOutput?.trim()
     ? `${options.finalOutput.trim()}\n`
+    : snapshot.status === "UNKNOWN"
+      ? `# Terminal state unknown\n\n${snapshot.errorMessage ?? "The Terminal state could not be confirmed."}\n`
     : snapshot.errorMessage
       ? `# Run failed\n\n${snapshot.errorMessage}\n`
       : `# Run finished\n\nNo final assistant response was captured.\n`;

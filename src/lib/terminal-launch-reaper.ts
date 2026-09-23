@@ -2,12 +2,12 @@ import path from "node:path";
 import { rm } from "node:fs/promises";
 import { prisma } from "@/lib/prisma";
 import {
-  finalizeFailedTerminalRun,
+  finalizeUnknownTerminalRun,
   syncExpiredTerminalRun,
   tryReadTerminalLaunchExitCode,
+  UNKNOWN_TERMINAL_STATE_ERROR,
 } from "@/lib/terminal-resume";
 
-const TERMINAL_EXPIRY_ERROR = "Terminal callback token expired";
 const TERMINAL_REAPER_INTERVAL_MS = 60_000;
 const STALE_SYNCING_MS = 5 * 60_000;
 
@@ -25,7 +25,7 @@ export interface TerminalLaunchReaperDependencies {
     now: Date,
     errorMessage: string
   ) => Promise<boolean>;
-  finalizeRun: (runId: string, errorMessage: string, finishedAt: Date) => Promise<boolean>;
+  finalizeUnknownRun: (runId: string, errorMessage: string, finishedAt: Date) => Promise<boolean>;
   readExitCode: (launchId: string) => Promise<number | null>;
   syncExpiredRun: (runId: string, exitCode: number) => Promise<unknown>;
   removeLaunchFile: (launchId: string) => Promise<void>;
@@ -45,13 +45,9 @@ export async function reapExpiredTerminalRuns(
       reaped += 1;
       continue;
     }
-    const claimed = await dependencies.claimExpired(launch, now, TERMINAL_EXPIRY_ERROR);
+    const claimed = await dependencies.claimExpired(launch, now, UNKNOWN_TERMINAL_STATE_ERROR);
     if (!claimed) continue;
-    try {
-      await dependencies.finalizeRun(launch.runId, TERMINAL_EXPIRY_ERROR, now);
-    } finally {
-      await dependencies.removeLaunchFile(launch.id).catch(() => {});
-    }
+    await dependencies.finalizeUnknownRun(launch.runId, UNKNOWN_TERMINAL_STATE_ERROR, now);
     reaped += 1;
   }
   return reaped;
@@ -92,7 +88,7 @@ const prismaTerminalLaunchReaperDependencies: TerminalLaunchReaperDependencies =
       errorMessage,
     },
   })).count === 1,
-  finalizeRun: finalizeFailedTerminalRun,
+  finalizeUnknownRun: finalizeUnknownTerminalRun,
   readExitCode: tryReadTerminalLaunchExitCode,
   syncExpiredRun: syncExpiredTerminalRun,
   removeLaunchFile: async (launchId) => {

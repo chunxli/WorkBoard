@@ -1,5 +1,11 @@
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
+export function getRunStatusLabel(status: string): string {
+  if (status === "IN_TERMINAL") return "IN TERMINAL";
+  if (status === "UNKNOWN") return "TERMINAL / STATUS UNKNOWN";
+  return status;
+}
+
 export function getWorkRunDisplayStatus(run: {
   status: string;
   trigger: string;

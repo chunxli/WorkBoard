@@ -60,6 +60,46 @@ describe("Git Work snapshots", () => {
     expect(diff).toContain("new.txt");
     expect(diff).not.toContain("runtime.log");
   });
+
+  it("does not describe an unknown terminal state as a failed run", async () => {
+    const work = await temporaryDirectory();
+    const snapshot: WorkRunSnapshot = {
+      schemaVersion: 1,
+      runId: "unknown-run",
+      workId: "work-1",
+      workName: "Example",
+      promptFileName: "PROMPT.md",
+      prompt: "Do the work",
+      promptHash: "hash",
+      engine: "CLI",
+      sessionId: "session-1",
+      executionPath: work,
+      concurrencyMode: "EXTERNAL_TERMINAL",
+      status: "RUNNING",
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      exitCode: null,
+      errorMessage: null,
+      gitBeforeTree: null,
+      gitAfterTree: null,
+    };
+    const paths = await prepareWorkRunArtifacts(work, "unknown-run", snapshot);
+    await finalizeWorkRunArtifacts({
+      paths,
+      snapshot: {
+        ...snapshot,
+        status: "UNKNOWN",
+        finishedAt: new Date().toISOString(),
+        errorMessage: "Terminal callback expired; the Terminal state is unknown",
+      },
+      finalOutput: null,
+      diff: "",
+    });
+
+    const result = await readFile(paths.result, "utf8");
+    expect(result).toContain("# Terminal state unknown");
+    expect(result).not.toContain("# Run failed");
+  });
 });
 
 describe("Run artifacts", () => {

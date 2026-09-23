@@ -16,7 +16,7 @@ try {
     else {
         @("--resume=$($launch.sessionId)")
     }
-    & copilot @copilotArgs
+    & copilot @($copilotArgs)
     $exitCode = $LASTEXITCODE
 }
 catch {

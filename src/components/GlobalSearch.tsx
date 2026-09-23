@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
+import { getRunStatusLabel } from "@/lib/work-run-status";
 
 interface SearchResults {
   works: { id: string; name: string }[];
@@ -164,7 +165,7 @@ export default function GlobalSearch() {
                   onClick={() => goTo(`/runs/${r.id}`)}
                   className="block w-full rounded-md px-2 py-2 text-left text-neutral-200 hover:bg-neutral-800"
                 >
-                  {r.work?.name ?? r.task?.name ?? "Unknown"} · {r.id.slice(0, 8)} ({r.status})
+                  {r.work?.name ?? r.task?.name ?? "Unknown"} · {r.id.slice(0, 8)} ({getRunStatusLabel(r.status)})
                 </button>
               ))}
             </div>

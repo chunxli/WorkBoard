@@ -25,6 +25,7 @@ enum TriggerType {
 enum RunStatus {
   PENDING
   RUNNING
+  UNKNOWN
   SUCCESS
   FAILED
   TIMED_OUT

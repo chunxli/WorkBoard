@@ -11,7 +11,7 @@ import { ownedRunWhere } from "@/lib/run-access";
 import PageHeader from "@/components/PageHeader";
 
 const PAGE_SIZE = 20;
-const VALID_STATUSES = new Set(["PENDING", "RUNNING", "SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"]);
+const VALID_STATUSES = new Set(["PENDING", "RUNNING", "UNKNOWN", "SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"]);
 
 export default async function RunsPage({
   searchParams,

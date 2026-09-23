@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
+import { getRunStatusLabel } from "@/lib/work-run-status";
 
-const STATUSES = ["PENDING", "RUNNING", "SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"];
+const STATUSES = ["PENDING", "RUNNING", "UNKNOWN", "SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"];
 
 export default function RunStatusFilter() {
   const router = useRouter();
@@ -30,7 +31,7 @@ export default function RunStatusFilter() {
       <option value="">All statuses</option>
       {STATUSES.map((s) => (
         <option key={s} value={s}>
-          {s}
+          {getRunStatusLabel(s)}
         </option>
       ))}
     </select>

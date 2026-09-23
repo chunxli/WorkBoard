@@ -270,7 +270,7 @@ export default async function WorkDetailPage({
                     work.status !== "ARCHIVED"
                   }
                   canSync={
-                    latestRun.status === "RUNNING" &&
+                    (latestRun.status === "RUNNING" || latestRun.status === "UNKNOWN") &&
                     isTerminalRunTrigger(latestRun.trigger) &&
                     latestRun.terminalLaunches[0] !== undefined &&
                     latestRun.terminalLaunches[0].status !== "COMPLETED"
@@ -293,7 +293,14 @@ export default async function WorkDetailPage({
             outputFormat={latestRun.outputFormat === "json" ? "json" : "text"}
           />
           {latestRun.errorMessage && (
-            <p role="alert" className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-sm text-red-400">
+            <p
+              role="alert"
+              className={`rounded-md border px-3 py-2 text-sm ${
+                latestRun.status === "UNKNOWN"
+                  ? "border-amber-900/50 bg-amber-950/20 text-amber-300"
+                  : "border-red-900/50 bg-red-950/20 text-red-400"
+              }`}
+            >
               {latestRun.errorMessage}
             </p>
           )}

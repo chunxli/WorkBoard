@@ -471,8 +471,8 @@ export const operationalLimits: BilingualText[] = [
     en: "System notifications use at-most-once claims; a crash after claim can lose one toast, but it will not be duplicated.",
   },
   {
-    zh: "外部 Terminal 必须通过 callback 或手工 Sync 收口；过期 launch 会由后台 reaper 处理。",
-    en: "External Terminal Runs must converge through callback or manual Sync; expired launches are handled by the background reaper.",
+    zh: "外部 Terminal 必须通过 callback 或手工 Sync 收口；没有退出码就过期的 callback 会将 Run 标为 UNKNOWN，而不是 FAILED，之后仍可同步。",
+    en: "External Terminal Runs must converge through callback or manual Sync; when a callback expires without an exit code, the Run is marked UNKNOWN rather than FAILED and can be synchronized later.",
   },
   {
     zh: "大型目录复制会包含依赖、build output、隐藏文件和 Git metadata；执行前检查磁盘空间。",

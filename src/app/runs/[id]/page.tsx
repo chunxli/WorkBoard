@@ -103,7 +103,7 @@ export default async function RunDetailPage({
               runId={run.id}
               canResume={!ownerArchived && resumeReady}
               canSync={
-                run.status === "RUNNING" &&
+                (run.status === "RUNNING" || run.status === "UNKNOWN") &&
                 isTerminalRunTrigger(run.trigger) &&
                 terminalLaunchStatus !== undefined &&
                 terminalLaunchStatus !== "COMPLETED"
@@ -145,7 +145,11 @@ export default async function RunDetailPage({
             ))}
           </div>
         )}
-        {run.errorMessage && <p className="mt-2 text-sm text-red-400">{run.errorMessage}</p>}
+        {run.errorMessage && (
+          <p className={`mt-2 text-sm ${run.status === "UNKNOWN" ? "text-amber-300" : "text-red-400"}`}>
+            {run.errorMessage}
+          </p>
+        )}
       </header>
 
       {run.task ? (

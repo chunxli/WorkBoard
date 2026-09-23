@@ -4,7 +4,10 @@ import {
   type ExpiredTerminalLaunch,
   type TerminalLaunchReaperDependencies,
 } from "./terminal-launch-reaper";
-import { parseTerminalLaunchExitCode } from "./terminal-resume";
+import {
+  parseTerminalLaunchExitCode,
+  UNKNOWN_TERMINAL_STATE_ERROR,
+} from "./terminal-resume";
 
 const updatedAt = new Date("2026-09-03T11:00:00.000Z");
 
@@ -14,7 +17,7 @@ function expiredLaunch(id: string, runId: string): ExpiredTerminalLaunch {
 
 function createReaper(candidates: ExpiredTerminalLaunch[]) {
   const claimed = new Set<string>();
-  const finalizeRun = vi.fn(async () => true);
+  const finalizeUnknownRun = vi.fn(async () => true);
   const removeLaunchFile = vi.fn(async () => undefined);
   const dependencies: TerminalLaunchReaperDependencies = {
     now: () => new Date("2026-09-03T12:00:00.000Z"),
@@ -24,12 +27,12 @@ function createReaper(candidates: ExpiredTerminalLaunch[]) {
       claimed.add(launch.id);
       return true;
     },
-    finalizeRun,
+    finalizeUnknownRun,
     readExitCode: async () => null,
     syncExpiredRun: async () => undefined,
     removeLaunchFile,
   };
-  return { dependencies, finalizeRun, removeLaunchFile };
+  return { dependencies, finalizeUnknownRun, removeLaunchFile };
 }
 
 describe("terminal launch reaper", () => {
@@ -39,19 +42,18 @@ describe("terminal launch reaper", () => {
       .toThrow("exit status is unavailable");
   });
 
-  it("terminalizes expired Runs even when the launch file is already absent", async () => {
+  it("marks expired Runs unknown and preserves the launch file when no exit status exists", async () => {
     const launch = expiredLaunch("launch-1", "run-1");
     const state = createReaper([launch]);
-    state.removeLaunchFile.mockRejectedValueOnce(new Error("missing"));
 
     await expect(reapExpiredTerminalRuns(state.dependencies)).resolves.toBe(1);
 
-    expect(state.finalizeRun).toHaveBeenCalledWith(
+    expect(state.finalizeUnknownRun).toHaveBeenCalledWith(
       "run-1",
-      "Terminal callback token expired",
+      UNKNOWN_TERMINAL_STATE_ERROR,
       new Date("2026-09-03T12:00:00.000Z")
     );
-    expect(state.removeLaunchFile).toHaveBeenCalledWith("launch-1");
+    expect(state.removeLaunchFile).not.toHaveBeenCalled();
   });
 
   it("allows only one concurrent reaper to claim a launch", async () => {
@@ -63,14 +65,14 @@ describe("terminal launch reaper", () => {
     ]);
 
     expect(results.sort()).toEqual([0, 1]);
-    expect(state.finalizeRun).toHaveBeenCalledTimes(1);
+    expect(state.finalizeUnknownRun).toHaveBeenCalledTimes(1);
   });
 
   it("does nothing when the database query excludes active or syncing launches", async () => {
     const state = createReaper([]);
 
     await expect(reapExpiredTerminalRuns(state.dependencies)).resolves.toBe(0);
-    expect(state.finalizeRun).not.toHaveBeenCalled();
+    expect(state.finalizeUnknownRun).not.toHaveBeenCalled();
   });
 
   it("can retry a claimed launch when the Run is still active", async () => {
@@ -80,7 +82,7 @@ describe("terminal launch reaper", () => {
       now: () => new Date("2026-09-03T12:00:00.000Z"),
       listExpired: async () => [launch],
       claimExpired: async () => true,
-      finalizeRun: async () => {
+      finalizeUnknownRun: async () => {
         finalizationAttempts += 1;
         if (finalizationAttempts === 1) throw new Error("database unavailable");
         return true;
@@ -98,13 +100,13 @@ describe("terminal launch reaper", () => {
   it("synchronizes an expired launch when its terminal exit status was persisted", async () => {
     const launch = expiredLaunch("launch-1", "run-1");
     const syncExpiredRun = vi.fn(async () => undefined);
-    const finalizeRun = vi.fn(async () => true);
+    const finalizeUnknownRun = vi.fn(async () => true);
     const removeLaunchFile = vi.fn(async () => undefined);
     const dependencies: TerminalLaunchReaperDependencies = {
       now: () => new Date("2026-09-03T12:00:00.000Z"),
       listExpired: async () => [launch],
       claimExpired: async () => true,
-      finalizeRun,
+      finalizeUnknownRun,
       readExitCode: async () => 0,
       syncExpiredRun,
       removeLaunchFile,
@@ -112,7 +114,7 @@ describe("terminal launch reaper", () => {
 
     await expect(reapExpiredTerminalRuns(dependencies)).resolves.toBe(1);
     expect(syncExpiredRun).toHaveBeenCalledWith("run-1", 0);
-    expect(finalizeRun).not.toHaveBeenCalled();
+    expect(finalizeUnknownRun).not.toHaveBeenCalled();
     expect(removeLaunchFile).toHaveBeenCalledWith("launch-1");
   });
 });

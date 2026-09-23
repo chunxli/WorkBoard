@@ -65,6 +65,8 @@ export class TerminalSyncInProgressError extends Error {
 
 const UNKNOWN_TERMINAL_EXIT_ERROR =
   "Terminal closed before reporting its exit status, and the Copilot session did not record a complete response";
+export const UNKNOWN_TERMINAL_STATE_ERROR =
+  "Terminal callback expired; the Terminal state is unknown";
 
 export interface TerminalRunOutcome {
   status: "SUCCESS" | "FAILED";
@@ -434,8 +436,11 @@ export async function isTerminalResumeReady(run: {
   });
 }
 
-export async function finalizeFailedTerminalRun(
+type FinalizedTerminalRunStatus = "FAILED" | "UNKNOWN";
+
+async function finalizeTerminalRun(
   runId: string,
+  status: FinalizedTerminalRunStatus,
   errorMessage: string,
   finishedAt = new Date()
 ): Promise<boolean> {
@@ -470,7 +475,7 @@ export async function finalizeFailedTerminalRun(
           paths,
           snapshot: {
             ...snapshot,
-            status: "FAILED",
+            status,
             finishedAt: finishedAt.toISOString(),
             errorMessage,
             gitAfterTree: sourceDiff.afterGitTree,
@@ -483,7 +488,7 @@ export async function finalizeFailedTerminalRun(
 
     const updated = await prisma.run.updateMany({
       where: { id: run.id, status: "RUNNING" },
-      data: { status: "FAILED", errorMessage, finishedAt },
+      data: { status, errorMessage, finishedAt },
     });
     if (updated.count === 0) return false;
     if (run.work) {
@@ -503,6 +508,22 @@ export async function finalizeFailedTerminalRun(
     }
     return true;
   });
+}
+
+export async function finalizeFailedTerminalRun(
+  runId: string,
+  errorMessage: string,
+  finishedAt = new Date()
+): Promise<boolean> {
+  return finalizeTerminalRun(runId, "FAILED", errorMessage, finishedAt);
+}
+
+export async function finalizeUnknownTerminalRun(
+  runId: string,
+  errorMessage: string,
+  finishedAt = new Date()
+): Promise<boolean> {
+  return finalizeTerminalRun(runId, "UNKNOWN", errorMessage, finishedAt);
 }
 
 export async function syncTerminalRun(
@@ -556,14 +577,15 @@ async function syncTerminalRunUnlocked(
     select: { id: true },
   });
   const persistedExitCode = exitCode ?? await tryReadTerminalLaunchExitCode(terminalLaunch.id);
+  const allowExpiredLaunch = allowExpired || persistedExitCode !== null;
 
   const now = new Date();
   const claim = await prisma.terminalLaunch.updateMany({
     where: {
       runId,
       status: { in: ["PENDING", "LAUNCHED", "SYNCING", "FAILED"] },
-      ...(allowExpired
-        ? { expiresAt: { lte: now }, run: { status: "RUNNING" as const } }
+      ...(allowExpiredLaunch
+        ? { expiresAt: { lte: now }, run: { status: { in: ["RUNNING", "UNKNOWN"] as const } } }
         : { completedAt: null, expiresAt: { gt: now } }),
     },
     data: { status: "SYNCING", completedAt: null, errorMessage: null },

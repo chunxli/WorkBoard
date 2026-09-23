@@ -1,3 +1,5 @@
+import { getRunStatusLabel } from "@/lib/work-run-status";
+
 const STATUS_COLORS: Record<string, string> = {
   SUCCESS: "bg-emerald-600",
   FAILED: "bg-red-600",
@@ -5,6 +7,7 @@ const STATUS_COLORS: Record<string, string> = {
   CANCELLED: "bg-neutral-500",
   RUNNING: "bg-blue-600",
   PENDING: "bg-neutral-400",
+  UNKNOWN: "bg-amber-500",
 };
 
 export interface DayBucket {
@@ -29,7 +32,7 @@ export default function ActivityChart({ days }: { days: DayBucket[] }) {
                   key={status}
                   className={`w-full ${STATUS_COLORS[status] ?? "bg-neutral-600"}`}
                   style={{ height: `${((count ?? 0) / maxTotal) * 96}px` }}
-                  title={`${status}: ${count}`}
+                  title={`${getRunStatusLabel(status)}: ${count}`}
                 />
               ))
             )}
