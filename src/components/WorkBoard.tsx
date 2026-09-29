@@ -26,6 +26,7 @@ import {
   Bot,
   Boxes,
   ChevronDown,
+  Code2,
   Copy,
   FileText,
   Folder,
@@ -140,6 +141,8 @@ export default function WorkBoard({
   const [error, setError] = useState<string | null>(null);
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [openingWorkPath, setOpeningWorkPath] = useState<string | null>(null);
+  const [vsCodeError, setVsCodeError] = useState<string | null>(null);
+  const [openingVSCodePath, setOpeningVSCodePath] = useState<string | null>(null);
   const [resumingRunId, setResumingRunId] = useState<string | null>(null);
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [archivingWorkId, setArchivingWorkId] = useState<string | null>(null);
@@ -427,6 +430,28 @@ export default function WorkBoard({
       setTerminalError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setResumingRunId(null);
+    }
+  }
+
+  async function openWorkInVSCode(directoryPath: string) {
+    setOpeningVSCodePath(directoryPath);
+    setVsCodeError(null);
+    try {
+      const response = await fetch("/api/fs/open-vscode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: directoryPath }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof body.error === "string" ? body.error : "Failed to open VS Code"
+        );
+      }
+    } catch (reason) {
+      setVsCodeError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setOpeningVSCodePath(null);
     }
   }
 
@@ -852,6 +877,11 @@ export default function WorkBoard({
               {explorerError}
             </p>
           )}
+          {vsCodeError && (
+            <p role="alert" className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-400">
+              {vsCodeError}
+            </p>
+          )}
           {terminalError && (
             <p role="alert" className="rounded-md border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-400">
               {terminalError}
@@ -888,6 +918,9 @@ export default function WorkBoard({
                     canOpenExplorer={canOpenExplorer && view === "current"}
                     openingWorkPath={openingWorkPath}
                     onOpenExplorer={(path) => void openWorkInExplorer(path)}
+                    canOpenVSCode={canOpenExplorer && view === "current"}
+                    openingVSCodePath={openingVSCodePath}
+                    onOpenVSCode={(path) => void openWorkInVSCode(path)}
                     resumingRunId={resumingRunId}
                     onResumeInTerminal={(selectedWork) => void resumeWorkInTerminal(selectedWork)}
                     canArchive={view === "current"}
@@ -924,6 +957,9 @@ function SortableWorkCard({
   canOpenExplorer,
   openingWorkPath,
   onOpenExplorer,
+  canOpenVSCode,
+  openingVSCodePath,
+  onOpenVSCode,
   resumingRunId,
   onResumeInTerminal,
   canArchive,
@@ -935,6 +971,9 @@ function SortableWorkCard({
   canOpenExplorer: boolean;
   openingWorkPath: string | null;
   onOpenExplorer: (directoryPath: string) => void;
+  canOpenVSCode: boolean;
+  openingVSCodePath: string | null;
+  onOpenVSCode: (directoryPath: string) => void;
   resumingRunId: string | null;
   onResumeInTerminal: (work: WorkSummary) => void;
   canArchive: boolean;
@@ -1049,6 +1088,22 @@ function SortableWorkCard({
                 <LoaderCircle size={15} className="animate-spin" aria-hidden="true" />
               ) : (
                 <FolderOpen size={15} aria-hidden="true" />
+              )}
+            </button>
+          )}
+          {canOpenVSCode && (
+            <button
+              type="button"
+              onClick={() => onOpenVSCode(work.directoryPath)}
+              disabled={openingVSCodePath !== null}
+              aria-label={`Open ${work.name} in VS Code`}
+              title="Open in VS Code"
+              className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-emerald-300 disabled:opacity-40"
+            >
+              {openingVSCodePath === work.directoryPath ? (
+                <LoaderCircle size={15} className="animate-spin" aria-hidden="true" />
+              ) : (
+                <Code2 size={15} aria-hidden="true" />
               )}
             </button>
           )}

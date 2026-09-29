@@ -185,8 +185,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Work Cards",
-        zh: "卡片显示状态、目录、引擎、实际模型、token、Automation 数量与 Terminal 状态；Current Work 支持拖动排序。",
-        en: "Cards show status, directory, engine, actual models, tokens, Automation count, and Terminal state; Current Work supports persistent drag ordering.",
+        zh: "卡片显示状态、目录、引擎、实际模型、token、Automation 数量与 Terminal 状态；可直接在 Windows Explorer 或 VS Code 打开 Work，Current Work 支持拖动排序。",
+        en: "Cards show status, directory, engine, actual models, tokens, Automation count, and Terminal state; Work directories can open directly in Windows Explorer or VS Code, and Current Work supports persistent drag ordering.",
         href: "/work",
         label: "View cards",
       },
@@ -241,8 +241,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Common Roots & Explorer",
-        zh: "保存常用根目录、浏览直接子目录、在当前目录创建并自动选择新文件夹，以及在 Windows Explorer 打开根目录、子目录或 Work。",
-        en: "Save common roots, browse immediate children, create and select a new child folder, and open roots, child folders, or Works in Windows Explorer.",
+        zh: "保存常用根目录、浏览直接子目录、在当前目录创建并自动选择新文件夹，以及在 Windows Explorer 打开根目录、子目录或 Work。Work Card 还可直接在 VS Code 打开目录。",
+        en: "Save common roots, browse immediate children, create and select a new child folder, and open roots, child folders, or Works in Windows Explorer. Work cards can also open their directory directly in VS Code.",
         href: "/settings",
         label: "Manage paths",
       },
