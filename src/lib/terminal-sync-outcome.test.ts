@@ -44,15 +44,19 @@ describe("terminal sync outcome", () => {
     }))).toMatchObject({ status: "SUCCESS", exitCode: null });
   });
 
-  it("fails an incomplete session when the terminal did not report an exit code", () => {
+  it("keeps an incomplete session unknown when the terminal did not report an exit code", () => {
     const outcome = resolveTerminalRunOutcome(null, completion({
       rootFinalOutput: null,
       openTools: [{ id: "tool-1", name: "write" }],
       sessionIdle: false,
     }));
 
-    expect(outcome.status).toBe("FAILED");
+    expect(outcome.status).toBe("UNKNOWN");
     expect(outcome.exitCode).toBeNull();
-    expect(outcome.errorMessage).toContain("did not record a complete response");
+    expect(outcome.errorMessage).toContain("Completion is unconfirmed");
+  });
+
+  it("does not infer success from an aborted response", () => {
+    expect(resolveTerminalRunOutcome(null, completion({ aborted: true })).status).toBe("UNKNOWN");
   });
 });

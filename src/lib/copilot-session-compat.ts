@@ -49,6 +49,10 @@ function getSessionPaths(sessionId: string, baseDirectory?: string) {
   return { directory, eventsPath: path.join(directory, "events.jsonl") };
 }
 
+export function getCopilotSessionEventsPath(sessionId: string, baseDirectory?: string): string {
+  return getSessionPaths(sessionId, baseDirectory).eventsPath;
+}
+
 export async function copilotSessionExists(
   sessionId: string,
   baseDirectory?: string
@@ -151,7 +155,33 @@ export async function readCompatibleCopilotSessionEvents(
   return upgradeLegacySessionContent(content).events;
 }
 
-function processIsAlive(pid: number): boolean {
+export async function readCopilotSessionSnapshot(
+  sessionId: string,
+  baseDirectory?: string
+): Promise<{ events: unknown[]; incompleteTail: boolean; size: number; modifiedAt: Date }> {
+  const { eventsPath } = getSessionPaths(sessionId, baseDirectory);
+  const content = await readFile(eventsPath, "utf8");
+  const file = await stat(eventsPath);
+  const boundary = content.lastIndexOf("\n") + 1;
+  const tail = content.slice(boundary);
+  let incompleteTail = false;
+  if (tail.trim()) {
+    try {
+      JSON.parse(tail);
+    } catch {
+      incompleteTail = true;
+    }
+  }
+  const snapshot = incompleteTail ? content.slice(0, boundary) : content;
+  return {
+    events: upgradeLegacySessionContent(snapshot).events,
+    incompleteTail,
+    size: Buffer.byteLength(content, "utf8"),
+    modifiedAt: file.mtime,
+  };
+}
+
+export function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

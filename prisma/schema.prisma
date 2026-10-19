@@ -84,6 +84,14 @@ enum WorkEngine {
   SDK
 }
 
+enum SteeringDeliveryState {
+  SUBMITTING
+  ACCEPTED
+  OBSERVED
+  UNCERTAIN
+  REJECTED
+}
+
 model Repo {
   id          String         @id @default(cuid())
   userId      String
@@ -181,6 +189,7 @@ model Work {
 
   tasks          Task[]
   runs           Run[]
+  steeringMessages WorkSteeringMessage[]
   experiments    Experiment[]
 
   @@unique([userId, canonicalPath, promptFileName])
@@ -289,6 +298,7 @@ model Run {
   // that hasn't started yet has no value here; fall back to the task's repo hostname in the UI.
   hostname     String?
   terminalLaunches TerminalLaunch[]
+  steeringMessages WorkSteeringMessage[]
 
   @@index([taskId])
   @@index([workId, createdAt])
@@ -296,6 +306,32 @@ model Run {
   @@index([resumedFromRunId])
   @@index([experimentVariantId])
   @@index([notificationClaimedAt, finishedAt])
+}
+
+model WorkSteeringMessage {
+  id                 String                @id @default(cuid())
+  workId             String
+  work               Work                  @relation(fields: [workId], references: [id], onDelete: Cascade)
+  runId              String
+  run                Run                   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  sessionId          String
+  requestId          String
+  content            String
+  deliveryState      SteeringDeliveryState @default(SUBMITTING)
+  transportMessageId String?
+  promptSynced       Boolean               @default(false)
+  promptError        String?
+  artifactSynced     Boolean               @default(false)
+  artifactError      String?
+  createdAt          DateTime              @default(now())
+  acceptedAt         DateTime?
+  observedAt         DateTime?
+  updatedAt          DateTime              @updatedAt
+
+  @@unique([runId, requestId])
+  @@index([workId, createdAt])
+  @@index([runId, createdAt])
+  @@index([sessionId, createdAt])
 }
 
 model Experiment {
@@ -345,17 +381,20 @@ model TerminalLaunch {
   id          String               @id @default(cuid())
   runId       String               @unique
   run         Run                  @relation(fields: [runId], references: [id], onDelete: Cascade)
-  tokenHash   String               @unique
   status      TerminalLaunchStatus @default(PENDING)
   launcherPid Int?
-  expiresAt   DateTime
   launchedAt  DateTime?
   completedAt DateTime?
+  inactiveSince DateTime?
+  historySize Int?
+  historyModifiedAt DateTime?
+  syncToken   String?
+  syncOwnerPid Int?
   errorMessage String?
   createdAt   DateTime             @default(now())
   updatedAt   DateTime             @updatedAt
 
-  @@index([status, expiresAt])
+  @@index([status, updatedAt])
 }
 
 model ApiToken {

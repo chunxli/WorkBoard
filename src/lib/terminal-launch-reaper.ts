@@ -1,126 +1,59 @@
-import path from "node:path";
-import { rm } from "node:fs/promises";
+import { hostname } from "node:os";
 import { prisma } from "@/lib/prisma";
-import {
-  finalizeUnknownTerminalRun,
-  syncExpiredTerminalRun,
-  tryReadTerminalLaunchExitCode,
-  UNKNOWN_TERMINAL_STATE_ERROR,
-} from "@/lib/terminal-resume";
+import { reconcileTerminalRun } from "@/lib/terminal-resume";
+import { TERMINAL_RUN_TRIGGERS } from "@/lib/terminal-run";
 
-const TERMINAL_REAPER_INTERVAL_MS = 60_000;
-const STALE_SYNCING_MS = 5 * 60_000;
-
-export interface ExpiredTerminalLaunch {
-  id: string;
-  runId: string;
-  updatedAt: Date;
+export interface TerminalHistorySyncDependencies {
+  listRuns: () => Promise<{ id: string }[]>;
+  reconcile: (runId: string) => Promise<void>;
+  onError: (runId: string, error: unknown) => void;
 }
 
-export interface TerminalLaunchReaperDependencies {
-  now: () => Date;
-  listExpired: (now: Date) => Promise<ExpiredTerminalLaunch[]>;
-  claimExpired: (
-    launch: ExpiredTerminalLaunch,
-    now: Date,
-    errorMessage: string
-  ) => Promise<boolean>;
-  finalizeUnknownRun: (runId: string, errorMessage: string, finishedAt: Date) => Promise<boolean>;
-  readExitCode: (launchId: string) => Promise<number | null>;
-  syncExpiredRun: (runId: string, exitCode: number) => Promise<unknown>;
-  removeLaunchFile: (launchId: string) => Promise<void>;
-}
-
-export async function reapExpiredTerminalRuns(
-  dependencies: TerminalLaunchReaperDependencies = prismaTerminalLaunchReaperDependencies
-): Promise<number> {
-  const now = dependencies.now();
-  const candidates = await dependencies.listExpired(now);
-  let reaped = 0;
-  for (const launch of candidates) {
-    const exitCode = await dependencies.readExitCode(launch.id);
-    if (exitCode !== null) {
-      await dependencies.syncExpiredRun(launch.runId, exitCode);
-      await dependencies.removeLaunchFile(launch.id).catch(() => {});
-      reaped += 1;
-      continue;
+export async function reconcileTerminalRuns(
+  services: TerminalHistorySyncDependencies = dependencies
+): Promise<void> {
+  for (const run of await services.listRuns()) {
+    try {
+      await services.reconcile(run.id);
+    } catch (error) {
+      services.onError(run.id, error);
     }
-    const claimed = await dependencies.claimExpired(launch, now, UNKNOWN_TERMINAL_STATE_ERROR);
-    if (!claimed) continue;
-    await dependencies.finalizeUnknownRun(launch.runId, UNKNOWN_TERMINAL_STATE_ERROR, now);
-    reaped += 1;
   }
-  return reaped;
 }
 
-const prismaTerminalLaunchReaperDependencies: TerminalLaunchReaperDependencies = {
-  now: () => new Date(),
-  listExpired: (now) => prisma.terminalLaunch.findMany({
+const dependencies: TerminalHistorySyncDependencies = {
+  listRuns: () => prisma.run.findMany({
     where: {
-      run: { status: "RUNNING" },
-      expiresAt: { lte: now },
-      OR: [
-        { status: { in: ["PENDING", "LAUNCHED", "FAILED"] } },
-        {
-          status: "SYNCING",
-          updatedAt: { lte: new Date(now.getTime() - STALE_SYNCING_MS) },
-        },
-      ],
+      trigger: { in: [...TERMINAL_RUN_TRIGGERS] },
+      status: { in: ["RUNNING", "UNKNOWN"] },
+      copilotSessionId: { not: null },
+      terminalLaunches: { some: {} },
+      resumedRuns: { none: {} },
+      OR: [{ hostname: hostname() }, { hostname: null }],
     },
-    select: { id: true, runId: true, updatedAt: true },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
   }),
-  claimExpired: async (launch, now, errorMessage) => (await prisma.terminalLaunch.updateMany({
-    where: {
-      id: launch.id,
-      updatedAt: launch.updatedAt,
-      expiresAt: { lte: now },
-      OR: [
-        { status: { in: ["PENDING", "LAUNCHED", "FAILED"] } },
-        {
-          status: "SYNCING",
-          updatedAt: { lte: new Date(now.getTime() - STALE_SYNCING_MS) },
-        },
-      ],
-    },
-    data: {
-      status: "FAILED",
-      completedAt: now,
-      errorMessage,
-    },
-  })).count === 1,
-  finalizeUnknownRun: finalizeUnknownTerminalRun,
-  readExitCode: tryReadTerminalLaunchExitCode,
-  syncExpiredRun: syncExpiredTerminalRun,
-  removeLaunchFile: async (launchId) => {
-    await rm(
-      path.join(process.cwd(), "data", "terminal-launches", `${launchId}.json`),
-      { force: true }
-    );
-  },
+  reconcile: reconcileTerminalRun,
+  onError: (runId, error) => console.error(`[terminal-history] Run ${runId}:`, error),
 };
 
-const globalForTerminalReaper = globalThis as unknown as {
-  terminalLaunchReaperTimer?: NodeJS.Timeout;
-  terminalLaunchReaperRun?: Promise<number>;
+const state = globalThis as unknown as {
+  terminalHistoryTimer?: NodeJS.Timeout;
+  terminalHistoryPending?: Promise<void>;
 };
 
-export function startTerminalLaunchReaper(): void {
-  if (globalForTerminalReaper.terminalLaunchReaperTimer) return;
+export function startTerminalHistorySync(): void {
+  if (state.terminalHistoryTimer) return;
   const tick = () => {
-    if (globalForTerminalReaper.terminalLaunchReaperRun) return;
-    const pending = reapExpiredTerminalRuns()
-      .catch((error) => {
-        console.error("[terminal-reaper] failed:", error);
-        return 0;
-      })
+    if (state.terminalHistoryPending) return;
+    const pending = reconcileTerminalRuns()
+      .catch((error) => console.error("[terminal-history] Scan failed:", error))
       .finally(() => {
-        if (globalForTerminalReaper.terminalLaunchReaperRun === pending) {
-          delete globalForTerminalReaper.terminalLaunchReaperRun;
-        }
+        if (state.terminalHistoryPending === pending) delete state.terminalHistoryPending;
       });
-    globalForTerminalReaper.terminalLaunchReaperRun = pending;
+    state.terminalHistoryPending = pending;
   };
-  const timer = setInterval(tick, TERMINAL_REAPER_INTERVAL_MS);
-  timer.unref();
-  globalForTerminalReaper.terminalLaunchReaperTimer = timer;
+  state.terminalHistoryTimer = setInterval(tick, 60_000);
+  state.terminalHistoryTimer.unref();
 }

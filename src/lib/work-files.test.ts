@@ -239,6 +239,29 @@ describe("Work directory contract", () => {
     expect(content.match(/## Follow Up/g)).toHaveLength(1);
   });
 
+  it("appends accepted Steering instructions once with a per-message marker", async () => {
+    const directory = await temporaryDirectory();
+    const record = await provisionWorkDirectory({
+      workId: "work-steering",
+      name: "Steering",
+      directoryPath: directory,
+      prompt: "Original prompt",
+    });
+    const options = {
+      createdAt: new Date("2026-10-16T08:00:00.000Z"),
+      followUpId: "message-123",
+      kind: "steering" as const,
+    };
+
+    await appendWorkFollowUp(record, "Keep the current task focused", options);
+    await appendWorkFollowUp(record, "Keep the current task focused", options);
+
+    const content = await readFile(path.join(directory, record.promptFileName), "utf8");
+    expect(content.match(/workboard-steering:message-123/g)).toHaveLength(1);
+    expect(content.match(/## Steering/g)).toHaveLength(1);
+    expect(content).toContain("## Steering - 2026-10-16T08:00:00.000Z");
+  });
+
   it("copies all source content except Work Board metadata into a numbered sibling", async () => {
     const root = await temporaryDirectory();
     const source = path.join(root, "source");

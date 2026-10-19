@@ -146,7 +146,7 @@ async function cleanupTerminalLaunchFiles(): Promise<void> {
   if (ids.length === 0) return;
   const launches = await prisma.terminalLaunch.findMany({
     where: { id: { in: ids } },
-    select: { id: true, status: true, expiresAt: true },
+    select: { id: true, status: true },
   });
   const byId = new Map(launches.map((launch) => [launch.id, launch]));
 

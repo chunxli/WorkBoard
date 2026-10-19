@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { getRunStatusLabel, getWorkRunDisplayStatus } from "./work-run-status";
+import { getRunStatusLabel, getRunStatusMessage, getWorkRunDisplayStatus, TERMINAL_COMPLETION_UNCONFIRMED } from "./work-run-status";
+
+describe("getRunStatusMessage", () => {
+  it("does not assert that a terminal closed when its completion is unknown", () => {
+    expect(getRunStatusMessage("UNKNOWN", "Terminal closed before reporting its exit status, and the Copilot session did not record a complete response"))
+      .toBe(TERMINAL_COMPLETION_UNCONFIRMED);
+  });
+
+  it("preserves other diagnostics and absent messages", () => {
+    expect(getRunStatusMessage("FAILED", "Copilot exited with code 7")).toBe("Copilot exited with code 7");
+    expect(getRunStatusMessage("UNKNOWN", "Session history was truncated")).toBe("Session history was truncated");
+    expect(getRunStatusMessage("RUNNING", null)).toBeNull();
+  });
+});
 
 describe("getRunStatusLabel", () => {
-  it("explains that an unknown result belongs to a Terminal session", () => {
-    expect(getRunStatusLabel("UNKNOWN")).toBe("TERMINAL / STATUS UNKNOWN");
+  it("labels an unknown Terminal result without exposing the unknown state", () => {
+    expect(getRunStatusLabel("UNKNOWN")).toBe("TERMINAL");
   });
 
   it("keeps existing status labels unchanged", () => {

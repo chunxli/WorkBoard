@@ -12,10 +12,13 @@ import {
 import { jobQueue } from "@/lib/job-queue";
 import {
   copilotSessionExists,
+  CopilotSessionInUseError,
   repairLegacyCopilotSessionEvents,
 } from "@/lib/copilot-session-compat";
 import { RunStartInProgressError, withRunStartLock } from "@/lib/run-start-lock";
 import { findActiveRunConflicts } from "@/lib/run-access";
+import { getTerminalSessionActivity, reconcileTerminalRun } from "@/lib/terminal-resume";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export async function POST(
   req: NextRequest,
@@ -36,6 +39,17 @@ export async function POST(
   if (!candidate) return NextResponse.json({ error: "Work not found" }, { status: 404 });
 
   try {
+    if (parsed.data.expectedParentRunId) {
+      const expected = await prisma.run.findFirst({
+        where: { id: parsed.data.expectedParentRunId, workId: id, experimentVariantId: null },
+        select: { id: true, status: true, trigger: true, hostname: true },
+      });
+      if (!expected) throw new FollowUpConflictError("The displayed session is no longer available. Refresh the conversation.");
+      if (expected.hostname && expected.hostname !== hostname()) throw new FollowUpConflictError("This session belongs to another machine");
+      if (expected.status === "RUNNING" && isTerminalRunTrigger(expected.trigger)) {
+        await reconcileTerminalRun(expected.id, new Date(), { settleStopped: true });
+      }
+    }
     const result = await withRunStartLock([`work:${candidate.id}`], async () => {
       const work = await prisma.work.findFirst({ where: { id, userId } });
       if (!work) throw new FollowUpConflictError("Work not found", 404);
@@ -49,7 +63,7 @@ export async function POST(
       if (activeWorkRun) {
         throw new FollowUpConflictError("Wait for the active Work Run to finish");
       }
-      let parent = await prisma.run.findFirst({
+      const parent = await prisma.run.findFirst({
         where: {
           workId: work.id,
           experimentVariantId: null,
@@ -58,7 +72,11 @@ export async function POST(
           startedAt: { not: null },
         },
         orderBy: { createdAt: "desc" },
+        include: { terminalLaunches: { select: { id: true }, take: 1 } },
       });
+      if (parsed.data.expectedParentRunId !== undefined && (parent?.id ?? null) !== parsed.data.expectedParentRunId) {
+        throw new FollowUpConflictError("The session has changed. Refresh the conversation before sending.");
+      }
       if (parent?.hostname && parent.hostname !== hostname()) {
         throw new FollowUpConflictError("The latest Work session belongs to another machine");
       }
@@ -66,7 +84,7 @@ export async function POST(
         parent?.copilotSessionId &&
         !(await copilotSessionExists(parent.copilotSessionId))
       ) {
-        parent = null;
+        throw new FollowUpConflictError("Session history is unavailable. Start a new Work Run explicitly.");
       }
       const conflictingRuns = await findActiveRunConflicts(
         userId,
@@ -87,6 +105,8 @@ export async function POST(
           if (activeSessionRun) {
             throw new FollowUpConflictError("The Copilot session is already active");
           }
+          const activity = await getTerminalSessionActivity(parent.copilotSessionId, parent.terminalLaunches[0]?.id ?? null);
+          if (activity.active) throw new FollowUpConflictError("This session is open in Terminal. Close the Copilot session before sending.");
           await repairLegacyCopilotSessionEvents(parent.copilotSessionId);
         }
 
@@ -101,7 +121,7 @@ export async function POST(
           console.warn(`[follow-up] Deferring prompt sync for Run ${run.id}:`, error);
         }
         jobQueue.enqueue(getWorkRunQueueKey(run), () => executeWorkRun(run.id));
-        return { runId: run.id, resumed: Boolean(parent) };
+        return { runId: run.id, sessionId: run.copilotSessionId, resumed: Boolean(parent) };
       };
 
       return parent?.copilotSessionId
@@ -113,7 +133,7 @@ export async function POST(
     if (error instanceof FollowUpConflictError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
-    if (error instanceof RunStartInProgressError) {
+    if (error instanceof RunStartInProgressError || error instanceof CopilotSessionInUseError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return NextResponse.json(

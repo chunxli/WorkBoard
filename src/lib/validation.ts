@@ -132,6 +132,7 @@ export const runWorkSchema = z
 
 export const followUpWorkSchema = z.object({
   prompt: z.string().trim().min(1).max(100000),
+  expectedParentRunId: z.string().min(1).max(128).nullable().optional(),
 }).strict();
 
 export const createWorkPathShortcutSchema = z.object({

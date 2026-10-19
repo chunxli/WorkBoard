@@ -66,6 +66,7 @@ export interface DirectoryPromptFile {
 export interface AppendWorkFollowUpOptions {
   createdAt?: Date;
   followUpId?: string;
+  kind?: "follow-up" | "steering";
   afterWrite?: (prompt: WorkPromptState) => Promise<void>;
 }
 
@@ -569,13 +570,14 @@ export async function appendWorkFollowUp(
     const currentContent = await readFile(promptPath, "utf8").catch(() => "");
     const createdAt = options.createdAt ?? new Date();
     const marker = options.followUpId
-      ? `<!-- workboard-follow-up:${options.followUpId} -->`
+      ? `<!-- workboard-${options.kind === "steering" ? "steering" : "follow-up"}:${options.followUpId} -->`
       : null;
     let content = currentContent;
     if (!marker || !currentContent.includes(marker)) {
       const separator = currentContent.trimEnd() ? "\n\n---\n\n" : "";
       const markerLine = marker ? `${marker}\n` : "";
-      content = `${currentContent.trimEnd()}${separator}${markerLine}## Follow Up - ${createdAt.toISOString()}\n\n${prompt.trim()}\n`;
+      const heading = options.kind === "steering" ? "Steering" : "Follow Up";
+      content = `${currentContent.trimEnd()}${separator}${markerLine}## ${heading} - ${createdAt.toISOString()}\n\n${prompt.trim()}\n`;
       await writeAtomic(promptPath, content);
     }
     const modifiedAt = (await stat(promptPath)).mtime.toISOString();

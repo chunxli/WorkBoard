@@ -1,8 +1,18 @@
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
+export const TERMINAL_COMPLETION_UNCONFIRMED =
+  "Completion is unconfirmed: this Run has no reported exit status or complete response.";
+
+export function getRunStatusMessage(status: string, message: string | null): string | null {
+  if (status === "UNKNOWN" && message?.startsWith("Terminal closed before reporting its exit status")) {
+    return TERMINAL_COMPLETION_UNCONFIRMED;
+  }
+  return message;
+}
+
 export function getRunStatusLabel(status: string): string {
   if (status === "IN_TERMINAL") return "IN TERMINAL";
-  if (status === "UNKNOWN") return "TERMINAL / STATUS UNKNOWN";
+  if (status === "UNKNOWN") return "TERMINAL";
   return status;
 }
 

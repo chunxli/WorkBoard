@@ -24,11 +24,13 @@ export default function LiveRunLog({
   runId,
   initialLog,
   isLive,
+  historySync = false,
   outputFormat = "text",
 }: {
   runId: string;
   initialLog: string;
   isLive: boolean;
+  historySync?: boolean;
   outputFormat?: "text" | "json";
 }) {
   const [lines, setLines] = useState<string[]>(() => splitVisibleLog(initialLog));
@@ -37,11 +39,12 @@ export default function LiveRunLog({
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLive) return;
+    if (!isLive && !historySync) return;
 
-    let source: EventSource;
+    let source: EventSource | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
+    let lastStatus = isLive ? "RUNNING" : "UNKNOWN";
 
     function connect() {
       source = new EventSource(`/api/runs/${runId}/stream`);
@@ -53,7 +56,7 @@ export default function LiveRunLog({
         } else if (event.type === "exit" || event.type === "error") {
           stopped = true;
           setFinished(true);
-          source.close();
+          source?.close();
           router.refresh();
         }
       };
@@ -61,12 +64,12 @@ export default function LiveRunLog({
       // A dropped connection (network blip, laptop sleep, etc.) isn't the same as the run
       // finishing — reconnect instead of leaving the UI stuck on "Live" forever.
       source.onerror = () => {
-        source.close();
+        source?.close();
         if (!stopped) reconnectTimer = setTimeout(connect, 2000);
       };
     }
 
-    connect();
+    if (!historySync) connect();
 
     // Safety net alongside SSE: periodically re-fetch the full persisted log and status
     // directly, in case an event was missed (e.g. a dropped connection reconnecting mid-line,
@@ -81,10 +84,15 @@ export default function LiveRunLog({
         if (typeof data.log === "string") {
           setLines(splitVisibleLog(data.log));
         }
-        if (data.status && data.status !== "PENDING" && data.status !== "RUNNING") {
+        if (data.status && data.status !== lastStatus) {
+          lastStatus = data.status;
+          setFinished(data.status !== "PENDING" && data.status !== "RUNNING");
+          router.refresh();
+        }
+        if (data.status && data.status !== "PENDING" && data.status !== "RUNNING" && !(historySync && data.status === "UNKNOWN")) {
           stopped = true;
           setFinished(true);
-          source.close();
+          source?.close();
           clearInterval(pollTimer);
           router.refresh();
         }
@@ -97,10 +105,10 @@ export default function LiveRunLog({
       stopped = true;
       clearTimeout(reconnectTimer);
       clearInterval(pollTimer);
-      source.close();
+      source?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, isLive]);
+  }, [runId, isLive, historySync]);
 
 
   useEffect(() => {

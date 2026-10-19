@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Save, SlidersHorizontal } from "lucide-react";
+import { Check, ChevronDown, Save, SlidersHorizontal } from "lucide-react";
 import WorkExecutionFields, {
   type WorkExecutionSettingsValue,
   workExecutionSettingsPayload,
@@ -46,22 +46,26 @@ export default function WorkExecutionSettings({
   }
 
   return (
-    <form onSubmit={save} className="ui-panel overflow-hidden">
-      <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3.5 sm:px-5">
+    <details className="ui-panel group overflow-hidden">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3.5 sm:px-5 [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-3">
           <span className="grid size-8 place-items-center rounded-md bg-neutral-800 text-neutral-300">
             <SlidersHorizontal size={16} aria-hidden="true" />
           </span>
           <h2 className="text-sm font-bold">Execution settings</h2>
         </div>
-        {saved && (
-          <span aria-live="polite" className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
-            <Check size={13} aria-hidden="true" />
-            Saved
-          </span>
-        )}
-      </div>
-      <div className="p-4 sm:p-5">
+        <span className="flex items-center gap-3">
+          {saved && (
+            <span aria-live="polite" className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+              <Check size={13} aria-hidden="true" />
+              Saved
+            </span>
+          )}
+          <ChevronDown size={15} className="shrink-0 text-neutral-500 transition-transform group-open:rotate-180" aria-hidden="true" />
+        </span>
+      </summary>
+      <form onSubmit={save}>
+      <div className="border-t border-neutral-800 p-4 sm:p-5">
         <WorkExecutionFields value={value} onChange={(nextValue) => {
           setValue(nextValue);
           setSaved(false);
@@ -74,6 +78,7 @@ export default function WorkExecutionSettings({
           {saving ? "Saving..." : "Save settings"}
         </button>
       </div>
-    </form>
+      </form>
+    </details>
   );
 }

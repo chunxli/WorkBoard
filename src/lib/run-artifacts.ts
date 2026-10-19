@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const RUN_LOG_TAIL_BYTES = 512 * 1024;
@@ -11,10 +11,14 @@ const RUN_DIFF_TRUNCATED_MESSAGE =
 
 const globalForRunArtifacts = globalThis as unknown as {
   runFinalizationQueues?: Map<string, Promise<unknown>>;
+  steeringArtifactQueues?: Map<string, Promise<unknown>>;
 };
 const runFinalizationQueues =
   globalForRunArtifacts.runFinalizationQueues ?? new Map<string, Promise<unknown>>();
 globalForRunArtifacts.runFinalizationQueues = runFinalizationQueues;
+const steeringArtifactQueues =
+  globalForRunArtifacts.steeringArtifactQueues ?? new Map<string, Promise<unknown>>();
+globalForRunArtifacts.steeringArtifactQueues = steeringArtifactQueues;
 
 export interface RunArtifactPaths {
   outputDirectory: string;
@@ -24,6 +28,16 @@ export interface RunArtifactPaths {
   snapshot: string;
   stdout: string;
   stderr: string;
+  steering: string;
+}
+
+export interface WorkRunSteeringArtifact {
+  id: string;
+  requestId: string;
+  sessionId: string;
+  content: string;
+  transportMessageId: string | null;
+  acceptedAt: string;
 }
 
 export interface WorkRunSnapshot {
@@ -66,6 +80,7 @@ export interface WorkRunSnapshot {
   reasoningTokens?: number | null;
   modelsUsed?: string | null;
   sessionEventCursorStart?: number;
+  sessionEventCursorEnd?: number;
   taskId?: string | null;
   resourceName?: string | null;
 }
@@ -139,7 +154,36 @@ function getRunArtifactPaths(outputDirectory: string): RunArtifactPaths {
     snapshot: path.join(outputDirectory, "run.json"),
     stdout: path.join(outputDirectory, "stdout.log"),
     stderr: path.join(outputDirectory, "stderr.log"),
+    steering: path.join(outputDirectory, "steering.jsonl"),
   };
+}
+
+export async function appendWorkRunSteeringArtifact(
+  paths: RunArtifactPaths,
+  message: WorkRunSteeringArtifact
+): Promise<void> {
+  const previous = steeringArtifactQueues.get(paths.steering) ?? Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    await mkdir(paths.outputDirectory, { recursive: true });
+    const existing = await readFile(paths.steering, "utf8").catch(() => "");
+    if (existing.split(/\r?\n/).some((line) => {
+      if (!line) return false;
+      try {
+        return (JSON.parse(line) as { id?: unknown }).id === message.id;
+      } catch {
+        return false;
+      }
+    })) return;
+    await appendFile(paths.steering, `${JSON.stringify(message)}\n`, "utf8");
+  });
+  steeringArtifactQueues.set(paths.steering, operation);
+  try {
+    await operation;
+  } finally {
+    if (steeringArtifactQueues.get(paths.steering) === operation) {
+      steeringArtifactQueues.delete(paths.steering);
+    }
+  }
 }
 
 export async function prepareWorkRunArtifacts(
@@ -189,6 +233,20 @@ export async function finalizeWorkRunArtifacts(options: {
       await writeAtomic(paths.transcript, "");
     }),
   ]);
+}
+
+export async function checkpointRunHistory(options: {
+  paths: RunArtifactPaths;
+  snapshot: WorkRunSnapshot;
+  events: unknown[];
+  output: string | null;
+}): Promise<void> {
+  const history = options.events.map((event) => JSON.stringify(event)).join("\n");
+  const content = history ? `${history}\n` : "";
+  await writeAtomic(options.paths.stdout, content);
+  await writeAtomic(options.paths.transcript, content);
+  await writeAtomic(options.paths.result, options.output ? `${options.output.trim()}\n` : "");
+  await writeAtomic(options.paths.snapshot, `${JSON.stringify(options.snapshot, null, 2)}\n`);
 }
 
 export async function describeRunArtifact(filePath: string): Promise<{

@@ -26,7 +26,7 @@ export async function POST(
         { status: 409 }
       );
     }
-    const killed = run.engine === "SDK" ? cancelSdkRun(id) : cancelRun(id);
+    const killed = cancelActiveRun(run);
     if (!killed) {
       await prisma.run.update({ where: { id }, data: { status: "CANCELLED" } });
       if (run.taskId) await finalizeAutomationRun(id, "CANCELLED", "Run was cancelled.");
@@ -43,12 +43,13 @@ export async function POST(
     if (cancelled.count === 0) {
       run = await prisma.run.findFirst({ where: ownedRunWhere(userId, id) });
       if (run?.status === "RUNNING") {
-        const killed = run.engine === "SDK" ? cancelSdkRun(id) : cancelRun(id);
+        const killed = cancelActiveRun(run);
         if (!killed) {
           await prisma.run.update({ where: { id }, data: { status: "CANCELLED" } });
           if (run.taskId) await finalizeAutomationRun(id, "CANCELLED", "Run was cancelled.");
           else if (run.workId) await finalizeCancelledWorkRun(id);
         }
+
       }
       return NextResponse.json({ ok: true });
     }
@@ -61,4 +62,11 @@ export async function POST(
   }
 
   return NextResponse.json({ error: "Run is not cancellable" }, { status: 400 });
+}
+
+function cancelActiveRun(run: NonNullable<Awaited<ReturnType<typeof prisma.run.findFirst>>>) {
+  if (run.engine === "SDK" || run.workId && !run.experimentVariantId) {
+    return cancelSdkRun(run.id) || (run.engine === "CLI" ? cancelRun(run.id) : false);
+  }
+  return cancelRun(run.id);
 }

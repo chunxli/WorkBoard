@@ -7,7 +7,7 @@ import { getSessionUserId } from "@/lib/session";
 import { hashWorkContent, readWorkPrompt } from "@/lib/work-files";
 import PromptEditor from "@/components/PromptEditor";
 import WorkActions from "@/components/WorkActions";
-import LiveRunLog from "@/components/LiveRunLog";
+import SessionConversation from "@/components/SessionConversation";
 import StatusBadge from "@/components/StatusBadge";
 import CancelRunButton from "@/components/CancelRunButton";
 import { formatDuration } from "@/lib/format";
@@ -15,9 +15,8 @@ import { discoverProjectSkills } from "@/lib/skill-discovery";
 import ExperimentBuilder from "@/components/ExperimentBuilder";
 import ExperimentRefresher from "@/components/ExperimentRefresher";
 import { findActiveRunConflicts } from "@/lib/run-access";
-import TerminalSessionActions from "@/components/TerminalSessionActions";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
-import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import { getTerminalSessionActivity, isTerminalResumeReady } from "@/lib/terminal-resume";
 import { copilotSessionExists } from "@/lib/copilot-session-compat";
 import { ArrowLeft, ArrowUpRight, Bot, Boxes, Clock3, Cpu, FlaskConical, FolderOpen, History, ListTodo, Radio } from "lucide-react";
 import WorkExecutionSettings from "@/components/WorkExecutionSettings";
@@ -30,6 +29,7 @@ import type {
 } from "@/components/WorkExecutionFields";
 import { readRunLogTail } from "@/lib/run-artifacts";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { getRunStatusMessage } from "@/lib/work-run-status";
 
 export default async function WorkDetailPage({
   params,
@@ -52,7 +52,7 @@ export default async function WorkDetailPage({
         where: { experimentVariantId: null },
         orderBy: { createdAt: "desc" },
         take: 20,
-        include: { terminalLaunches: { select: { status: true }, take: 1 } },
+        include: { terminalLaunches: { select: { id: true, status: true }, take: 1 } },
       },
       experiments: {
         orderBy: { createdAt: "desc" },
@@ -106,17 +106,19 @@ export default async function WorkDetailPage({
     ["PROVISIONING", "RUNNING"].includes(experiment.status)
   );
   const requestHost = (await headers()).get("host") ?? "";
+  const canOpenLocal = localTerminalAvailable(requestHost) && (!work.hostname || work.hostname === hostname());
   const canOpenTerminal =
-    localTerminalAvailable(requestHost) &&
+    canOpenLocal &&
     (!latestRun?.hostname || latestRun.hostname === hostname());
-  const latestRunResumeReady = latestRun?.copilotSessionId && canOpenTerminal
-    ? await isTerminalResumeReady({
-        id: latestRun.id,
-        taskId: latestRun.taskId,
-        status: latestRun.status,
-        work,
-      })
-    : false;
+  let terminalState: "ready" | "active" | "unavailable" = "unavailable";
+  if (latestRun?.copilotSessionId && canOpenTerminal && work.status !== "ARCHIVED") {
+    if (isTerminalRunTrigger(latestRun.trigger) && (latestRun.status === "RUNNING" || latestRun.status === "PENDING")) {
+      const activity = await getTerminalSessionActivity(latestRun.copilotSessionId, latestRun.terminalLaunches[0]?.id ?? null, latestRun.createdAt);
+      terminalState = activity.active || activity.starting ? "active" : "ready";
+    } else if (await isTerminalResumeReady({ id: latestRun.id, taskId: latestRun.taskId, status: latestRun.status, work })) {
+      terminalState = "ready";
+    }
+  }
   const followUpDisabledReason =
     work.status === "ARCHIVED"
       ? "Restore this Work before following up"
@@ -135,7 +137,7 @@ export default async function WorkDetailPage({
             Work Board
           </Link>
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-bold text-white sm:text-[28px]">{work.name}</h1>
+            <h1 className="break-words text-2xl font-bold text-white sm:text-[28px]">{work.name}</h1>
             <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-400">{work.status}</span>
           </div>
           <p className="mt-2 flex min-w-0 items-center gap-2 text-xs text-neutral-500" title={work.directoryPath}>
@@ -151,10 +153,14 @@ export default async function WorkDetailPage({
         </div>
         <WorkActions
           workId={work.id}
+          name={work.name}
           directoryPath={work.directoryPath}
           archived={work.status === "ARCHIVED"}
           followUpMode={followUpParent ? "resume" : "new"}
           followUpDisabledReason={followUpDisabledReason}
+          canOpenLocal={canOpenLocal}
+          terminalRunId={latestRun?.id ?? null}
+          terminalState={terminalState}
         />
       </header>
 
@@ -164,7 +170,52 @@ export default async function WorkDetailPage({
         </p>
       )}
 
+      <section className="space-y-3 border-t border-neutral-800 pt-6">
+        <SectionHeading icon={Radio} title="Session conversation">
+          {latestRun && (
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge status={latestRun.status} />
+              <span className="text-xs text-neutral-500">
+                {latestRun.trigger} · {latestRun.engine ?? "CLI"} · {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
+              </span>
+              {(latestRun.status === "PENDING" || latestRun.status === "RUNNING") && (
+                <CancelRunButton runId={latestRun.id} />
+              )}
+              <Link
+                href={`/runs/${latestRun.id}`}
+                className="ui-secondary-button min-h-8 px-3 py-1.5"
+              >
+                Full details
+                <ArrowUpRight size={13} aria-hidden="true" />
+              </Link>
+            </div>
+          )}
+        </SectionHeading>
+        <SessionConversation
+          key={work.id}
+          workId={work.id}
+          runId={latestRun?.id ?? null}
+          initialLog={latestLog}
+          isLive={latestRun?.status === "PENDING" || latestRun?.status === "RUNNING"}
+          historySync={Boolean(latestRun && isTerminalRunTrigger(latestRun.trigger) && (latestRun.status === "RUNNING" || latestRun.status === "UNKNOWN"))}
+          outputFormat={latestRun?.outputFormat === "json" ? "json" : "text"}
+        />
+        {latestRun?.errorMessage && (
+          <p
+            role="alert"
+            className={`rounded-md border px-3 py-2 text-sm ${
+              latestRun.status === "UNKNOWN"
+                ? "border-amber-900/50 bg-amber-950/20 text-amber-300"
+                : "border-red-900/50 bg-red-950/20 text-red-400"
+            }`}
+          >
+            {getRunStatusMessage(latestRun.status, latestRun.errorMessage)}
+          </p>
+        )}
+      </section>
+
       <WorkExecutionSettings
+        key={`settings:${work.id}`}
         workId={work.id}
         initialValue={{
           defaultEngine: work.defaultEngine,
@@ -180,6 +231,7 @@ export default async function WorkDetailPage({
       />
 
       <PromptEditor
+        key={`prompt:${work.id}`}
         workId={work.id}
         promptFileName={work.promptFileName}
         initialContent={prompt.content}
@@ -249,69 +301,6 @@ export default async function WorkDetailPage({
           </div>
         </section>
       ))}
-
-      {latestRun && (
-        <section className="space-y-3 border-t border-neutral-800 pt-6">
-          <SectionHeading icon={Radio} title="Latest run">
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={latestRun.status} />
-              <span className="text-xs text-neutral-500">
-                {latestRun.trigger} · {latestRun.engine ?? "CLI"} · {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
-              </span>
-              {(latestRun.status === "PENDING" || latestRun.status === "RUNNING") && (
-                <CancelRunButton runId={latestRun.id} />
-              )}
-              {latestRun.copilotSessionId && canOpenTerminal && (
-                <TerminalSessionActions
-                  key={`${latestRun.id}:${latestRun.status}:${latestRun.terminalLaunches[0]?.status ?? "none"}`}
-                  runId={latestRun.id}
-                  canResume={
-                    latestRunResumeReady &&
-                    work.status !== "ARCHIVED"
-                  }
-                  canSync={
-                    (latestRun.status === "RUNNING" || latestRun.status === "UNKNOWN") &&
-                    isTerminalRunTrigger(latestRun.trigger) &&
-                    latestRun.terminalLaunches[0] !== undefined &&
-                    latestRun.terminalLaunches[0].status !== "COMPLETED"
-                  }
-                />
-              )}
-              <Link
-                href={`/runs/${latestRun.id}`}
-                className="ui-secondary-button min-h-8 px-3 py-1.5"
-              >
-                Full details
-                <ArrowUpRight size={13} aria-hidden="true" />
-              </Link>
-            </div>
-          </SectionHeading>
-          <LiveRunLog
-            runId={latestRun.id}
-            initialLog={latestLog}
-            isLive={latestRun.status === "PENDING" || latestRun.status === "RUNNING"}
-            outputFormat={latestRun.outputFormat === "json" ? "json" : "text"}
-          />
-          {latestRun.errorMessage && (
-            <p
-              role="alert"
-              className={`rounded-md border px-3 py-2 text-sm ${
-                latestRun.status === "UNKNOWN"
-                  ? "border-amber-900/50 bg-amber-950/20 text-amber-300"
-                  : "border-red-900/50 bg-red-950/20 text-red-400"
-              }`}
-            >
-              {latestRun.errorMessage}
-            </p>
-          )}
-          {latestRun.finalOutput && latestRun.status !== "RUNNING" && (
-            <div className="border-l-2 border-emerald-600 pl-4">
-              <h3 className="mb-2 text-sm font-semibold text-neutral-300">Result</h3>
-              <MarkdownResult content={latestRun.finalOutput} />
-            </div>
-          )}
-        </section>
-      )}
 
       {work.runs.length > 1 && (
         <section>

@@ -16,15 +16,16 @@ import ProcessInfoPanel from "@/components/ProcessInfoPanel";
 import RepoInfoPanel from "@/components/RepoInfoPanel";
 import DiffView from "@/components/DiffView";
 import { ownedRunWhere } from "@/lib/run-access";
-import TerminalSessionActions from "@/components/TerminalSessionActions";
+import WorkQuickActions from "@/components/WorkQuickActions";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
-import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import { getTerminalSessionActivity, isTerminalResumeReady } from "@/lib/terminal-resume";
 import { readRunDiffPreview, readRunLogTail } from "@/lib/run-artifacts";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
 import MarkdownResult from "@/components/MarkdownResult";
-import { ArrowLeft, Clock3, Download, FileText, GitBranch, GitCompareArrows, GitCommitHorizontal, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Clock3, Download, FileText, GitBranch, GitCompareArrows, GitCommitHorizontal, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { getRunStatusMessage } from "@/lib/work-run-status";
 
 export default async function RunDetailPage({
   params,
@@ -45,10 +46,12 @@ export default async function RunDetailPage({
         orderBy: { createdAt: "desc" },
         select: { id: true, trigger: true, status: true },
       },
-      terminalLaunches: { select: { status: true }, take: 1 },
+      terminalLaunches: { select: { id: true, status: true }, take: 1 },
     },
   });
   if (!run) notFound();
+  const activeContinuation = run.resumedRuns.find((child) => child.status === "RUNNING" || child.status === "PENDING");
+  const statusMessage = getRunStatusMessage(run.status, run.errorMessage);
 
   const log = run.logPath ? await readRunLogTail(run.logPath).catch(() => "") : "";
 
@@ -66,7 +69,6 @@ export default async function RunDetailPage({
   const sameMachine = !run.hostname || run.hostname === hostname();
   const ownerArchived = run.work?.status === "ARCHIVED" || Boolean(run.task?.archivedAt);
   const canOpenTerminal = localTerminalAvailable(requestHost) && sameMachine;
-  const terminalLaunchStatus = run.terminalLaunches[0]?.status;
   const resumeReady =
     Boolean(run.copilotSessionId) &&
     canOpenTerminal &&
@@ -76,6 +78,11 @@ export default async function RunDetailPage({
       status: run.status,
       work: run.work,
     });
+  let terminalState: "ready" | "active" | "unavailable" = !ownerArchived && !activeContinuation && resumeReady ? "ready" : "unavailable";
+  if (!ownerArchived && !activeContinuation && canOpenTerminal && run.copilotSessionId && isLive && isTerminalRunTrigger(run.trigger)) {
+    const activity = await getTerminalSessionActivity(run.copilotSessionId, run.terminalLaunches[0]?.id ?? null, run.createdAt);
+    terminalState = activity.active || activity.starting ? "active" : "ready";
+  }
   const commitRange =
     run.baseCommit && run.finalCommit
       ? `${run.baseCommit.slice(0, 8)}..${run.finalCommit.slice(0, 8)}`
@@ -91,24 +98,28 @@ export default async function RunDetailPage({
           <ArrowLeft size={13} aria-hidden="true" />
           {run.task?.name ?? run.work?.name ?? "Runs"}
         </Link>
-        <div className="mt-2 flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-bold text-white">Run <span className="font-mono">{run.id.slice(0, 8)}</span></h1>
-          <StatusBadge status={run.status} />
-          {isLive && <CancelRunButton runId={run.id} />}
+        <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold text-white">Run <span className="font-mono">{run.id.slice(0, 8)}</span></h1>
+            <StatusBadge status={run.status} />
+            {isLive && <CancelRunButton runId={run.id} />}
+          </div>
+          <WorkQuickActions
+            name={run.work?.name ?? run.task?.name ?? `Run ${run.id.slice(0, 8)}`}
+            directoryPath={workdirPath}
+            canOpenLocal={canOpenTerminal}
+            terminalRunId={run.id}
+            terminalState={terminalState}
+            archiveTarget={run.work ? { kind: "work", id: run.work.id } : run.task ? { kind: "task", id: run.task.id } : null}
+            archived={run.work ? run.work.status === "ARCHIVED" : Boolean(run.task?.archivedAt)}
+          />
         </div>
-        {run.copilotSessionId && canOpenTerminal && (
+        {activeContinuation && (
           <div className="mt-3">
-            <TerminalSessionActions
-              key={`${run.id}:${run.status}:${terminalLaunchStatus ?? "none"}`}
-              runId={run.id}
-              canResume={!ownerArchived && resumeReady}
-              canSync={
-                (run.status === "RUNNING" || run.status === "UNKNOWN") &&
-                isTerminalRunTrigger(run.trigger) &&
-                terminalLaunchStatus !== undefined &&
-                terminalLaunchStatus !== "COMPLETED"
-              }
-            />
+            <Link href={`/runs/${activeContinuation.id}`} className="ui-primary-button">
+              Open active Run {activeContinuation.id.slice(0, 8)}
+              <ArrowUpRight size={14} aria-hidden="true" />
+            </Link>
           </div>
         )}
         <div className="mt-3 flex flex-wrap gap-2">
@@ -145,9 +156,9 @@ export default async function RunDetailPage({
             ))}
           </div>
         )}
-        {run.errorMessage && (
+        {statusMessage && (
           <p className={`mt-2 text-sm ${run.status === "UNKNOWN" ? "text-amber-300" : "text-red-400"}`}>
-            {run.errorMessage}
+            {statusMessage}
           </p>
         )}
       </header>
@@ -172,7 +183,7 @@ export default async function RunDetailPage({
 
       <ProcessInfoPanel
         runId={run.id}
-        isLive={isLive}
+            isLive={isLive}
         initial={{
           pid: run.pid,
           command: run.command,
@@ -222,9 +233,11 @@ export default async function RunDetailPage({
       <section>
         <SectionHeading icon={TerminalSquare} title="Output" />
         <LiveRunLog
+          key={run.id}
           runId={run.id}
           initialLog={log}
           isLive={isLive}
+          historySync={!run.resumedRuns.length && isTerminalRunTrigger(run.trigger) && (run.status === "RUNNING" || run.status === "UNKNOWN")}
           outputFormat={(run.outputFormat ?? run.task?.outputFormat ?? "text") === "json" ? "json" : "text"}
         />
       </section>

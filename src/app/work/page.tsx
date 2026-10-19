@@ -10,7 +10,7 @@ import { canonicalizeWorkPath } from "@/lib/work-files";
 import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { getWorkRunDisplayStatus } from "@/lib/work-run-status";
-import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import { getTerminalSessionActivity, isTerminalResumeReady } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export default async function WorkBoardPage() {
@@ -34,6 +34,8 @@ export default async function WorkBoardPage() {
             trigger: true,
             copilotSessionId: true,
             hostname: true,
+            createdAt: true,
+            terminalLaunches: { select: { id: true }, take: 1 },
             model: true,
             modelsUsed: true,
             inputTokens: true,
@@ -90,6 +92,7 @@ export default async function WorkBoardPage() {
         reasoningTokens: latestRun.reasoningTokens ?? 0,
       } : null;
     const runIsActive = latestRun?.status === "PENDING" || latestRun?.status === "RUNNING";
+    let displayStatus = getWorkRunDisplayStatus(latestRun);
     let terminalResumeState: "ready" | "active" | "unavailable" = "unavailable";
     if (
       latestRun?.copilotSessionId &&
@@ -98,7 +101,15 @@ export default async function WorkBoardPage() {
       work.status !== "ARCHIVED"
     ) {
       if (runIsActive && isTerminalRunTrigger(latestRun.trigger)) {
-        terminalResumeState = "active";
+        const activity = await getTerminalSessionActivity(
+          latestRun.copilotSessionId, latestRun.terminalLaunches[0]?.id ?? null, latestRun.createdAt
+        );
+        if (activity.active || activity.starting) {
+          terminalResumeState = "active";
+        } else {
+          displayStatus = "UNKNOWN";
+          terminalResumeState = "ready";
+        }
       } else if (!runIsActive && await isTerminalResumeReady({
         id: latestRun.id,
         taskId: latestRun.taskId,
@@ -118,7 +129,7 @@ export default async function WorkBoardPage() {
       updatedAt: work.updatedAt.toISOString(),
       updatedAtLabel: work.updatedAt.toLocaleString("zh-CN", { hour12: false }),
       automationCount: work._count.tasks,
-      latestRunStatus: getWorkRunDisplayStatus(latestRun),
+      latestRunStatus: displayStatus,
       latestRunId: latestRun?.id ?? null,
       latestModels,
       latestTokenUsage,

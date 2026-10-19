@@ -66,8 +66,8 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Terminal Lifecycle Hardening",
-        zh: "Terminal callback、手工 Sync、过期回收和重启恢复共用更严格的状态收口，并保留真实退出码。",
-        en: "Terminal callbacks, manual Sync, expiry reaping, and restart recovery now converge through stricter lifecycle checks with the real exit code preserved.",
+        zh: "Terminal 历史每分钟同步，启动时补扫；运行中不结束 Run，停止后依据退出码或完整历史收口。",
+        en: "Terminal history syncs every minute and catches up at startup; active Runs stay open and stopped Runs settle from exit codes or complete history.",
       },
       {
         title: "In-App Documentation",
@@ -192,13 +192,23 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Execution Settings",
-        zh: "每个 Work 可独立选择 CLI/SDK、agent、主/备用模型、context、reasoning effort、权限、输出格式和可选 timeout；每个 Run 冻结当次设置。",
-        en: "Each Work independently configures CLI/SDK, agent, primary/fallback models, context, reasoning effort, permissions, output format, and optional timeout; every Run freezes its settings.",
+        zh: "执行设置与 Prompt 默认折叠，展开后保留编辑草稿。每个 Work 可独立设置引擎、模型、权限、输出与 timeout；每个 Run 冻结当次设置。",
+        en: "Execution settings and Prompt start collapsed while retaining drafts. Each Work configures its engine, models, permissions, output, and timeout; every Run freezes its settings.",
+      },
+      {
+        title: "Session Conversation",
+        zh: "同一 session 的用户与助手消息跨 Run 展示，工具活动可展开，早期历史分页加载；保留原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
+        en: "User and assistant turns span linked Runs in the same session, with expandable tools, earlier-history pagination, raw output and full session download. Different sessions and missing data are never merged or invented.",
       },
       {
         title: "In-App Follow Up",
-        zh: "Work 空闲后可追加 Prompt。已有兼容 Session 时恢复最新 Session；没有历史 Session 时自动创建，并建立父子 Run 链。",
-        en: "Append another Prompt after the Work becomes idle. Resume the latest compatible session or create the first session automatically, with parent/child Run lineage.",
+        zh: "在对话区继续发送，停留在 Work 页面；输入保存为独立 Run，并按 Run 标记追加到 Prompt 文件。Terminal 占用期间只读，释放后才能发送；草稿与追加内容冲突时不静默覆盖。",
+        en: "Send inline and stay on Work details. Input becomes a separate linked Run and is appended to the Prompt once by Run marker. Terminal-owned sessions are read-only until released; dirty Prompt drafts are never silently overwritten.",
+      },
+      {
+        title: "Live Steering",
+        zh: "托管 Work Run 活跃时，Steer now 将指令即时发送到同一 CLI/SDK Session，并在传输确认后按消息标记追加 Prompt 与 Run 审计。确认不代表模型已应用；不保证停止正在运行的工具，也不会回滚修改。交付状态不确定时不会自动重发；Terminal 与没有实时控制器的旧 Run 只读。新 CLI Run 使用本地 headless stdio/RPC（SDK 仅作传输），默认权限仍为 --allow-all-tools；full 才使用 --allow-all。CLI 原始输出改为 headless JSON 事件，且公开 SDK 不提供 PID/CPU/内存指标。",
+        en: "While a managed Work Run is active, Steer now sends an immediate instruction to that same CLI/SDK session. After transport acceptance, Work Board records a per-message Run audit and appends the instruction to Prompt once. Acceptance does not prove model application, stop an in-progress tool, or roll back edits. Ambiguous delivery is never replayed automatically; Terminal and legacy Runs without a live controller remain read-only. New CLI Runs use the local headless stdio/RPC channel (SDK transport only), preserving --allow-all-tools by default and --allow-all only for full permissions. CLI raw output is now the headless JSON event stream; the public SDK does not expose PID/CPU/memory metrics.",
       },
       {
         title: "Archive & Restore",
@@ -290,13 +300,13 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Terminal Start, Resume & Sync",
-        zh: "首次运行可创建新交互 Session；完成 Run 可恢复同一 Session。Terminal 退出后 callback 自动同步，失败时可手工 Sync。",
-        en: "A first Run can create a new interactive session; completed Runs can resume it. Terminal exit callbacks sync automatically, with manual Sync as a fallback.",
+        zh: "首次运行可创建交互 Session；完成 Run 可恢复同一 Session。每分钟同步已写入的历史，停止并稳定一分钟后收口，不再使用 callback 或手工 Sync。",
+        en: "Create or resume an interactive session. Persisted history syncs every minute; stopped sessions settle after a minute of stable history, without callbacks or manual Sync.",
       },
       {
         title: "Recovery & Cancellation",
-        zh: "应用重启会恢复 PENDING Run、收口中断 Run，并回收过期 Terminal launch；活动 Run 可取消，外部 Terminal 需先关闭再同步。",
-        en: "Restart recovery requeues pending Runs, finalizes interrupted Runs, and reaps expired Terminal launches; live Runs can be cancelled, while external Terminal sessions must close before Sync.",
+        zh: "应用重启会恢复 PENDING Run、收口中断 Run，并补同步活动和 UNKNOWN Terminal 历史；运行中的 Terminal 可持续同步，不因超过 24 小时被判为 UNKNOWN。",
+        en: "Restart recovery requeues pending Runs, finalizes interrupted Runs, and catches up active and UNKNOWN Terminal histories. Active sessions keep syncing without a 24-hour callback expiry.",
       },
     ],
   },
@@ -471,8 +481,8 @@ export const operationalLimits: BilingualText[] = [
     en: "System notifications use at-most-once claims; a crash after claim can lose one toast, but it will not be duplicated.",
   },
   {
-    zh: "外部 Terminal 必须通过 callback 或手工 Sync 收口；没有退出码就过期的 callback 会将 Run 标为 UNKNOWN，而不是 FAILED，之后仍可同步。",
-    en: "External Terminal Runs must converge through callback or manual Sync; when a callback expires without an exit code, the Run is marked UNKNOWN rather than FAILED and can be synchronized later.",
+    zh: "外部 Terminal 历史每分钟同步，需要服务持续运行。停止后通常 1–2 分钟收口；缺少退出码和完整完成证据时保留 UNKNOWN，后续可恢复。VS Code 按钮目前仅打开目录，不自动关联原生 Chat session。",
+    en: "Terminal histories sync every minute while the server runs. Stopped sessions usually settle within 1–2 minutes; missing exit codes and incomplete evidence remain UNKNOWN for later recovery. VS Code currently opens the folder only, without native Chat session tracking.",
   },
   {
     zh: "大型目录复制会包含依赖、build output、隐藏文件和 Git metadata；执行前检查磁盘空间。",

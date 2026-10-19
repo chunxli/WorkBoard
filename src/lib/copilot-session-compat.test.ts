@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   copilotSessionExists,
+  readCopilotSessionSnapshot,
   readCompatibleCopilotSessionEvents,
   repairLegacyCopilotSessionEvents,
   upgradeLegacyPermissionEvent,
@@ -30,6 +31,27 @@ async function createSession(content: string) {
 }
 
 describe("Copilot session compatibility", () => {
+  it("reads active sessions without rewriting an incomplete trailing record", async () => {
+    const content = '{"type":"session.start"}\n{"type":"assistant.message"';
+    const session = await createSession(content);
+    await writeFile(path.join(session.sessionDirectory, `inuse.${process.pid}.lock`), "");
+    const snapshot = await readCopilotSessionSnapshot(session.sessionId, session.baseDirectory);
+    expect(snapshot.events).toEqual([{ type: "session.start" }]);
+    expect(snapshot.incompleteTail).toBe(true);
+    expect(await readFile(session.eventsPath, "utf8")).toBe(content);
+    await writeFile(session.eventsPath, `${content}}\n`);
+    const completed = await readCopilotSessionSnapshot(session.sessionId, session.baseDirectory);
+    expect(completed.events).toHaveLength(2);
+    expect(completed.incompleteTail).toBe(false);
+  });
+
+  it("accepts a complete final record without a newline but rejects corrupt interior records", async () => {
+    const session = await createSession('{"type":"session.start"}');
+    expect((await readCopilotSessionSnapshot(session.sessionId, session.baseDirectory)).events).toHaveLength(1);
+    await writeFile(session.eventsPath, '{bad json}\n{"type":"session.start"}\n');
+    await expect(readCopilotSessionSnapshot(session.sessionId, session.baseDirectory)).rejects.toThrow("invalid JSON at line 1");
+  });
+
   it("distinguishes persisted sessions from allocated-only IDs", async () => {
     const session = await createSession('{"type":"session.start"}\n');
 

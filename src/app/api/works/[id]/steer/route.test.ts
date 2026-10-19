@@ -1,0 +1,221 @@
+import { hostname } from "node:os";
+import { randomUUID } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ManagedSessionController,
+  registerManagedSessionController,
+  unregisterManagedSessionController,
+  type ManagedSessionTransport,
+} from "@/lib/managed-session-controller";
+import type { WorkSteeringMessageRecord } from "@/lib/work-steering";
+
+const mocks = vi.hoisted(() => ({
+  getSessionUserId: vi.fn(),
+  workFindFirst: vi.fn(),
+  runFindFirst: vi.fn(),
+  messageFindUnique: vi.fn(),
+  messageCreate: vi.fn(),
+  messageUpdate: vi.fn(),
+  appendArtifact: vi.fn(),
+  ensurePrompt: vi.fn(),
+}));
+
+vi.mock("@/lib/session", () => ({ getSessionUserId: mocks.getSessionUserId }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    work: { findFirst: mocks.workFindFirst },
+    run: { findFirst: mocks.runFindFirst },
+    workSteeringMessage: {
+      findUnique: mocks.messageFindUnique,
+      create: mocks.messageCreate,
+      update: mocks.messageUpdate,
+    },
+  },
+}));
+vi.mock("@/lib/run-artifacts", () => ({
+  getWorkRunArtifactPaths: () => ({ outputDirectory: "output" }),
+  appendWorkRunSteeringArtifact: mocks.appendArtifact,
+}));
+vi.mock("@/lib/work-executor", () => ({ ensureSteeringPrompt: mocks.ensurePrompt }));
+
+import { POST } from "./route";
+
+const work = {
+  id: "work-1",
+  directoryPath: "C:\\work",
+  promptFileName: "PROMPT.md",
+  status: "ACTIVE",
+  hostname: hostname(),
+};
+const run = {
+  id: "run-1",
+  status: "RUNNING",
+  trigger: "WORK",
+  engine: "CLI",
+  hostname: hostname(),
+  copilotSessionId: "session-1",
+  createdAt: new Date(),
+};
+
+describe("Work Steering API", () => {
+  let stored: WorkSteeringMessageRecord | null;
+  let controller: ManagedSessionController;
+  let runId: string;
+  let send: ManagedSessionTransport["send"];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stored = null;
+    runId = run.id;
+    send = vi.fn(async () => "transport-ack");
+    controller = new ManagedSessionController({ send, abort: async () => {} });
+    registerManagedSessionController(runId, controller);
+    mocks.getSessionUserId.mockResolvedValue("owner-1");
+    mocks.workFindFirst.mockResolvedValue(work);
+    mocks.runFindFirst.mockResolvedValue(run);
+    mocks.messageFindUnique.mockImplementation(async () => stored);
+    mocks.messageCreate.mockImplementation(async ({ data }) => {
+      stored = {
+        ...data,
+        deliveryState: "SUBMITTING",
+        transportMessageId: null,
+        promptSynced: false,
+        promptError: null,
+        artifactSynced: false,
+        artifactError: null,
+        createdAt: new Date(),
+        acceptedAt: null,
+        observedAt: null,
+      };
+      return stored;
+    });
+    mocks.messageUpdate.mockImplementation(async ({ where, data }) => {
+      if (!stored || stored.id !== where.id) throw new Error("message missing");
+      stored = { ...stored, ...data };
+      return stored;
+    });
+    mocks.appendArtifact.mockResolvedValue(undefined);
+    mocks.ensurePrompt.mockResolvedValue(undefined);
+  });
+
+  async function post(input: Record<string, unknown>, workId = "work-1") {
+    return POST(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      }) as never,
+      { params: Promise.resolve({ id: workId }) }
+    );
+  }
+
+  it("requires authentication and constrains the Run lookup to its Work", async () => {
+    mocks.getSessionUserId.mockResolvedValueOnce(null);
+    const unauthorized = await post({ prompt: "steer", requestId: randomUUID(), runId: run.id, sessionId: run.copilotSessionId });
+    expect(unauthorized.status).toBe(401);
+
+    mocks.runFindFirst.mockResolvedValueOnce(null);
+    const crossWork = await post({ prompt: "steer", requestId: randomUUID(), runId: "foreign-run", sessionId: run.copilotSessionId });
+    expect(crossWork.status).toBe(409);
+    expect(mocks.runFindFirst).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: { id: "foreign-run", workId: "work-1", experimentVariantId: null },
+    }));
+  });
+
+  it("rejects archived, cross-host, external-Terminal and stale-session attempts", async () => {
+    const request = { prompt: "steer", requestId: randomUUID(), runId: run.id, sessionId: run.copilotSessionId };
+    mocks.workFindFirst.mockResolvedValueOnce({ ...work, status: "ARCHIVED" });
+    expect((await post(request)).status).toBe(409);
+    expect(send).not.toHaveBeenCalled();
+
+    mocks.runFindFirst.mockResolvedValueOnce({ ...run, hostname: "other-host" });
+    expect((await post({ ...request, requestId: randomUUID() })).status).toBe(409);
+    expect(send).not.toHaveBeenCalled();
+
+    mocks.runFindFirst.mockResolvedValueOnce({ ...run, trigger: "TERMINAL_RESUME" });
+    expect((await post({ ...request, requestId: randomUUID() })).status).toBe(409);
+    expect(send).not.toHaveBeenCalled();
+
+    expect((await post({ ...request, requestId: randomUUID(), sessionId: "stale-session" })).status).toBe(409);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("accepts the same idempotent message once and repairs neither Prompt nor transport twice", async () => {
+    const request = {
+      prompt: "Keep the current task focused",
+      requestId: randomUUID(),
+      runId: run.id,
+      sessionId: run.copilotSessionId,
+    };
+    const first = await post(request);
+    const firstBody = await first.json();
+    expect(first.status).toBe(202);
+    expect(firstBody).toMatchObject({
+      deliveryState: "ACCEPTED",
+      transportAccepted: true,
+      promptSynced: true,
+      artifactSynced: true,
+    });
+    const retry = await post(request);
+    expect(retry.status).toBe(200);
+    expect(send).toHaveBeenCalledOnce();
+    expect(mocks.ensurePrompt).toHaveBeenCalledOnce();
+    expect(stored?.promptSynced).toBe(true);
+    expect(mocks.workFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "work-1", userId: "owner-1" },
+    }));
+  });
+
+  it("leaves an accepted message visible when Prompt repair fails, then repairs by the same key", async () => {
+    mocks.ensurePrompt.mockRejectedValueOnce(new Error("dirty editor failure")).mockResolvedValueOnce(undefined);
+    const request = {
+      prompt: "Retain the changed API",
+      requestId: randomUUID(),
+      runId: run.id,
+      sessionId: run.copilotSessionId,
+    };
+    const first = await post(request);
+    expect(await first.json()).toMatchObject({
+      deliveryState: "ACCEPTED",
+      transportAccepted: true,
+      promptSynced: false,
+      artifactSynced: true,
+    });
+    const repaired = await post(request);
+    expect(await repaired.json()).toMatchObject({ promptSynced: true, artifactSynced: true });
+    expect(send).toHaveBeenCalledOnce();
+    expect(mocks.ensurePrompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not replay a record left submitting by a process restart", async () => {
+    stored = {
+      id: "existing",
+      workId: "work-1",
+      runId: run.id,
+      sessionId: run.copilotSessionId,
+      requestId: "8e2e2f5e-84c5-4d00-98a7-e443c268cb9a",
+      content: "Maybe already delivered",
+      deliveryState: "SUBMITTING",
+      transportMessageId: null,
+      promptSynced: false,
+      promptError: null,
+      artifactSynced: false,
+      artifactError: null,
+      createdAt: new Date(),
+      acceptedAt: null,
+      observedAt: null,
+    };
+    const response = await post({
+      prompt: stored.content,
+      requestId: stored.requestId,
+      runId: run.id,
+      sessionId: run.copilotSessionId,
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ deliveryState: "UNCERTAIN" });
+    expect(stored.deliveryState).toBe("UNCERTAIN");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  afterEach(() => unregisterManagedSessionController(runId, controller));
+});

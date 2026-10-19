@@ -7,7 +7,10 @@ import {
   startCopilotRun,
   type RunOutputFormat,
 } from "@/lib/copilot-runner";
-import { startCopilotSdkRun } from "@/lib/copilot-sdk-runner";
+import {
+  startCopilotCliControlledRun,
+  startCopilotSdkRun,
+} from "@/lib/copilot-sdk-runner";
 import {
   getHeadCommit,
 } from "@/lib/git-safety";
@@ -181,6 +184,23 @@ export async function ensureFollowUpPrompt(
   });
 }
 
+export async function ensureSteeringPrompt(
+  work: { id: string; directoryPath: string; promptFileName: string },
+  message: { id: string; createdAt: Date; content: string }
+): Promise<void> {
+  await appendWorkFollowUp(work, message.content, {
+    createdAt: message.createdAt,
+    followUpId: message.id,
+    kind: "steering",
+    afterWrite: async (updatedPrompt) => {
+      await prisma.work.update({
+        where: { id: work.id },
+        data: { promptCache: updatedPrompt.content, promptHash: updatedPrompt.hash },
+      });
+    },
+  });
+}
+
 export async function executeWorkRun(runId: string): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
@@ -227,7 +247,6 @@ export async function executeWorkRun(runId: string): Promise<void> {
     skillName: run.experimentVariant?.skillName,
     skillHash: run.experimentVariant?.skillHash,
     skillInvocationMode: run.experimentVariant?.experiment.invocationMode,
-    agent: run.agent,
     model: run.model,
     fallbackModel: run.fallbackModel,
     contextTier: run.contextTier,
@@ -319,7 +338,8 @@ export async function executeWorkRun(runId: string): Promise<void> {
       return;
     }
 
-    const sdkUsageBaseline = engine === "SDK"
+    const controlledCliRun = engine === "CLI" && !run.experimentVariantId;
+    const sdkUsageBaseline = engine === "SDK" || controlledCliRun
       ? await readCopilotSessionInsights(sessionId).catch(() => null)
       : null;
 
@@ -339,7 +359,26 @@ export async function executeWorkRun(runId: string): Promise<void> {
             stderrLogPath: artifactPaths.stderr,
             onSpawn,
           })
-        : await startCopilotRun({
+        : controlledCliRun
+          ? await startCopilotCliControlledRun({
+              runId: run.id,
+              sessionId,
+              workPath: executionPath,
+              prompt,
+              resumeSession: Boolean(run.resumedFromRunId),
+              agent: run.agent,
+              model: run.model,
+              fallbackModel: run.fallbackModel,
+              contextTier: run.contextTier,
+              reasoningEffort: run.reasoningEffort,
+              permissionMode: run.permissionMode === "full" ? "full" : "default",
+              outputFormat,
+              timeoutSeconds,
+              stdoutLogPath: artifactPaths.stdout,
+              stderrLogPath: artifactPaths.stderr,
+              onSpawn,
+            })
+          : await startCopilotRun({
             runId: run.id,
             sessionId,
             repoPath: executionPath,

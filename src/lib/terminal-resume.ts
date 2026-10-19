@@ -7,14 +7,16 @@ import { prisma } from "@/lib/prisma";
 import { buildCopilotEnvironment } from "@/lib/copilot-runner";
 import {
   assertCopilotSessionNotInUse,
-  readCompatibleCopilotSessionEvents,
+  CopilotSessionInUseError,
+  processIsAlive,
+  readCopilotSessionSnapshot,
   repairLegacyCopilotSessionEvents,
 } from "@/lib/copilot-session-compat";
-import { generateSecret, hashToken } from "@/lib/crypto";
 import {
   getHeadCommit,
 } from "@/lib/git-safety";
 import {
+  checkpointRunHistory,
   finalizeWorkRunArtifacts,
   getAutomationRunArtifactPaths,
   getWorkRunArtifactPaths,
@@ -41,6 +43,7 @@ import type { CopilotCompletionSummary } from "@/lib/copilot-completion";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { findActiveRunConflicts } from "@/lib/run-access";
 import { getDirectorySnapshotPath } from "@/lib/directory-snapshot";
+import { TERMINAL_COMPLETION_UNCONFIRMED } from "@/lib/work-run-status";
 
 export class TerminalResumeInProgressError extends Error {
   constructor() {
@@ -56,20 +59,11 @@ export class TerminalResumeNotReadyError extends Error {
   }
 }
 
-export class TerminalSyncInProgressError extends Error {
-  constructor() {
-    super("This terminal session is already being synchronized");
-    this.name = "TerminalSyncInProgressError";
-  }
-}
-
 const UNKNOWN_TERMINAL_EXIT_ERROR =
-  "Terminal closed before reporting its exit status, and the Copilot session did not record a complete response";
-export const UNKNOWN_TERMINAL_STATE_ERROR =
-  "Terminal callback expired; the Terminal state is unknown";
+  TERMINAL_COMPLETION_UNCONFIRMED;
 
 export interface TerminalRunOutcome {
-  status: "SUCCESS" | "FAILED";
+  status: "SUCCESS" | "FAILED" | "UNKNOWN";
   exitCode: number | null;
   errorMessage: string | null;
 }
@@ -90,10 +84,11 @@ export function resolveTerminalRunOutcome(
     completion.taskComplete || completion.rootFinalOutput !== null;
   const isComplete =
     hasCompletionEvidence &&
+    !completion.aborted &&
     completion.openSubagents.length === 0 &&
     completion.openTools.length === 0;
   return {
-    status: isComplete ? "SUCCESS" : "FAILED",
+    status: isComplete ? "SUCCESS" : "UNKNOWN",
     exitCode: null,
     errorMessage: isComplete ? null : UNKNOWN_TERMINAL_EXIT_ERROR,
   };
@@ -165,21 +160,19 @@ function lastAssistantMessage(events: unknown[]): string | null {
   return null;
 }
 
-async function readSessionEvents(sessionId: string, workingDirectory: string): Promise<unknown[]> {
-  void workingDirectory;
-  return readCompatibleCopilotSessionEvents(sessionId);
-}
-
 export async function launchTerminalResume(parentRunId: string): Promise<{
   runId: string;
   launcherPid: number | null;
 }> {
   const candidate = await prisma.run.findUniqueOrThrow({
     where: { id: parentRunId },
-    select: { copilotSessionId: true, workId: true, taskId: true },
+    select: { copilotSessionId: true, workId: true, taskId: true, status: true, trigger: true },
   });
   if (!candidate.copilotSessionId) {
     throw new Error("This run does not have a resumable Copilot session");
+  }
+  if (candidate.status === "RUNNING" && isTerminalRunTrigger(candidate.trigger)) {
+    await reconcileTerminalRun(parentRunId, new Date(), { settleStopped: true });
   }
   const ownerKey = candidate.workId
     ? `work:${candidate.workId}`
@@ -209,7 +202,7 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
     throw new Error("This run does not have a resumable Copilot session");
   }
   if (parentRun.status === "PENDING" || parentRun.status === "RUNNING") {
-    throw new Error("Cannot resume a session while its run is still active");
+    throw new TerminalResumeInProgressError();
   }
   if (parentRun.work?.status === "ARCHIVED" || parentRun.task?.archivedAt) {
     throw new Error("Restore this Work before resuming its session");
@@ -239,11 +232,6 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
   if (!executionPath) throw new Error("The run has no working directory");
   const runId = randomUUID();
   const launchId = randomUUID();
-  const callbackToken = generateSecret();
-  const callbackUrl = new URL(
-    "/api/terminal/callback",
-    process.env.WORKBOARD_LOCAL_URL ?? "http://127.0.0.1:3100"
-  ).toString();
   const paths = task
     ? getAutomationRunArtifactPaths(runId)
     : getWorkRunArtifactPaths(work!.directoryPath, runId);
@@ -342,8 +330,6 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
       data: {
         id: launchId,
         runId,
-        tokenHash: hashToken(callbackToken),
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       },
     }),
   ]);
@@ -357,8 +343,6 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
       JSON.stringify({
         sessionId: parentRun.copilotSessionId,
         workingDirectory: executionPath,
-        callbackUrl,
-        callbackToken,
       }),
       { encoding: "utf8", flag: "wx" }
     );
@@ -518,185 +502,172 @@ export async function finalizeFailedTerminalRun(
   return finalizeTerminalRun(runId, "FAILED", errorMessage, finishedAt);
 }
 
-export async function finalizeUnknownTerminalRun(
-  runId: string,
-  errorMessage: string,
-  finishedAt = new Date()
-): Promise<boolean> {
-  return finalizeTerminalRun(runId, "UNKNOWN", errorMessage, finishedAt);
-}
-
-export async function syncTerminalRun(
-  runId: string,
-  exitCode?: number
-): Promise<"synced" | "already-synced"> {
+export async function getTerminalSessionActivity(sessionId: string, launchId: string | null, createdAt?: Date) {
+  let sessionActive = false;
   try {
-    return await withRunStartLock([`terminal-sync:${runId}`], () =>
-      syncTerminalRunUnlocked(runId, exitCode, false)
-    );
+    await assertCopilotSessionNotInUse(sessionId);
   } catch (error) {
-    if (error instanceof RunStartInProgressError) {
-      throw new TerminalSyncInProgressError();
-    }
-    throw error;
+    if (!(error instanceof CopilotSessionInUseError)) throw error;
+    sessionActive = true;
   }
+  const launchFile = launchId
+    ? path.join(process.cwd(), "data", "terminal-launches", `${launchId}.json`)
+    : null;
+  const content = launchFile ? await readFile(launchFile, "utf8").catch(() => null) : null;
+  let wrapperPid: number | null = null;
+  let exitCode: number | null = null;
+  if (content !== null) {
+    try {
+      const launch = JSON.parse(content.replace(/^\uFEFF/, "")) as { wrapperPid?: unknown };
+      if (typeof launch.wrapperPid === "number" && Number.isInteger(launch.wrapperPid) && launch.wrapperPid > 0) {
+        wrapperPid = launch.wrapperPid;
+      }
+      try { exitCode = parseTerminalLaunchExitCode(content); } catch {}
+    } catch {}
+  }
+  const wrapperAlive = wrapperPid !== null && processIsAlive(wrapperPid);
+  const wrapperExited = wrapperPid !== null && !wrapperAlive;
+  return {
+    active: sessionActive || exitCode === null && wrapperAlive,
+    wrapperExited,
+    exitCode,
+    starting: !wrapperExited && exitCode === null && createdAt !== undefined && Date.now() - createdAt.getTime() < 120_000,
+  };
 }
 
-export async function syncExpiredTerminalRun(
+export async function reconcileTerminalRun(
   runId: string,
-  exitCode: number
-): Promise<"synced" | "already-synced"> {
-  try {
-    return await withRunStartLock([`terminal-sync:${runId}`], () =>
-      syncTerminalRunUnlocked(runId, exitCode, true)
-    );
-  } catch (error) {
-    if (error instanceof RunStartInProgressError) {
-      throw new TerminalSyncInProgressError();
-    }
-    throw error;
-  }
-}
-
-async function syncTerminalRunUnlocked(
-  runId: string,
-  exitCode: number | undefined,
-  allowExpired: boolean
-): Promise<"synced" | "already-synced"> {
+  now = new Date(),
+  { settleStopped = false }: { settleStopped?: boolean } = {}
+): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
-    include: { work: true, task: { include: { repo: true } } },
+    include: { work: true, task: { include: { repo: true } }, resumedRuns: { select: { id: true }, take: 1 } },
   });
-  if ((!run.work && !run.task) || !run.copilotSessionId || !isTerminalRunTrigger(run.trigger)) {
-    throw new Error("Run is not a resumable terminal session");
-  }
-  await assertCopilotSessionNotInUse(run.copilotSessionId);
-
-  const terminalLaunch = await prisma.terminalLaunch.findUniqueOrThrow({
-    where: { runId },
-    select: { id: true },
-  });
-  const persistedExitCode = exitCode ?? await tryReadTerminalLaunchExitCode(terminalLaunch.id);
-  const allowExpiredLaunch = allowExpired || persistedExitCode !== null;
-
-  const now = new Date();
+  if (
+    (!run.work && !run.task) || !run.copilotSessionId || !isTerminalRunTrigger(run.trigger) ||
+    !["RUNNING", "UNKNOWN"].includes(run.status) || run.resumedRuns.length > 0 ||
+    run.hostname && run.hostname !== hostname()
+  ) return;
+  const terminalLaunch = await prisma.terminalLaunch.findUniqueOrThrow({ where: { runId } });
+  if (terminalLaunch.syncToken && terminalLaunch.syncOwnerPid && processIsAlive(terminalLaunch.syncOwnerPid)) return;
+  const token = randomUUID();
   const claim = await prisma.terminalLaunch.updateMany({
     where: {
       runId,
-      status: { in: ["PENDING", "LAUNCHED", "SYNCING", "FAILED"] },
-      ...(allowExpiredLaunch
-        ? { expiresAt: { lte: now }, run: { status: { in: ["RUNNING", "UNKNOWN"] as const } } }
-        : { completedAt: null, expiresAt: { gt: now } }),
+      syncToken: terminalLaunch.syncToken,
+      updatedAt: terminalLaunch.updatedAt,
     },
-    data: { status: "SYNCING", completedAt: null, errorMessage: null },
+    data: { syncToken: token, syncOwnerPid: process.pid },
   });
-  if (claim.count === 0) {
-    const launch = await prisma.terminalLaunch.findUnique({ where: { runId } });
-    if (launch?.status === "COMPLETED") return "already-synced";
-    if (launch?.completedAt || launch && launch.expiresAt <= now) {
-      throw new Error("This terminal session has expired and can no longer be synchronized");
-    }
-    throw new Error("This terminal session is already being synchronized");
-  }
-
-  const paths = run.task
-    ? getAutomationRunArtifactPaths(run.id)
-    : getWorkRunArtifactPaths(run.work!.directoryPath, run.id);
-  const priorSnapshot = await readWorkRunSnapshot(paths.snapshot);
-  const executionPath =
-    run.executionPath ??
-    run.work?.directoryPath ??
-    (run.task ? getRepoWorkdirPath(run.task.repo) : null);
-  if (!executionPath) throw new Error("The run has no working directory");
-  const artifactRoot = run.task ? paths.outputDirectory : run.work!.directoryPath;
-
+  if (claim.count === 0) return;
   try {
-    const allEvents = await readSessionEvents(
-      run.copilotSessionId,
-      executionPath
-    );
-    const cursor = priorSnapshot.sessionEventCursorStart ?? 0;
-    const events = cursor <= allEvents.length ? allEvents.slice(cursor) : allEvents;
-    const currentInsights = analyzeCopilotSessionEvents(allEvents, cursor);
-    const priorUsage = analyzeCopilotSessionEvents(allEvents.slice(0, cursor)).usage;
-    const usageData = serializeCopilotTokenUsage(
-      subtractCopilotTokenUsage(currentInsights.usage, priorUsage)
-    );
-    const transcript = events.map((event) => JSON.stringify(event)).join("\n");
-    await writeFile(paths.stdout, transcript ? `${transcript}\n` : "", "utf8");
-
-    const sourceDiff = await captureRunSourceDiff({
-      executionPath,
-      workDirectory: artifactRoot,
-      runId: run.id,
-      beforeGitTree: priorSnapshot.gitBeforeTree,
-    });
-    const afterTree = sourceDiff.afterGitTree;
-    const finalCommit = await getHeadCommit(executionPath).catch(() => null);
-    const diff = sourceDiff.diff;
-    const finalOutput = currentInsights.completion.rootFinalOutput ?? lastAssistantMessage(events);
-    const finishedAt = new Date();
-    const outcome = resolveTerminalRunOutcome(
-      persistedExitCode,
-      currentInsights.completion
-    );
-
-    await finalizeWorkRunArtifacts({
-      paths,
-      snapshot: {
-        ...priorSnapshot,
-        status: outcome.status,
-        exitCode: outcome.exitCode,
-        finishedAt: finishedAt.toISOString(),
-        gitAfterTree: afterTree,
-        errorMessage: outcome.errorMessage,
-        ...usageData,
-      },
-      finalOutput,
-      diff,
-    });
-    await prisma.$transaction([
-      prisma.run.update({
-        where: { id: run.id },
-        data: {
-          status: outcome.status,
-          exitCode: outcome.exitCode,
-          finalOutput,
-          finalCommit,
-          finishedAt,
-          errorMessage: outcome.errorMessage,
-          ...usageData,
-        },
-      }),
-      prisma.terminalLaunch.updateMany({
-        where: { runId: run.id, status: "SYNCING" },
-        data: { status: "COMPLETED", completedAt: finishedAt, errorMessage: null },
-      }),
-    ]);
-    if (run.work) {
-      await prisma.work.update({
-        where: { id: run.work.id },
-        data: { status: outcome.status === "SUCCESS" ? "REVIEW" : "ACTIVE" },
+    await withRunStartLock([
+      `terminal-sync:${runId}`,
+      run.workId ? `work:${run.workId}` : `task:${run.taskId}`,
+      `session:${run.copilotSessionId}`,
+    ], () => serializeRunFinalization(runId, async () => {
+      const conflictingRun = await prisma.run.findFirst({
+        where: { id: { not: run.id }, copilotSessionId: run.copilotSessionId, status: { in: ["PENDING", "RUNNING"] } },
+        select: { id: true },
       });
-    }
-    await rm(
-      path.join(process.cwd(), "data", "terminal-launches", `${terminalLaunch.id}.json`),
-      { force: true }
-    ).catch(() => {});
-    return "synced";
+      if (conflictingRun) return;
+      const paths = run.task ? getAutomationRunArtifactPaths(run.id) : getWorkRunArtifactPaths(run.work!.directoryPath, run.id);
+      const priorSnapshot = await readWorkRunSnapshot(paths.snapshot);
+      const activity = await getTerminalSessionActivity(run.copilotSessionId!, terminalLaunch.id);
+      const persistedExitCode = activity.exitCode;
+      const active = activity.active;
+      const launchFile = path.join(process.cwd(), "data", "terminal-launches", `${terminalLaunch.id}.json`);
+      const history = await readCopilotSessionSnapshot(run.copilotSessionId!).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT" || active || now.getTime() - run.createdAt.getTime() < 120_000) throw error;
+        return { events: [], incompleteTail: false, size: 0, modifiedAt: new Date(0) };
+      });
+      const cursor = priorSnapshot.sessionEventCursorStart ?? 0;
+      if (cursor > history.events.length) throw new Error("Session history was truncated; refusing to include events from an earlier Run");
+      const events = history.events.slice(cursor);
+      const insights = analyzeCopilotSessionEvents(history.events, cursor);
+      const latestPrompt = events.findLastIndex((event) =>
+        event !== null && typeof event === "object" && "type" in event && event.type === "user.message"
+      );
+      insights.completion = analyzeCopilotSessionEvents(events.slice(Math.max(0, latestPrompt))).completion;
+      const priorUsage = analyzeCopilotSessionEvents(history.events.slice(0, cursor)).usage;
+      const usageData = serializeCopilotTokenUsage(subtractCopilotTokenUsage(insights.usage, priorUsage));
+      const finalOutput = insights.completion.rootFinalOutput ?? lastAssistantMessage(events);
+      const unchanged = terminalLaunch.historySize === history.size &&
+        terminalLaunch.historyModifiedAt?.getTime() === history.modifiedAt.getTime();
+      const inactiveSince = active ? null : unchanged ? terminalLaunch.inactiveSince ?? now : now;
+      const stoppedForResume = settleStopped && (
+        persistedExitCode !== null || activity.wrapperExited || now.getTime() - run.createdAt.getTime() >= 120_000
+      );
+      const settled = !active && (
+        stoppedForResume || inactiveSince !== null && now.getTime() - inactiveSince.getTime() >= 60_000
+      );
+      if (run.status === "UNKNOWN" && unchanged && persistedExitCode === null && terminalLaunch.status === "FAILED" && !active) return;
+      const activeState = active ? { status: "RUNNING" as const, finishedAt: null, errorMessage: null } : {};
+      const checkpoint = { ...priorSnapshot, ...activeState, sessionEventCursorEnd: history.events.length, ...usageData };
+      await checkpointRunHistory({ paths, snapshot: checkpoint, events, output: finalOutput });
+      if (!settled) {
+        await prisma.run.update({ where: { id: run.id }, data: { ...activeState, finalOutput, ...usageData } });
+        await prisma.terminalLaunch.updateMany({
+          where: { runId, syncToken: token },
+          data: { status: "LAUNCHED", completedAt: null, inactiveSince, historySize: history.size, historyModifiedAt: history.modifiedAt, errorMessage: null },
+        });
+        return;
+      }
+      const executionPath = run.executionPath ?? run.work?.directoryPath ?? (run.task ? getRepoWorkdirPath(run.task.repo) : null);
+      if (!executionPath) throw new Error("The run has no working directory");
+      const otherOwnerRun = await prisma.run.findFirst({
+        where: {
+          id: { not: run.id }, ...(run.workId ? { workId: run.workId } : { taskId: run.taskId }),
+          status: { in: ["PENDING", "RUNNING"] },
+        },
+        select: { id: true },
+      });
+      if (otherOwnerRun) return;
+      const sourceDiff = await captureRunSourceDiff({
+        executionPath, workDirectory: run.task ? paths.outputDirectory : run.work!.directoryPath,
+        runId: run.id, beforeGitTree: priorSnapshot.gitBeforeTree,
+      });
+      await assertCopilotSessionNotInUse(run.copilotSessionId!);
+      const latest = await readCopilotSessionSnapshot(run.copilotSessionId!).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT" || history.size !== 0) throw error;
+        return history;
+      });
+      if (latest.size !== history.size || latest.modifiedAt.getTime() !== history.modifiedAt.getTime()) return;
+      const outcome = history.incompleteTail
+        ? { status: "UNKNOWN" as const, exitCode: persistedExitCode, errorMessage: "Session history ends with an incomplete record" }
+        : resolveTerminalRunOutcome(persistedExitCode, insights.completion);
+      const finalCommit = await getHeadCommit(executionPath).catch(() => null);
+      await finalizeWorkRunArtifacts({
+        paths,
+        snapshot: { ...checkpoint, ...outcome, finishedAt: now.toISOString(), gitAfterTree: sourceDiff.afterGitTree },
+        finalOutput, diff: sourceDiff.diff,
+      });
+      await prisma.$transaction([
+        prisma.run.update({ where: { id: run.id }, data: { ...outcome, finalOutput, finalCommit, finishedAt: now, ...usageData } }),
+        prisma.terminalLaunch.updateMany({
+          where: { runId, syncToken: token },
+          data: {
+            status: outcome.status === "UNKNOWN" ? "FAILED" : "COMPLETED",
+            completedAt: outcome.status === "UNKNOWN" ? null : now,
+            inactiveSince, historySize: history.size, historyModifiedAt: history.modifiedAt, errorMessage: outcome.errorMessage,
+          },
+        }),
+      ]);
+      if (run.work && run.work.status !== "ARCHIVED") {
+        await prisma.work.update({ where: { id: run.work.id }, data: { status: outcome.status === "SUCCESS" ? "REVIEW" : "ACTIVE" } });
+      }
+      if (outcome.status !== "UNKNOWN") await rm(launchFile, { force: true }).catch(() => {});
+    }));
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await prisma.$transaction([
-      prisma.terminalLaunch.updateMany({
-        where: { runId: run.id, status: "SYNCING" },
-        data: { status: "FAILED", errorMessage },
-      }),
-      prisma.run.update({
-        where: { id: run.id },
-        data: { errorMessage, finishedAt: null },
-      }),
-    ]);
+    if (error instanceof RunStartInProgressError || error instanceof CopilotSessionInUseError) return;
+    await prisma.terminalLaunch.updateMany({
+      where: { runId, syncToken: token },
+      data: { errorMessage: error instanceof Error ? error.message : String(error) },
+    });
     throw error;
+  } finally {
+    await prisma.terminalLaunch.updateMany({ where: { runId, syncToken: token }, data: { syncToken: null, syncOwnerPid: null } });
   }
 }
 
@@ -708,7 +679,7 @@ export function parseTerminalLaunchExitCode(content: string): number {
     launch.exitCode < -1 ||
     launch.exitCode > 2_147_483_647
   ) {
-    throw new Error("Terminal exit status is unavailable; wait for the terminal callback or retry.");
+    throw new Error("Terminal exit status is unavailable; waiting for history reconciliation.");
   }
   return launch.exitCode;
 }
@@ -769,11 +740,6 @@ export async function launchNewWorkTerminal(
       const runId = randomUUID();
       const launchId = randomUUID();
       const sessionId = randomUUID();
-      const callbackToken = generateSecret();
-      const callbackUrl = new URL(
-        "/api/terminal/callback",
-        process.env.WORKBOARD_LOCAL_URL ?? "http://127.0.0.1:3100"
-      ).toString();
       const paths = getWorkRunArtifactPaths(work.directoryPath, runId);
       const beforeTree = await captureRunSourceBaseline(
         work.directoryPath,
@@ -857,8 +823,6 @@ export async function launchNewWorkTerminal(
           data: {
             id: launchId,
             runId,
-            tokenHash: hashToken(callbackToken),
-            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
           },
         }),
       ]);
@@ -879,8 +843,6 @@ export async function launchNewWorkTerminal(
             mode: "new",
             sessionId,
             workingDirectory: work.directoryPath,
-            callbackUrl,
-            callbackToken,
             copilotArgs,
           }),
           { encoding: "utf8", flag: "wx" }

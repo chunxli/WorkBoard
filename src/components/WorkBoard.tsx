@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   closestCenter,
@@ -116,7 +116,16 @@ export default function WorkBoard({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
-  const [orderedWorks, setOrderedWorks] = useState(works);
+  const [orderedWorkIds, setOrderedWorkIds] = useState(works.map((work) => work.id));
+  const worksById = new Map(works.map((work) => [work.id, work]));
+  const orderedWorks = [
+    ...orderedWorkIds.flatMap((id) => {
+      const work = worksById.get(id);
+      return work ? [work] : [];
+    }),
+    ...works.filter((work) => !orderedWorkIds.includes(work.id)),
+  ];
+  const draggingWork = useRef(false);
   const [directoryPath, setDirectoryPath] = useState("");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -150,6 +159,26 @@ export default function WorkBoard({
   const [savingOrder, setSavingOrder] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [view, setView] = useState<"current" | "archived">("current");
+  const hasLiveRuns = works.some((work) =>
+    ["PENDING", "RUNNING", "IN_TERMINAL", "UNKNOWN"].includes(work.latestRunStatus ?? "")
+  );
+
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden && !draggingWork.current && !savingOrder && archivingWorkId === null) {
+        router.refresh();
+      }
+    };
+    const timer = hasLiveRuns ? setInterval(refresh, 4000) : undefined;
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    refresh();
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [hasLiveRuns, savingOrder, archivingWorkId, router]);
 
   function updateDirectoryPath(value: string) {
     promptImportRequest.current += 1;
@@ -412,7 +441,7 @@ export default function WorkBoard({
   }
 
   async function resumeWorkInTerminal(work: WorkSummary) {
-    if (!work.latestRunId || work.terminalResumeState !== "ready") return;
+    if (!work.latestRunId || work.terminalResumeState === "unavailable") return;
     setResumingRunId(work.latestRunId);
     setTerminalError(null);
     try {
@@ -430,6 +459,7 @@ export default function WorkBoard({
       setTerminalError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setResumingRunId(null);
+      router.refresh();
     }
   }
 
@@ -473,19 +503,6 @@ export default function WorkBoard({
           typeof body.error === "string" ? body.error : "Failed to archive Work"
         );
       }
-      const updatedAt = typeof body.updatedAt === "string"
-        ? body.updatedAt
-        : new Date().toISOString();
-      setOrderedWorks((current) => current.map((candidate) =>
-        candidate.id === work.id
-          ? {
-              ...candidate,
-              status: "ARCHIVED",
-              updatedAt,
-              updatedAtLabel: new Date(updatedAt).toLocaleString("zh-CN", { hour12: false }),
-            }
-          : candidate
-      ));
       router.refresh();
     } catch (reason) {
       setArchiveError(reason instanceof Error ? reason.message : String(reason));
@@ -502,10 +519,10 @@ export default function WorkBoard({
     if (oldIndex < 0 || newIndex < 0) return;
 
     const reordered = arrayMove(currentWorks, oldIndex, newIndex);
-    const previousWorks = orderedWorks;
-    setOrderedWorks([
-      ...reordered,
-      ...orderedWorks.filter((work) => work.status === "ARCHIVED"),
+    const previousOrder = orderedWorkIds;
+    setOrderedWorkIds([
+      ...reordered.map((work) => work.id),
+      ...orderedWorks.filter((work) => work.status === "ARCHIVED").map((work) => work.id),
     ]);
     setSavingOrder(true);
     setOrderError(null);
@@ -522,7 +539,7 @@ export default function WorkBoard({
         );
       }
     } catch (reason) {
-      setOrderedWorks(previousWorks);
+      setOrderedWorkIds(previousOrder);
       setOrderError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSavingOrder(false);
@@ -901,7 +918,10 @@ export default function WorkBoard({
             id="current-work-order"
             sensors={sensors}
             collisionDetection={closestCenter}
+            onDragStart={() => { draggingWork.current = true; }}
+            onDragCancel={() => { draggingWork.current = false; }}
             onDragEnd={(event) => {
+              draggingWork.current = false;
               if (view === "current") void reorderCurrentWorks(event);
             }}
           >
@@ -1110,19 +1130,19 @@ function SortableWorkCard({
           <button
             type="button"
             onClick={() => onResumeInTerminal(work)}
-            disabled={work.terminalResumeState !== "ready" || resumingRunId !== null}
+            disabled={work.terminalResumeState === "unavailable" || resumingRunId !== null}
             aria-label={
               work.terminalResumeState === "ready"
                 ? `Resume ${work.name} in Windows Terminal`
                 : work.terminalResumeState === "active"
-                  ? `${work.name} is already open in Windows Terminal`
+                  ? `Check and resume ${work.name} in Windows Terminal`
                   : `${work.name} has no resumable Terminal session`
             }
             title={
               work.terminalResumeState === "ready"
                 ? "Resume in Windows Terminal"
                 : work.terminalResumeState === "active"
-                  ? "Already open in Windows Terminal"
+                  ? "Check session and resume in Windows Terminal"
                   : "No resumable Terminal session"
             }
             className={`grid size-8 place-items-center rounded-md disabled:cursor-not-allowed ${

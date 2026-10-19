@@ -69,5 +69,7 @@ describe("Work execution settings", () => {
     });
     expect(followUpWorkSchema.safeParse({ prompt: "   " }).success).toBe(false);
     expect(followUpWorkSchema.safeParse({ prompt: "valid", sessionId: "client-controlled" }).success).toBe(false);
+    expect(followUpWorkSchema.parse({ prompt: "Continue", expectedParentRunId: "owned-run" }))
+      .toEqual({ prompt: "Continue", expectedParentRunId: "owned-run" });
   });
 });

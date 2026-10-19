@@ -6,6 +6,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { captureWorktreeTree, getWorktreeSnapshotDiff } from "./git-safety";
 import {
+  checkpointRunHistory,
+  appendWorkRunSteeringArtifact,
   finalizeWorkRunArtifacts,
   prepareWorkRunArtifacts,
   readRunDiffPreview,
@@ -103,6 +105,45 @@ describe("Git Work snapshots", () => {
 });
 
 describe("Run artifacts", () => {
+  it("stores accepted Steering in an idempotent Run artifact", async () => {
+    const work = await temporaryDirectory();
+    const paths = await prepareWorkRunArtifacts(work, "steering-run", {
+      schemaVersion: 1,
+      runId: "steering-run",
+      workId: "work-1",
+      workName: "Example",
+      promptFileName: "PROMPT.md",
+      prompt: "Original",
+      promptHash: "hash",
+      engine: "CLI",
+      sessionId: "session-1",
+      executionPath: work,
+      concurrencyMode: "DIRECT",
+      status: "RUNNING",
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      exitCode: null,
+      errorMessage: null,
+      gitBeforeTree: null,
+      gitAfterTree: null,
+    });
+    const message = {
+      id: "steering-1",
+      requestId: "request-1",
+      sessionId: "session-1",
+      content: "Change direction",
+      transportMessageId: "ack-1",
+      acceptedAt: new Date().toISOString(),
+    };
+    await Promise.all([
+      appendWorkRunSteeringArtifact(paths, message),
+      appendWorkRunSteeringArtifact(paths, message),
+    ]);
+    const contents = await readFile(paths.steering, "utf8");
+    expect(contents.trim().split(/\r?\n/)).toHaveLength(1);
+    expect(contents).toContain("Change direction");
+  });
+
   it("rolls a non-Git completion snapshot forward for fast terminal Resume", async () => {
     const work = await temporaryDirectory();
     await writeFile(path.join(work, "report.txt"), "before\n", "utf8");
@@ -165,6 +206,19 @@ describe("Run artifacts", () => {
       gitAfterTree: null,
     };
     const paths = await prepareWorkRunArtifacts(work, "run-1", snapshot);
+    const checkpoint = {
+      paths,
+      snapshot: { ...snapshot, sessionEventCursorEnd: 1 },
+      events: [{ type: "assistant.message" }],
+      output: "Work in progress",
+    };
+    await checkpointRunHistory(checkpoint);
+    await checkpointRunHistory(checkpoint);
+    expect(await readFile(paths.stdout, "utf8")).toBe('{"type":"assistant.message"}\n');
+    expect(await readFile(paths.transcript, "utf8")).toBe(await readFile(paths.stdout, "utf8"));
+    expect(JSON.parse(await readFile(paths.snapshot, "utf8"))).toMatchObject({
+      status: "RUNNING", finishedAt: null, sessionEventCursorEnd: 1,
+    });
     await writeFile(paths.stdout, '{"type":"assistant.message"}\n', "utf8");
     await writeFile(paths.stderr, "warning\n", "utf8");
     await finalizeWorkRunArtifacts({

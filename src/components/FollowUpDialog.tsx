@@ -9,10 +9,12 @@ export default function FollowUpDialog({
   workId,
   mode,
   disabledReason,
+  inline = false,
 }: {
   workId: string;
   mode: "resume" | "new";
   disabledReason?: string | null;
+  inline?: boolean;
 }) {
   const router = useRouter();
   const titleId = useId();
@@ -97,8 +99,12 @@ export default function FollowUpDialog({
       <button
         ref={triggerRef}
         type="button"
-        disabled={Boolean(disabledReason)}
+        disabled={!inline && Boolean(disabledReason)}
         onClick={() => {
+          if (inline) {
+            window.dispatchEvent(new CustomEvent("workboard:follow-up-focus", { detail: { workId } }));
+            return;
+          }
           setError(null);
           setOpen(true);
         }}

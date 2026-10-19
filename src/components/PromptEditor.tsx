@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, LoaderCircle, MessageSquareText, Play } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, LoaderCircle, MessageSquareText, Play } from "lucide-react";
 import PromptTemplatePicker from "@/components/PromptTemplatePicker";
 
 interface ConflictState {
@@ -36,6 +36,7 @@ export default function PromptEditor({
   const [starting, setStarting] = useState(false);
   const latestHashRef = useRef(initialHash);
   const latestContentRef = useRef(initialContent);
+  const savedContentRef = useRef(initialContent);
   const latestRequestedContentRef = useRef<string | null>(null);
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const engine = engineOverride ?? defaultEngine;
@@ -66,6 +67,7 @@ export default function PromptEditor({
         if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Save failed");
         latestHashRef.current = body.hash;
         setSavedContent(nextContent);
+        savedContentRef.current = nextContent;
         setConflict(null);
         if (nextContent === latestContentRef.current) setState("saved");
         return true;
@@ -113,12 +115,43 @@ export default function PromptEditor({
     return () => clearTimeout(timer);
   }, [content, conflict, save, savedContent]);
 
+  useEffect(() => {
+    let mounted = true;
+    const refreshPrompt = (event: Event) => {
+      if ((event as CustomEvent<{ workId: string }>).detail?.workId !== workId) return;
+      void (async () => {
+        await saveQueueRef.current.catch(() => false);
+        const response = await fetch(`/api/works/${workId}/prompt`, { cache: "no-store" });
+        if (!response.ok) return;
+        const updated = await response.json() as { content: string; hash: string };
+        if (!mounted || typeof updated.content !== "string" || updated.hash === latestHashRef.current) return;
+        if (latestContentRef.current !== savedContentRef.current) {
+          setConflict(updated);
+          setState("conflict");
+          setMessage("Prompt was updated with a Follow Up. Your unsaved draft has been kept.");
+          return;
+        }
+        latestHashRef.current = updated.hash;
+        latestContentRef.current = updated.content;
+        savedContentRef.current = updated.content;
+        latestRequestedContentRef.current = null;
+        setContent(updated.content);
+        setSavedContent(updated.content);
+        setConflict(null);
+        setMessage(null);
+        setState("saved");
+      })().catch(() => {});
+    };
+    window.addEventListener("workboard:prompt-updated", refreshPrompt);
+    return () => { mounted = false; window.removeEventListener("workboard:prompt-updated", refreshPrompt); };
+  }, [workId]);
+
   const stateLabel =
     state === "saving" ? "Saving" : state === "saved" ? "Saved" : state === "conflict" ? "Conflict" : "Save failed";
 
   return (
-    <section className="ui-panel overflow-hidden">
-      <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3.5 sm:px-5">
+    <details className="ui-panel group overflow-hidden">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3.5 sm:px-5 [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-3">
           <span className="grid size-8 place-items-center rounded-md bg-neutral-800 text-neutral-300">
             <MessageSquareText size={16} aria-hidden="true" />
@@ -128,6 +161,7 @@ export default function PromptEditor({
           <p className="font-mono text-xs text-neutral-500">{promptFileName}</p>
           </div>
         </div>
+        <span className="flex items-center gap-3">
         <span
           aria-live="polite"
           className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase ${
@@ -147,8 +181,10 @@ export default function PromptEditor({
           )}
           {stateLabel}
         </span>
-      </div>
-      <div className="space-y-3 p-4 sm:p-5">
+        <ChevronDown size={15} className="shrink-0 text-neutral-500 transition-transform group-open:rotate-180" aria-hidden="true" />
+        </span>
+      </summary>
+      <div className="space-y-3 border-t border-neutral-800 p-4 sm:p-5">
       <PromptTemplatePicker
         value={content}
         onChange={(nextContent) => {
@@ -183,6 +219,7 @@ export default function PromptEditor({
                 setContent(conflict.content);
                 latestContentRef.current = conflict.content;
                 setSavedContent(conflict.content);
+                savedContentRef.current = conflict.content;
                 latestHashRef.current = conflict.hash;
                 latestRequestedContentRef.current = conflict.content;
                 setConflict(null);
@@ -244,6 +281,6 @@ export default function PromptEditor({
         </div>
       )}
       </div>
-    </section>
+    </details>
   );
 }

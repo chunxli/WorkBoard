@@ -8,11 +8,11 @@ export async function register() {
     await recoverRuns();
 
     const {
-      reapExpiredTerminalRuns,
-      startTerminalLaunchReaper,
+      reconcileTerminalRuns,
+      startTerminalHistorySync,
     } = await import("@/lib/terminal-launch-reaper");
-    await reapExpiredTerminalRuns();
-    startTerminalLaunchReaper();
+    await reconcileTerminalRuns();
+    startTerminalHistorySync();
 
     const {
       dispatchPendingSystemNotifications,

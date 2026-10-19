@@ -6,7 +6,18 @@ param(
 $ErrorActionPreference = "Stop"
 $launch = Get-Content -LiteralPath $LaunchFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $exitCode = 1
-$synchronized = $false
+
+function Save-LaunchState {
+    $temporaryPath = "$LaunchFile.tmp"
+    $content = $launch | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($temporaryPath, $content, [System.Text.UTF8Encoding]::new($false))
+    $backupPath = "$LaunchFile.bak"
+    [System.IO.File]::Replace($temporaryPath, $LaunchFile, $backupPath)
+    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+}
+
+$launch | Add-Member -NotePropertyName wrapperPid -NotePropertyValue $PID -Force
+Save-LaunchState
 
 try {
     Set-Location -LiteralPath $launch.workingDirectory
@@ -24,19 +35,7 @@ catch {
 }
 finally {
     $launch | Add-Member -NotePropertyName exitCode -NotePropertyValue $exitCode -Force
-    $launch | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $LaunchFile -Encoding UTF8
-    try {
-        $headers = @{ Authorization = "Bearer $($launch.callbackToken)" }
-        $body = @{ exitCode = $exitCode } | ConvertTo-Json -Compress
-        Invoke-RestMethod -Uri $launch.callbackUrl -Method Post -Headers $headers -ContentType "application/json" -Body $body | Out-Null
-        $synchronized = $true
-    }
-    catch {
-        Write-Warning "Work Board could not synchronize this session automatically. Use Sync session from the run page."
-    }
-    if ($synchronized) {
-        Remove-Item -LiteralPath $LaunchFile -Force -ErrorAction SilentlyContinue
-    }
+    Save-LaunchState
 }
 
 exit $exitCode
