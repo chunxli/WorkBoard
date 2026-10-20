@@ -53,4 +53,33 @@ describe("getWorkRunDisplayStatus", () => {
       getWorkRunDisplayStatus({ status: "UNKNOWN", trigger: "TERMINAL_RESUME" })
     ).toBe("UNKNOWN");
   });
+
+  it.each(["TERMINAL_START", "TERMINAL_RESUME"])("shows a stopped %s as synchronizing until settlement", (trigger) => {
+    expect(getWorkRunDisplayStatus(
+      { status: "RUNNING", trigger },
+      { active: false, starting: false },
+    )).toBe("SYNCING");
+  });
+
+  it("keeps active and starting Terminal sessions distinct from stopped ones", () => {
+    for (const activity of [{ active: true, starting: false }, { active: false, starting: true }]) {
+      expect(getWorkRunDisplayStatus(
+        { status: "RUNNING", trigger: "TERMINAL_RESUME" }, activity,
+      )).toBe("IN_TERMINAL");
+    }
+    expect(getWorkRunDisplayStatus(
+      { status: "RUNNING", trigger: "WORK" }, { active: false, starting: false },
+    )).toBe("RUNNING");
+  });
+
+  it("does not change completed outcomes or treat absent activity evidence as stopped", () => {
+    expect(getWorkRunDisplayStatus(
+      { status: "RUNNING", trigger: "TERMINAL_RESUME" }, null,
+    )).toBe("IN_TERMINAL");
+    for (const status of ["SUCCESS", "FAILED", "CANCELLED", "UNKNOWN"]) {
+      expect(getWorkRunDisplayStatus(
+        { status, trigger: "TERMINAL_RESUME" }, { active: false, starting: false },
+      )).toBe(status);
+    }
+  });
 });

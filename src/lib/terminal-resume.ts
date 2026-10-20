@@ -513,17 +513,24 @@ export async function getTerminalSessionActivity(sessionId: string, launchId: st
   const launchFile = launchId
     ? path.join(process.cwd(), "data", "terminal-launches", `${launchId}.json`)
     : null;
-  const content = launchFile ? await readFile(launchFile, "utf8").catch(() => null) : null;
+  const content = launchFile ? await readFile(launchFile, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }) : null;
   let wrapperPid: number | null = null;
   let exitCode: number | null = null;
   if (content !== null) {
-    try {
-      const launch = JSON.parse(content.replace(/^\uFEFF/, "")) as { wrapperPid?: unknown };
-      if (typeof launch.wrapperPid === "number" && Number.isInteger(launch.wrapperPid) && launch.wrapperPid > 0) {
-        wrapperPid = launch.wrapperPid;
+    const launch: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
+    if (launch === null || typeof launch !== "object" || Array.isArray(launch)) {
+      throw new Error("Terminal launch metadata is invalid; activity could not be verified.");
+    }
+    if ("wrapperPid" in launch) {
+      if (typeof launch.wrapperPid !== "number" || !Number.isInteger(launch.wrapperPid) || launch.wrapperPid <= 0) {
+        throw new Error("Terminal wrapper process metadata is invalid; activity could not be verified.");
       }
-      try { exitCode = parseTerminalLaunchExitCode(content); } catch {}
-    } catch {}
+      wrapperPid = launch.wrapperPid;
+    }
+    if ("exitCode" in launch) exitCode = parseTerminalLaunchExitCode(content);
   }
   const wrapperAlive = wrapperPid !== null && processIsAlive(wrapperPid);
   const wrapperExited = wrapperPid !== null && !wrapperAlive;

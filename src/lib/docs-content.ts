@@ -196,6 +196,11 @@ export const docsSections: DocsSection[] = [
         en: "Execution settings and Prompt start collapsed while retaining drafts. Each Work configures its engine, models, permissions, output, and timeout; every Run freezes its settings.",
       },
       {
+        title: "Compact Work Details",
+        zh: "紧凑页头保留快捷操作，对话区优先展示。目录与默认设置收进 Work details；Run history 默认折叠，数量仅表示当前已加载列表中的较早 Run，不代表历史总数。每次进入页面默认收起，当前页面手动展开后自动刷新不会将其收起。",
+        en: "Compact headers keep shortcuts available and prioritize conversation. Work details holds the directory and default settings; Run history starts collapsed and counts only earlier Runs in the loaded list, not the lifetime total. New page visits start closed; same-page automatic refreshes preserve manual expansion.",
+      },
+      {
         title: "Session Conversation",
         zh: "同一 session 的用户与助手消息跨 Run 展示，工具活动可展开，早期历史分页加载；保留原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
         en: "User and assistant turns span linked Runs in the same session, with expandable tools, earlier-history pagination, raw output and full session download. Different sessions and missing data are never merged or invented.",
@@ -280,8 +285,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Live Output & Process Info",
-        zh: "详情页通过 SSE 与轮询同步日志和状态；Process Info 稳定显示 PID、CPU、内存及冻结的执行设置。",
-        en: "Run details synchronize logs and state through SSE and polling; Process Info consistently shows PID, CPU, memory, and frozen execution settings.",
+        zh: "Run 详情优先显示 Result 与 Output，通过 SSE 与轮询同步日志；状态单独读取轻量元数据，首次响应、定时轮询与回到页面都会检查，不依赖对话加载或打开 Raw output。仓库、分支、机器、关联 Run 与 Process Info 收进默认折叠的 Run details；状态、托管 Run 的取消与错误提示保持可见，展开信息不会因当前页面自动刷新而收起。Process Info 保持挂载并显示 PID、CPU、内存及冻结的执行设置。",
+        en: "Run pages prioritize Result and Output, with SSE and polling for logs. Separate lightweight metadata checks refresh status on the first response, periodically, and on focus, independently of conversation loading or opening Raw output. Repository, branch, host, related Runs, and Process Info move into Run details, initially closed; status, managed cancellation, and errors stay visible, and same-page automatic refreshes preserve expansion. Process Info stays mounted with PID, CPU, memory, and frozen execution settings.",
       },
       {
         title: "Completion Integrity",
@@ -304,9 +309,14 @@ export const docsSections: DocsSection[] = [
         en: "Create or resume an interactive session. Persisted history syncs every minute; stopped sessions settle after a minute of stable history, without callbacks or manual Sync.",
       },
       {
+        title: "Terminal Activity & Settlement",
+        zh: "Work 卡片、Work 详情与 Run 详情统一显示状态：IN TERMINAL 表示仍在运行或启动；浅绿色 SYNCING 表示 Terminal 已停止，历史尚在收口；缺少完成证据时显示浅绿色 TERMINAL（内部 UNKNOWN），不会因关闭窗口就判成功。Resume 与对话区 Follow Up 可先尝试安全收口，再检查 Session 锁、历史、源状态及冲突；失败会明确提示并保留输入。无法确认活动状态时不开放 Resume。",
+        en: "Work cards and both detail pages use consistent status: IN TERMINAL means active or starting; light-green SYNCING means stopped with history settlement pending. Missing completion evidence shows light-green TERMINAL (internally UNKNOWN), never success just because a window closed. Resume and inline Follow Up may safely settle the parent first, then check session locks, history, source state, and conflicts. Failures stay explicit and retain the draft; unverified activity does not unlock Resume.",
+      },
+      {
         title: "Recovery & Cancellation",
-        zh: "应用重启会恢复 PENDING Run、收口中断 Run，并补同步活动和 UNKNOWN Terminal 历史；运行中的 Terminal 可持续同步，不因超过 24 小时被判为 UNKNOWN。",
-        en: "Restart recovery requeues pending Runs, finalizes interrupted Runs, and catches up active and UNKNOWN Terminal histories. Active sessions keep syncing without a 24-hour callback expiry.",
+        zh: "应用重启会恢复 PENDING Run、收口中断 Run，并补同步活动和 UNKNOWN Terminal 历史；运行中的 Terminal 可持续同步，不因超过 24 小时被判为 UNKNOWN。应用内 Cancel 只用于托管 Run；外部 Terminal 必须在 Terminal 中停止，随后自动同步。",
+        en: "Restart recovery requeues pending Runs, finalizes interrupted Runs, and catches up active and UNKNOWN Terminal histories. Active sessions keep syncing without a 24-hour callback expiry. In-app Cancel is for managed Runs only; stop external sessions in Terminal and their history synchronizes automatically.",
       },
     ],
   },
@@ -481,8 +491,8 @@ export const operationalLimits: BilingualText[] = [
     en: "System notifications use at-most-once claims; a crash after claim can lose one toast, but it will not be duplicated.",
   },
   {
-    zh: "外部 Terminal 历史每分钟同步，需要服务持续运行。停止后通常 1–2 分钟收口；缺少退出码和完整完成证据时保留 UNKNOWN，后续可恢复。VS Code 按钮目前仅打开目录，不自动关联原生 Chat session。",
-    en: "Terminal histories sync every minute while the server runs. Stopped sessions usually settle within 1–2 minutes; missing exit codes and incomplete evidence remain UNKNOWN for later recovery. VS Code currently opens the folder only, without native Chat session tracking.",
+    zh: "外部 Terminal 历史每分钟同步，需要服务持续运行。停止后通常 1–2 分钟收口，期间显示 SYNCING 而不是 RUNNING；缺少退出码和完整完成证据时显示 TERMINAL（内部 UNKNOWN），后续可恢复。VS Code 按钮目前仅打开目录，不自动关联原生 Chat session。",
+    en: "Terminal histories sync every minute while the server runs. Stopped sessions usually settle within 1–2 minutes, showing SYNCING rather than RUNNING meanwhile. Missing exit codes and incomplete evidence show TERMINAL (internally UNKNOWN) for later recovery. VS Code currently opens the folder only, without native Chat session tracking.",
   },
   {
     zh: "大型目录复制会包含依赖、build output、隐藏文件和 Git metadata；执行前检查磁盘空间。",

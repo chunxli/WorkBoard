@@ -1,9 +1,10 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   copilotSessionExists,
+  processIsAlive,
   readCopilotSessionSnapshot,
   readCompatibleCopilotSessionEvents,
   repairLegacyCopilotSessionEvents,
@@ -14,6 +15,7 @@ import {
 const cleanupPaths: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     cleanupPaths.splice(0).map((entry) => rm(entry, { recursive: true, force: true }))
   );
@@ -31,6 +33,31 @@ async function createSession(content: string) {
 }
 
 describe("Copilot session compatibility", () => {
+  it("only considers a process stopped when its PID no longer exists", () => {
+    vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("No such process"), { code: "ESRCH" }); });
+    expect(processIsAlive(12345)).toBe(false);
+  });
+
+  it("keeps an inaccessible process active rather than treating it as closed", () => {
+    vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Operation not permitted"), { code: "EPERM" }); });
+    expect(processIsAlive(12345)).toBe(true);
+  });
+
+  it("propagates an unrecognized process-check failure instead of proving inactivity", () => {
+    const error = Object.assign(new Error("Process lookup failed"), { code: "EACCES" });
+    vi.spyOn(process, "kill").mockImplementation(() => { throw error; });
+    expect(() => processIsAlive(12345)).toThrow(error);
+  });
+
+  it("does not rewrite a session whose lock owner cannot be signalled", async () => {
+    const content = '{"type":"session.permissions_changed","data":{"previousMode":"manual","mode":"allow-all"}}\n';
+    const session = await createSession(content);
+    await writeFile(path.join(session.sessionDirectory, "inuse.12345.lock"), "");
+    vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Operation not permitted"), { code: "EPERM" }); });
+    await expect(repairLegacyCopilotSessionEvents(session.sessionId, session.baseDirectory)).rejects.toThrow("still active");
+    expect(await readFile(session.eventsPath, "utf8")).toBe(content);
+  });
+
   it("reads active sessions without rewriting an incomplete trailing record", async () => {
     const content = '{"type":"session.start"}\n{"type":"assistant.message"';
     const session = await createSession(content);

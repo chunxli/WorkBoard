@@ -55,6 +55,7 @@ import {
   workExecutionSettingsValue,
 } from "@/lib/execution-defaults";
 import { formatTokenCount } from "@/lib/format";
+import { TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
 
 type Initialization = "USE_PATH" | "COPY_REPO";
 
@@ -69,6 +70,7 @@ interface WorkSummary {
   updatedAtLabel: string;
   automationCount: number;
   latestRunStatus: string | null;
+  latestRunStatusError?: string | null;
   latestRunId: string | null;
   latestModels: string[];
   latestTokenUsage: {
@@ -160,7 +162,7 @@ export default function WorkBoard({
   const [orderError, setOrderError] = useState<string | null>(null);
   const [view, setView] = useState<"current" | "archived">("current");
   const hasLiveRuns = works.some((work) =>
-    ["PENDING", "RUNNING", "IN_TERMINAL", "UNKNOWN"].includes(work.latestRunStatus ?? "")
+    ["PENDING", "RUNNING", "IN_TERMINAL", "SYNCING", "UNKNOWN"].includes(work.latestRunStatus ?? "")
   );
 
   useEffect(() => {
@@ -1091,6 +1093,12 @@ function SortableWorkCard({
         <span>{work.automationCount} automations</span>
         {work.latestRunStatus && <StatusBadge status={work.latestRunStatus} />}
       </div>
+      {work.latestRunStatus === "SYNCING" && (
+        <p role="status" className="text-xs text-emerald-200">{TERMINAL_SYNCING_MESSAGE}</p>
+      )}
+      {work.latestRunStatusError && (
+        <p role="alert" className="break-words text-xs text-red-400">{work.latestRunStatusError}</p>
+      )}
 
       <div className="mt-auto flex items-end justify-between gap-3 border-t border-neutral-800 pt-4">
         <span className="text-[10px] text-neutral-600">{work.updatedAtLabel}</span>

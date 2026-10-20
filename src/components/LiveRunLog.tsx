@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatCopilotLogLines } from "@/lib/parse-copilot-json-line";
 
@@ -26,17 +26,23 @@ export default function LiveRunLog({
   isLive,
   historySync = false,
   outputFormat = "text",
+  refreshOnStatusChange = true,
 }: {
   runId: string;
   initialLog: string;
   isLive: boolean;
   historySync?: boolean;
   outputFormat?: "text" | "json";
+  refreshOnStatusChange?: boolean;
 }) {
   const [lines, setLines] = useState<string[]>(() => splitVisibleLog(initialLog));
   const [finished, setFinished] = useState(!isLive);
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+  const visibleLines = useMemo(
+    () => isLive || historySync ? lines : splitVisibleLog(initialLog),
+    [isLive, historySync, lines, initialLog],
+  );
 
   useEffect(() => {
     if (!isLive && !historySync) return;
@@ -50,6 +56,7 @@ export default function LiveRunLog({
       source = new EventSource(`/api/runs/${runId}/stream`);
 
       source.onmessage = (e) => {
+        if (stopped) return;
         const event: CopilotRunEvent = JSON.parse(e.data);
         if (event.type === "line" && event.data) {
           setLines((prev) => [...prev, event.data!].slice(-MAX_VISIBLE_LOG_LINES));
@@ -57,7 +64,7 @@ export default function LiveRunLog({
           stopped = true;
           setFinished(true);
           source?.close();
-          router.refresh();
+          if (refreshOnStatusChange) router.refresh();
         }
       };
 
@@ -81,20 +88,21 @@ export default function LiveRunLog({
         const res = await fetch(`/api/runs/${runId}?view=live`);
         if (!res.ok) return;
         const data: { log?: string; status?: string } = await res.json();
+        if (stopped) return;
         if (typeof data.log === "string") {
           setLines(splitVisibleLog(data.log));
         }
         if (data.status && data.status !== lastStatus) {
           lastStatus = data.status;
           setFinished(data.status !== "PENDING" && data.status !== "RUNNING");
-          router.refresh();
+          if (refreshOnStatusChange) router.refresh();
         }
         if (data.status && data.status !== "PENDING" && data.status !== "RUNNING" && !(historySync && data.status === "UNKNOWN")) {
           stopped = true;
           setFinished(true);
           source?.close();
           clearInterval(pollTimer);
-          router.refresh();
+          if (refreshOnStatusChange) router.refresh();
         }
       } catch {
         // Ignore transient fetch failures; the next tick will retry.
@@ -107,15 +115,14 @@ export default function LiveRunLog({
       clearInterval(pollTimer);
       source?.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, isLive, historySync]);
+  }, [runId, isLive, historySync, refreshOnStatusChange, router]);
 
 
   useEffect(() => {
     containerRef.current?.scrollTo({ top: containerRef.current.scrollHeight });
-  }, [lines]);
+  }, [visibleLines]);
 
-  const displayLines = formatCopilotLogLines(lines, outputFormat).map((line) =>
+  const displayLines = formatCopilotLogLines(visibleLines, outputFormat).map((line) =>
     line.length > MAX_VISIBLE_LINE_CHARACTERS
       ? `${line.slice(0, MAX_VISIBLE_LINE_CHARACTERS)}\n[Entry truncated. Download stdout.log for the complete output.]`
       : line
@@ -123,7 +130,7 @@ export default function LiveRunLog({
 
   return (
     <div>
-      {!finished && (
+      {isLive && !finished && (
         <p className="mb-2 inline-flex items-center gap-2 font-mono text-[10px] font-semibold uppercase text-emerald-300">
           <span className="relative flex size-1.5">
             <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />

@@ -83,7 +83,7 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
   const session = useRef<string | null>(null);
   const readBusy = useRef(false);
   const promptHash = useRef<string | null>(null);
-  const runRevision = useRef<string | null>(null);
+  const latestRunId = useRef(runId);
   const reload = useRef<() => Promise<void>>(async () => {});
 
   function endpoint(extra?: { cursor?: string; before?: string; download?: string }) {
@@ -140,9 +140,10 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
           window.dispatchEvent(new CustomEvent("workboard:prompt-updated", { detail: { workId } }));
         }
         promptHash.current = page.promptHash;
-        const revision = page.runs[0] ? `${page.runs[0].id}:${page.runs[0].status}` : "empty";
-        if (runRevision.current !== null && runRevision.current !== revision) router.refresh();
-        runRevision.current = revision;
+        if (page.runs[0] && latestRunId.current !== page.runs[0].id) {
+          latestRunId.current = page.runs[0].id;
+          if (page.runs[0].id !== runId) router.refresh();
+        }
         again = page.hasMore;
       } catch (error) {
         if (!stopped && !(error instanceof DOMException && error.name === "AbortError")) {
@@ -341,7 +342,7 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
           {runId && (data?.historyAvailable || readError) && <a href={endpoint({ download: "1" })} title="Download full session history" aria-label="Download full session history" className="grid size-8 place-items-center rounded-md hover:bg-neutral-800 hover:text-emerald-400"><Download size={14} aria-hidden="true" /></a>}
         </div>
       </div>
-      {view === "raw" ? runId ? <LiveRunLog key={runId} runId={runId} initialLog={initialLog} isLive={isLive} historySync={historySync} outputFormat={outputFormat} />
+      {view === "raw" ? runId ? <LiveRunLog key={runId} runId={runId} initialLog={initialLog} isLive={isLive} historySync={historySync} outputFormat={outputFormat} refreshOnStatusChange={false} />
         : <p className="py-4 text-sm text-neutral-500">No Run output yet.</p>
         : <>
           {notice && <p role="status" className="text-xs text-neutral-500">{notice}</p>}

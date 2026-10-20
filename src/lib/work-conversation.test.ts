@@ -131,6 +131,41 @@ describe("owned session conversation API", () => {
 });
 
 describe("conversation follow-up submission", () => {
+  it("settles a stopped Terminal parent before creating its linked Follow Up", async () => {
+    parent.status = "RUNNING";
+    parent.trigger = "TERMINAL_RESUME";
+    services.reconcile.mockImplementationOnce(async () => { parent.status = "SUCCESS"; });
+    const response = await followUp({ prompt: "Continue", expectedParentRunId: parent.id });
+    expect(response.status).toBe(202);
+    expect(services.reconcile).toHaveBeenCalledWith(parent.id, expect.any(Date), { settleStopped: true });
+    expect(services.reconcile.mock.invocationCallOrder[0]).toBeLessThan(services.create.mock.invocationCallOrder[0]);
+    expect(services.create).toHaveBeenCalledWith({ workId: "work-1", prompt: "Continue", parentRunId: parent.id });
+  });
+
+  it("does not force continuation when a Terminal parent cannot yet settle", async () => {
+    parent.status = "RUNNING";
+    parent.trigger = "TERMINAL_RESUME";
+    services.run.findFirst.mockImplementation(async ({ where }) =>
+      where.status?.in ? { id: parent.id } : parent,
+    );
+    const response = await followUp({ prompt: "Keep my draft", expectedParentRunId: parent.id });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining("active Work Run") });
+    expect(services.create).not.toHaveBeenCalled();
+    expect(services.append).not.toHaveBeenCalled();
+  });
+
+  it("preserves a settlement failure instead of silently creating another session", async () => {
+    parent.status = "RUNNING";
+    parent.trigger = "TERMINAL_RESUME";
+    services.reconcile.mockRejectedValueOnce(new Error("Session history changed; retry synchronization"));
+    const response = await followUp({ prompt: "Keep my draft", expectedParentRunId: parent.id });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Session history changed; retry synchronization" });
+    expect(services.create).not.toHaveBeenCalled();
+    expect(services.append).not.toHaveBeenCalled();
+  });
+
   it("appends accepted input to Prompt once per Run and queues the same session", async () => {
     const response = await followUp({ prompt: "Continue", expectedParentRunId: "run-1" });
     expect(response.status).toBe(202);

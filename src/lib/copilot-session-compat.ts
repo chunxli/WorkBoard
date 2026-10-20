@@ -185,13 +185,19 @@ export function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : null;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
   }
 }
 
 async function assertSessionNotInUse(directory: string): Promise<void> {
-  const entries = await readdir(directory).catch(() => []);
+  const entries = await readdir(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
   const activePid = entries
     .map((entry) => /^inuse\.(\d+)\.lock$/i.exec(entry)?.[1])
     .filter((value): value is string => Boolean(value))

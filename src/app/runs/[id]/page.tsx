@@ -12,20 +12,22 @@ import { formatDuration } from "@/lib/format";
 import StatusBadge from "@/components/StatusBadge";
 import LiveRunLog from "@/components/LiveRunLog";
 import CancelRunButton from "@/components/CancelRunButton";
+import RunStatusRefresher from "@/components/RunStatusRefresher";
 import ProcessInfoPanel from "@/components/ProcessInfoPanel";
 import RepoInfoPanel from "@/components/RepoInfoPanel";
 import DiffView from "@/components/DiffView";
 import { ownedRunWhere } from "@/lib/run-access";
 import WorkQuickActions from "@/components/WorkQuickActions";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
-import { getTerminalSessionActivity, isTerminalResumeReady } from "@/lib/terminal-resume";
+import { isTerminalResumeReady } from "@/lib/terminal-resume";
 import { readRunDiffPreview, readRunLogTail } from "@/lib/run-artifacts";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
 import MarkdownResult from "@/components/MarkdownResult";
-import { ArrowLeft, ArrowUpRight, Clock3, Download, FileText, GitBranch, GitCompareArrows, GitCommitHorizontal, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, Clock3, Download, FileText, GitBranch, GitCompareArrows, GitCommitHorizontal, Info, Monitor, PackageOpen, TerminalSquare, Zap } from "lucide-react";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
-import { getRunStatusMessage } from "@/lib/work-run-status";
+import { canCancelRun, getRunStatusMessage, TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
+import { getRunStatusSnapshot } from "@/lib/run-status";
 
 export default async function RunDetailPage({
   params,
@@ -46,10 +48,11 @@ export default async function RunDetailPage({
         orderBy: { createdAt: "desc" },
         select: { id: true, trigger: true, status: true },
       },
-      terminalLaunches: { select: { id: true, status: true }, take: 1 },
+      terminalLaunches: { select: { id: true, status: true, errorMessage: true }, take: 1 },
     },
   });
   if (!run) notFound();
+  const runState = await getRunStatusSnapshot(run);
   const activeContinuation = run.resumedRuns.find((child) => child.status === "RUNNING" || child.status === "PENDING");
   const statusMessage = getRunStatusMessage(run.status, run.errorMessage);
 
@@ -80,8 +83,7 @@ export default async function RunDetailPage({
     });
   let terminalState: "ready" | "active" | "unavailable" = !ownerArchived && !activeContinuation && resumeReady ? "ready" : "unavailable";
   if (!ownerArchived && !activeContinuation && canOpenTerminal && run.copilotSessionId && isLive && isTerminalRunTrigger(run.trigger)) {
-    const activity = await getTerminalSessionActivity(run.copilotSessionId, run.terminalLaunches[0]?.id ?? null, run.createdAt);
-    terminalState = activity.active || activity.starting ? "active" : "ready";
+    terminalState = runState.terminalActive === null ? "unavailable" : runState.terminalActive ? "active" : "ready";
   }
   const commitRange =
     run.baseCommit && run.finalCommit
@@ -89,21 +91,34 @@ export default async function RunDetailPage({
       : null;
 
   return (
-    <div className="space-y-6">
-      <header className="border-b border-neutral-800 pb-5">
+    <div className="space-y-5">
+      <header className="border-b border-neutral-800 pb-3">
         <Link
           href={run.task ? `/tasks/${run.task.id}` : run.work ? `/work/${run.work.id}` : "/runs"}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-500 hover:text-emerald-300"
+          className="inline-flex max-w-full items-start gap-1.5 text-xs font-semibold text-neutral-500 hover:text-emerald-300"
         >
-          <ArrowLeft size={13} aria-hidden="true" />
-          {run.task?.name ?? run.work?.name ?? "Runs"}
+          <ArrowLeft size={13} className="shrink-0" aria-hidden="true" />
+          <span className="min-w-0 break-words">{run.task?.name ?? run.work?.name ?? "Runs"}</span>
         </Link>
-        <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-bold text-white">Run <span className="font-mono">{run.id.slice(0, 8)}</span></h1>
-            <StatusBadge status={run.status} />
-            {isLive && <CancelRunButton runId={run.id} />}
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-bold text-white sm:text-2xl">Run <span className="font-mono">{run.id.slice(0, 8)}</span></h1>
+            <StatusBadge status={runState.displayStatus} />
+            {run.startedAt && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500" aria-label="Elapsed time">
+                <Clock3 size={13} aria-hidden="true" />
+                {formatDuration(run.startedAt, run.finishedAt)}
+              </span>
+            )}
+            {canCancelRun(run) && <CancelRunButton runId={run.id} />}
           </div>
+          <RunStatusRefresher initialState={runState} />
+          {runState.displayStatus === "SYNCING" && (
+            <p role="status" className="mt-2 text-xs text-emerald-200">{TERMINAL_SYNCING_MESSAGE}</p>
+          )}
+          {runState.observationError && (
+            <p role="alert" className="mt-2 break-words text-sm text-red-400">{runState.observationError}</p>
+          )}
           <WorkQuickActions
             name={run.work?.name ?? run.task?.name ?? `Run ${run.id.slice(0, 8)}`}
             directoryPath={workdirPath}
@@ -115,93 +130,19 @@ export default async function RunDetailPage({
           />
         </div>
         {activeContinuation && (
-          <div className="mt-3">
+          <div className="mt-2">
             <Link href={`/runs/${activeContinuation.id}`} className="ui-primary-button">
               Open active Run {activeContinuation.id.slice(0, 8)}
               <ArrowUpRight size={14} aria-hidden="true" />
             </Link>
           </div>
         )}
-        <div className="mt-3 flex flex-wrap gap-2">
-          <MetaChip icon={Zap}>{run.trigger}</MetaChip>
-          {run.branchName && <MetaChip icon={GitBranch} mono>{run.branchName}</MetaChip>}
-          {run.startedAt && <MetaChip icon={Clock3}>{formatDuration(run.startedAt, run.finishedAt)}</MetaChip>}
-          {(run.hostname ?? run.task?.repo.hostname) && (
-            <MetaChip icon={Monitor} mono>{run.hostname ?? run.task?.repo.hostname}</MetaChip>
-          )}
-          {run.baseCommit && (
-            <MetaChip icon={GitCommitHorizontal} mono>
-              {run.baseCommit.slice(0, 8)}{run.finalCommit ? `..${run.finalCommit.slice(0, 8)}` : ""}
-            </MetaChip>
-          )}
-        </div>
-        {(run.resumedFromRun || run.resumedRuns.length > 0) && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-            {run.resumedFromRun && (
-              <Link
-                href={`/runs/${run.resumedFromRun.id}`}
-                className="rounded-md border border-neutral-800 bg-neutral-950/40 px-2.5 py-1.5 font-mono text-neutral-400 hover:border-neutral-700 hover:text-emerald-300"
-              >
-                Previous {run.resumedFromRun.id.slice(0, 8)} · {run.resumedFromRun.trigger}
-              </Link>
-            )}
-            {run.resumedRuns.map((child) => (
-              <Link
-                key={child.id}
-                href={`/runs/${child.id}`}
-                className="rounded-md border border-neutral-800 bg-neutral-950/40 px-2.5 py-1.5 font-mono text-neutral-400 hover:border-neutral-700 hover:text-emerald-300"
-              >
-                Next {child.id.slice(0, 8)} · {child.trigger}
-              </Link>
-            ))}
-          </div>
-        )}
         {statusMessage && (
-          <p className={`mt-2 text-sm ${run.status === "UNKNOWN" ? "text-amber-300" : "text-red-400"}`}>
+          <p role={run.status === "UNKNOWN" ? "status" : "alert"} className={`mt-2 break-words text-sm ${run.status === "UNKNOWN" ? "text-emerald-200" : "text-red-400"}`}>
             {statusMessage}
           </p>
         )}
       </header>
-
-      {run.task ? (
-        <RepoInfoPanel
-          info={{
-            currentBranch: run.branchName ?? run.task.repo.defaultBranch,
-            defaultBranch: run.task.repo.defaultBranch,
-            remoteUrl,
-            workdirPath,
-          }}
-        />
-      ) : (
-        <div className="ui-panel p-4">
-          <div className="text-sm text-neutral-500">Work directory</div>
-          <div className="mt-1 truncate font-mono text-xs text-neutral-300" title={workdirPath}>
-            {workdirPath}
-          </div>
-        </div>
-      )}
-
-      <ProcessInfoPanel
-        runId={run.id}
-            isLive={isLive}
-        initial={{
-          pid: run.pid,
-          command: run.command,
-          cpuTimeMs: liveProcess?.cpuTimeMs ?? run.cpuTimeMs,
-          memoryMb: liveProcess?.memoryMb ?? run.peakMemoryMb,
-          agent: run.agent ?? run.task?.agent,
-          model: run.model ?? run.task?.model,
-          fallbackModel: run.fallbackModel ?? run.task?.fallbackModel,
-          contextTier: run.contextTier ?? run.task?.contextTier,
-          reasoningEffort: run.reasoningEffort ?? run.task?.reasoningEffort,
-          permissionMode: run.permissionMode ?? run.task?.permissionMode,
-          timeoutLabel: run.task
-            ? `${run.timeoutSeconds ?? run.task.timeoutSeconds}s`
-            : run.timeoutSeconds
-              ? `${run.timeoutSeconds}s`
-              : "None",
-        }}
-      />
 
       {run.finalOutput && !isLive && (
         <section className="border-l-2 border-emerald-600 pl-4">
@@ -209,6 +150,100 @@ export default async function RunDetailPage({
           <MarkdownResult content={run.finalOutput} />
         </section>
       )}
+
+      <section>
+        <SectionHeading icon={TerminalSquare} title="Output" />
+        <LiveRunLog
+          key={run.id}
+          runId={run.id}
+          initialLog={log}
+          isLive={isLive}
+          refreshOnStatusChange={false}
+          historySync={!run.resumedRuns.length && isTerminalRunTrigger(run.trigger) && (run.status === "RUNNING" || run.status === "UNKNOWN")}
+          outputFormat={(run.outputFormat ?? run.task?.outputFormat ?? "text") === "json" ? "json" : "text"}
+        />
+      </section>
+
+      <details key={`details:${run.id}`} className="ui-panel group min-w-0 overflow-hidden">
+        <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+          <Info size={15} className="shrink-0 text-neutral-500" aria-hidden="true" />
+          <h2 className="text-sm font-bold">Run details</h2>
+          <ChevronDown size={15} className="ml-auto shrink-0 text-neutral-500 transition-transform group-open:rotate-180" aria-hidden="true" />
+        </summary>
+        <div className="space-y-4 border-t border-neutral-800 p-4">
+          <div className="flex flex-wrap gap-2">
+            <MetaChip icon={Zap}>{run.trigger}</MetaChip>
+            {run.branchName && <MetaChip icon={GitBranch} mono>{run.branchName}</MetaChip>}
+            {(run.hostname ?? run.task?.repo.hostname) && (
+              <MetaChip icon={Monitor} mono>{run.hostname ?? run.task?.repo.hostname}</MetaChip>
+            )}
+            {run.baseCommit && (
+              <MetaChip icon={GitCommitHorizontal} mono>
+                {run.baseCommit.slice(0, 8)}{run.finalCommit ? `..${run.finalCommit.slice(0, 8)}` : ""}
+              </MetaChip>
+            )}
+          </div>
+          {(run.resumedFromRun || run.resumedRuns.length > 0) && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {run.resumedFromRun && (
+                <Link
+                  href={`/runs/${run.resumedFromRun.id}`}
+                  className="rounded-md border border-neutral-800 bg-neutral-950/40 px-2.5 py-1.5 font-mono text-neutral-400 hover:border-neutral-700 hover:text-emerald-300"
+                >
+                  Previous {run.resumedFromRun.id.slice(0, 8)} · {run.resumedFromRun.trigger}
+                </Link>
+              )}
+              {run.resumedRuns.map((child) => (
+                <Link
+                  key={child.id}
+                  href={`/runs/${child.id}`}
+                  className="rounded-md border border-neutral-800 bg-neutral-950/40 px-2.5 py-1.5 font-mono text-neutral-400 hover:border-neutral-700 hover:text-emerald-300"
+                >
+                  Next {child.id.slice(0, 8)} · {child.trigger}
+                </Link>
+              ))}
+            </div>
+          )}
+          {run.task ? (
+            <RepoInfoPanel
+              info={{
+                currentBranch: run.branchName ?? run.task.repo.defaultBranch,
+                defaultBranch: run.task.repo.defaultBranch,
+                remoteUrl,
+                workdirPath,
+              }}
+            />
+          ) : (
+            <div className="ui-panel p-4">
+              <div className="text-sm text-neutral-500">Work directory</div>
+              <div className="mt-1 break-all font-mono text-xs text-neutral-300">
+                {workdirPath}
+              </div>
+            </div>
+          )}
+          <ProcessInfoPanel
+            runId={run.id}
+            isLive={isLive}
+            initial={{
+              pid: run.pid,
+              command: run.command,
+              cpuTimeMs: liveProcess?.cpuTimeMs ?? run.cpuTimeMs,
+              memoryMb: liveProcess?.memoryMb ?? run.peakMemoryMb,
+              agent: run.agent ?? run.task?.agent,
+              model: run.model ?? run.task?.model,
+              fallbackModel: run.fallbackModel ?? run.task?.fallbackModel,
+              contextTier: run.contextTier ?? run.task?.contextTier,
+              reasoningEffort: run.reasoningEffort ?? run.task?.reasoningEffort,
+              permissionMode: run.permissionMode ?? run.task?.permissionMode,
+              timeoutLabel: run.task
+                ? `${run.timeoutSeconds ?? run.task.timeoutSeconds}s`
+                : run.timeoutSeconds
+                  ? `${run.timeoutSeconds}s`
+                  : "None",
+            }}
+          />
+        </div>
+      </details>
 
       {run.outputDir && (
         <section className="ui-panel p-4 sm:p-5">
@@ -229,18 +264,6 @@ export default async function RunDetailPage({
           </div>
         </section>
       )}
-
-      <section>
-        <SectionHeading icon={TerminalSquare} title="Output" />
-        <LiveRunLog
-          key={run.id}
-          runId={run.id}
-          initialLog={log}
-          isLive={isLive}
-          historySync={!run.resumedRuns.length && isTerminalRunTrigger(run.trigger) && (run.status === "RUNNING" || run.status === "UNKNOWN")}
-          outputFormat={(run.outputFormat ?? run.task?.outputFormat ?? "text") === "json" ? "json" : "text"}
-        />
-      </section>
 
       {diff && (
         <section>

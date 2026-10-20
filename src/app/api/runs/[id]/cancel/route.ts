@@ -19,13 +19,13 @@ export async function POST(
   let run = await prisma.run.findFirst({ where: ownedRunWhere(userId, id) });
   if (!run) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  if (isTerminalRunTrigger(run.trigger) && (run.status === "PENDING" || run.status === "RUNNING")) {
+    return NextResponse.json(
+      { error: "External Terminal sessions cannot be cancelled here. Close Copilot in Terminal; WorkBoard synchronizes its history automatically." },
+      { status: 409 }
+    );
+  }
   if (run.status === "RUNNING") {
-    if (isTerminalRunTrigger(run.trigger)) {
-      return NextResponse.json(
-        { error: "Close the external terminal, then synchronize the session" },
-        { status: 409 }
-      );
-    }
     const killed = cancelActiveRun(run);
     if (!killed) {
       await prisma.run.update({ where: { id }, data: { status: "CANCELLED" } });

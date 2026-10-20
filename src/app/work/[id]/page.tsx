@@ -10,15 +10,16 @@ import WorkActions from "@/components/WorkActions";
 import SessionConversation from "@/components/SessionConversation";
 import StatusBadge from "@/components/StatusBadge";
 import CancelRunButton from "@/components/CancelRunButton";
+import RunStatusRefresher from "@/components/RunStatusRefresher";
 import { formatDuration } from "@/lib/format";
 import { discoverProjectSkills } from "@/lib/skill-discovery";
 import ExperimentBuilder from "@/components/ExperimentBuilder";
 import ExperimentRefresher from "@/components/ExperimentRefresher";
 import { findActiveRunConflicts } from "@/lib/run-access";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
-import { getTerminalSessionActivity, isTerminalResumeReady } from "@/lib/terminal-resume";
+import { isTerminalResumeReady } from "@/lib/terminal-resume";
 import { copilotSessionExists } from "@/lib/copilot-session-compat";
-import { ArrowLeft, ArrowUpRight, Bot, Boxes, Clock3, Cpu, FlaskConical, FolderOpen, History, ListTodo, Radio } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bot, Boxes, ChevronDown, Clock3, Cpu, FlaskConical, FolderOpen, History, Info, ListTodo, Radio } from "lucide-react";
 import WorkExecutionSettings from "@/components/WorkExecutionSettings";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
@@ -29,7 +30,8 @@ import type {
 } from "@/components/WorkExecutionFields";
 import { readRunLogTail } from "@/lib/run-artifacts";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
-import { getRunStatusMessage } from "@/lib/work-run-status";
+import { canCancelRun, getRunStatusMessage, TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
+import { getRunStatusSnapshot } from "@/lib/run-status";
 
 export default async function WorkDetailPage({
   params,
@@ -52,7 +54,10 @@ export default async function WorkDetailPage({
         where: { experimentVariantId: null },
         orderBy: { createdAt: "desc" },
         take: 20,
-        include: { terminalLaunches: { select: { id: true, status: true }, take: 1 } },
+        include: {
+          terminalLaunches: { select: { id: true, status: true, errorMessage: true }, take: 1 },
+          resumedRuns: { select: { id: true }, take: 1 },
+        },
       },
       experiments: {
         orderBy: { createdAt: "desc" },
@@ -74,6 +79,8 @@ export default async function WorkDetailPage({
     modifiedAt: work.updatedAt.toISOString(),
   }));
   const latestRun = work.runs[0];
+  const latestRunState = latestRun ? await getRunStatusSnapshot(latestRun) : null;
+  const settlingRun = latestRunState?.displayStatus === "SYNCING" ? latestRun : null;
   const followUpParentCandidate = await prisma.run.findFirst({
     where: {
       workId: work.id,
@@ -85,14 +92,14 @@ export default async function WorkDetailPage({
     orderBy: { createdAt: "desc" },
     select: { id: true, hostname: true, copilotSessionId: true, executionPath: true },
   });
-  const followUpParent = followUpParentCandidate && (
+  const followUpParent = settlingRun ?? (followUpParentCandidate && (
     followUpParentCandidate.hostname && followUpParentCandidate.hostname !== hostname()
       ? true
       : followUpParentCandidate.copilotSessionId &&
         await copilotSessionExists(followUpParentCandidate.copilotSessionId).catch(() => true)
   )
     ? followUpParentCandidate
-    : null;
+    : null);
   const latestLog = latestRun?.logPath
     ? await readRunLogTail(latestRun.logPath).catch(() => "")
     : "";
@@ -113,8 +120,8 @@ export default async function WorkDetailPage({
   let terminalState: "ready" | "active" | "unavailable" = "unavailable";
   if (latestRun?.copilotSessionId && canOpenTerminal && work.status !== "ARCHIVED") {
     if (isTerminalRunTrigger(latestRun.trigger) && (latestRun.status === "RUNNING" || latestRun.status === "PENDING")) {
-      const activity = await getTerminalSessionActivity(latestRun.copilotSessionId, latestRun.terminalLaunches[0]?.id ?? null, latestRun.createdAt);
-      terminalState = activity.active || activity.starting ? "active" : "ready";
+      if (latestRunState?.terminalActive === true) terminalState = "active";
+      else if (latestRunState?.terminalActive === false) terminalState = "ready";
     } else if (await isTerminalResumeReady({ id: latestRun.id, taskId: latestRun.taskId, status: latestRun.status, work })) {
       terminalState = "ready";
     }
@@ -122,46 +129,60 @@ export default async function WorkDetailPage({
   const followUpDisabledReason =
     work.status === "ARCHIVED"
       ? "Restore this Work before following up"
-      : followUpConflicts.length > 0
+      : followUpConflicts.some((run) => run.id !== settlingRun?.id)
         ? "Wait for active Runs in this Work directory to finish"
         : followUpParent?.hostname && followUpParent.hostname !== hostname()
           ? "The latest Work session belongs to another machine"
           : null;
 
   return (
-    <div className="space-y-8">
-      <header className="flex flex-col justify-between gap-4 border-b border-neutral-800 pb-5 sm:flex-row sm:items-start">
-        <div className="min-w-0">
-          <Link href="/work" className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-500 hover:text-emerald-300">
-            <ArrowLeft size={13} aria-hidden="true" />
-            Work Board
-          </Link>
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <h1 className="break-words text-2xl font-bold text-white sm:text-[28px]">{work.name}</h1>
-            <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-400">{work.status}</span>
+    <div className="space-y-5">
+      <header className="space-y-2 border-b border-neutral-800 pb-3">
+        <div className="flex min-w-0 flex-col justify-between gap-2 lg:flex-row lg:items-start">
+          <div className="min-w-0">
+            <Link href="/work" className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-500 hover:text-emerald-300">
+              <ArrowLeft size={13} aria-hidden="true" />
+              Work Board
+            </Link>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <h1 className="min-w-0 max-w-full break-words text-xl font-bold text-white sm:text-2xl">{work.name}</h1>
+              <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-400">{work.status}</span>
+            </div>
           </div>
-          <p className="mt-2 flex min-w-0 items-center gap-2 text-xs text-neutral-500" title={work.directoryPath}>
-            <FolderOpen size={13} className="shrink-0" aria-hidden="true" />
-            <span className="truncate font-mono">{work.directoryPath}</span>
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <MetaChip icon={Cpu}>{work.defaultEngine}</MetaChip>
-            <MetaChip icon={Bot}>{work.model ?? "Auto model"}</MetaChip>
-            <MetaChip icon={Clock3}>{work.timeoutSeconds ? `${work.timeoutSeconds}s timeout` : "No timeout"}</MetaChip>
-            {work.sourceRepo && <MetaChip icon={Boxes}>{work.sourceRepo.name}</MetaChip>}
-          </div>
+          <WorkActions
+            workId={work.id}
+            name={work.name}
+            directoryPath={work.directoryPath}
+            archived={work.status === "ARCHIVED"}
+            followUpMode={followUpParent ? "resume" : "new"}
+            followUpDisabledReason={followUpDisabledReason}
+            canOpenLocal={canOpenLocal}
+            terminalRunId={latestRun?.id ?? null}
+            terminalState={terminalState}
+          />
         </div>
-        <WorkActions
-          workId={work.id}
-          name={work.name}
-          directoryPath={work.directoryPath}
-          archived={work.status === "ARCHIVED"}
-          followUpMode={followUpParent ? "resume" : "new"}
-          followUpDisabledReason={followUpDisabledReason}
-          canOpenLocal={canOpenLocal}
-          terminalRunId={latestRun?.id ?? null}
-          terminalState={terminalState}
-        />
+        <details key={`details:${work.id}`} className="group min-w-0 text-xs">
+          <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-2 text-neutral-400 hover:text-neutral-200 [&::-webkit-details-marker]:hidden">
+            <Info size={13} aria-hidden="true" />
+            Work details
+            <ChevronDown size={13} className="transition-transform group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <div className="space-y-2 pt-2">
+            <p className="flex min-w-0 items-start gap-2 text-neutral-400">
+              <FolderOpen size={13} className="mt-1 shrink-0" aria-hidden="true" />
+              <span className="break-all font-mono leading-5">{work.directoryPath}</span>
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <MetaChip icon={Cpu}>Default {work.defaultEngine}</MetaChip>
+              <MetaChip icon={Bot}>{work.model ?? "Auto model"}</MetaChip>
+              <MetaChip icon={Clock3}>{work.timeoutSeconds ? `${work.timeoutSeconds}s timeout` : "No timeout"}</MetaChip>
+              {work.sourceRepo && <MetaChip icon={Boxes}>{work.sourceRepo.name}</MetaChip>}
+            </div>
+            {latestRun && (
+              <p className="text-neutral-500">Latest Run: {latestRun.trigger} · {latestRun.engine ?? "CLI"}</p>
+            )}
+          </div>
+        </details>
       </header>
 
       {startError && (
@@ -170,15 +191,15 @@ export default async function WorkDetailPage({
         </p>
       )}
 
-      <section className="space-y-3 border-t border-neutral-800 pt-6">
+      <section className="space-y-2">
         <SectionHeading icon={Radio} title="Session conversation">
           {latestRun && (
             <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={latestRun.status} />
+              <StatusBadge status={latestRunState?.displayStatus ?? latestRun.status} />
               <span className="text-xs text-neutral-500">
-                {latestRun.trigger} · {latestRun.engine ?? "CLI"} · {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
+                {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
               </span>
-              {(latestRun.status === "PENDING" || latestRun.status === "RUNNING") && (
+              {canCancelRun(latestRun) && (
                 <CancelRunButton runId={latestRun.id} />
               )}
               <Link
@@ -191,6 +212,13 @@ export default async function WorkDetailPage({
             </div>
           )}
         </SectionHeading>
+        {latestRunState && <RunStatusRefresher key={latestRunState.id} initialState={latestRunState} />}
+        {latestRunState?.displayStatus === "SYNCING" && (
+          <p role="status" className="text-xs text-emerald-200">{TERMINAL_SYNCING_MESSAGE}</p>
+        )}
+        {latestRunState?.observationError && (
+          <p role="alert" className="break-words text-sm text-red-400">{latestRunState.observationError}</p>
+        )}
         <SessionConversation
           key={work.id}
           workId={work.id}
@@ -202,10 +230,10 @@ export default async function WorkDetailPage({
         />
         {latestRun?.errorMessage && (
           <p
-            role="alert"
+            role={latestRun.status === "UNKNOWN" ? "status" : "alert"}
             className={`rounded-md border px-3 py-2 text-sm ${
               latestRun.status === "UNKNOWN"
-                ? "border-amber-900/50 bg-amber-950/20 text-amber-300"
+                ? "border-emerald-700/60 bg-emerald-900/40 text-emerald-200"
                 : "border-red-900/50 bg-red-950/20 text-red-400"
             }`}
           >
@@ -303,9 +331,14 @@ export default async function WorkDetailPage({
       ))}
 
       {work.runs.length > 1 && (
-        <section>
-          <SectionHeading icon={History} title="Run history" />
-          <div className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+        <details key={`history:${work.id}`} className="ui-panel group min-w-0 overflow-hidden">
+          <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+            <History size={15} className="shrink-0 text-neutral-500" aria-hidden="true" />
+            <h2 className="text-sm font-bold">Run history</h2>
+            <span className="text-xs text-neutral-500">{work.runs.length - 1} earlier {work.runs.length === 2 ? "Run" : "Runs"}</span>
+            <ChevronDown size={15} className="ml-auto shrink-0 text-neutral-500 transition-transform group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <div className="border-t border-neutral-800 bg-neutral-900/40">
             {work.runs.slice(1).map((run) => (
               <Link
                 key={run.id}
@@ -320,7 +353,7 @@ export default async function WorkDetailPage({
               </Link>
             ))}
           </div>
-        </section>
+        </details>
       )}
 
       {work.tasks.length > 0 && (

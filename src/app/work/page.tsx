@@ -9,8 +9,8 @@ import LegacyMigrationPanel from "@/components/LegacyMigrationPanel";
 import { canonicalizeWorkPath } from "@/lib/work-files";
 import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
-import { getWorkRunDisplayStatus } from "@/lib/work-run-status";
-import { getTerminalSessionActivity, isTerminalResumeReady } from "@/lib/terminal-resume";
+import { getRunStatusSnapshot } from "@/lib/run-status";
+import { isTerminalResumeReady } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export default async function WorkBoardPage() {
@@ -35,7 +35,8 @@ export default async function WorkBoardPage() {
             copilotSessionId: true,
             hostname: true,
             createdAt: true,
-            terminalLaunches: { select: { id: true }, take: 1 },
+            terminalLaunches: { select: { id: true, errorMessage: true }, take: 1 },
+            resumedRuns: { select: { id: true }, take: 1 },
             model: true,
             modelsUsed: true,
             inputTokens: true,
@@ -92,7 +93,7 @@ export default async function WorkBoardPage() {
         reasoningTokens: latestRun.reasoningTokens ?? 0,
       } : null;
     const runIsActive = latestRun?.status === "PENDING" || latestRun?.status === "RUNNING";
-    let displayStatus = getWorkRunDisplayStatus(latestRun);
+    const runState = latestRun ? await getRunStatusSnapshot(latestRun) : null;
     let terminalResumeState: "ready" | "active" | "unavailable" = "unavailable";
     if (
       latestRun?.copilotSessionId &&
@@ -101,15 +102,8 @@ export default async function WorkBoardPage() {
       work.status !== "ARCHIVED"
     ) {
       if (runIsActive && isTerminalRunTrigger(latestRun.trigger)) {
-        const activity = await getTerminalSessionActivity(
-          latestRun.copilotSessionId, latestRun.terminalLaunches[0]?.id ?? null, latestRun.createdAt
-        );
-        if (activity.active || activity.starting) {
-          terminalResumeState = "active";
-        } else {
-          displayStatus = "UNKNOWN";
-          terminalResumeState = "ready";
-        }
+        if (runState?.terminalActive === true) terminalResumeState = "active";
+        else if (runState?.terminalActive === false) terminalResumeState = "ready";
       } else if (!runIsActive && await isTerminalResumeReady({
         id: latestRun.id,
         taskId: latestRun.taskId,
@@ -129,7 +123,8 @@ export default async function WorkBoardPage() {
       updatedAt: work.updatedAt.toISOString(),
       updatedAtLabel: work.updatedAt.toLocaleString("zh-CN", { hour12: false }),
       automationCount: work._count.tasks,
-      latestRunStatus: displayStatus,
+      latestRunStatus: runState?.displayStatus ?? null,
+      latestRunStatusError: runState?.observationError ?? null,
       latestRunId: latestRun?.id ?? null,
       latestModels,
       latestTokenUsage,

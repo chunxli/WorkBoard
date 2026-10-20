@@ -176,6 +176,18 @@ describe("terminal minute history reconciliation", () => {
     await expect(getTerminalSessionActivity(sessionId, state.launch.id)).resolves.toMatchObject({ active: true });
   });
 
+  it.each(["{broken", "null", '{"wrapperPid":"invalid"}', '{"exitCode":"invalid"}'])(
+    "does not treat unreadable launch metadata as a stopped session: %s",
+    async (content) => {
+      const state = await fixture(response);
+      const launchDirectory = path.join(directory, "data", "terminal-launches");
+      await mkdir(launchDirectory, { recursive: true });
+      await writeFile(path.join(launchDirectory, "launch-1.json"), content);
+      await expect(getTerminalSessionActivity(sessionId, state.launch.id)).rejects.toThrow();
+      expect(database.run.update).not.toHaveBeenCalled();
+    },
+  );
+
   it("preserves old launch and Run records through the callback-removal migration", async () => {
     const require = createRequire(import.meta.url);
     const Database = require("better-sqlite3");
