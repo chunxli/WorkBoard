@@ -3,6 +3,8 @@ import { readdir, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+const headers = { "Cache-Control": "private, no-store", Vary: "Cookie" };
+
 async function listWindowsDrives(): Promise<{ name: string; path: string }[]> {
   const drives: { name: string; path: string }[] = [];
   for (let code = 65; code <= 90; code++) {
@@ -29,6 +31,10 @@ async function listRoots(): Promise<{ name: string; path: string }[]> {
  * arbitrary git URLs, so exposing a read-only directory listing isn't a new privilege boundary.
  */
 export async function GET(req: NextRequest) {
+  const includeFiles = req.nextUrl.searchParams.get("includeFiles");
+  if (includeFiles !== null && includeFiles !== "1") {
+    return NextResponse.json({ error: "Invalid directory listing option" }, { status: 400, headers });
+  }
   const requested = req.nextUrl.searchParams.get("path");
   const roots = await listRoots();
   const current = requested ? path.resolve(requested) : os.homedir();
@@ -45,12 +51,20 @@ export async function GET(req: NextRequest) {
       parent: parentDir !== current ? parentDir : null,
       entries,
       roots,
-    });
+      ...(includeFiles === "1" ? {
+        items: names.map((entry) => ({
+          name: entry.name,
+          path: path.join(current, entry.name),
+          kind: entry.isSymbolicLink() ? "reference" : entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "reference",
+        })).sort((left, right) =>
+          Number(right.kind === "directory") - Number(left.kind === "directory") ||
+          left.name.localeCompare(right.name)),
+      } : {}),
+    }, { headers });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to read directory", current, roots },
-      { status: 400 }
+      { status: 400, headers }
     );
   }
 }
-

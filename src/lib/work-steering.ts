@@ -18,6 +18,7 @@ export interface WorkSteeringMessageRecord {
   sessionId: string;
   requestId: string;
   content: string;
+  attachmentsJson?: string | null;
   deliveryState: SteeringDeliveryState;
   transportMessageId: string | null;
   promptSynced: boolean;
@@ -112,6 +113,7 @@ export async function processWorkSteeringMessage(options: {
   repository: SteeringMessageRepository;
   appendArtifact: (message: WorkSteeringMessageRecord) => Promise<void>;
   appendPrompt: (message: WorkSteeringMessageRecord) => Promise<void>;
+  resolveAttachments?: () => Promise<{ type: "file"; path: string; displayName?: string }[]>;
 }): Promise<SteeringRepairResult> {
   const { message } = options;
   const flightKey = `${message.runId}:${message.requestId}`;
@@ -160,9 +162,18 @@ export async function processWorkSteeringMessage(options: {
       );
     }
 
+    let attachments: Awaited<ReturnType<NonNullable<typeof options.resolveAttachments>>>;
+    try {
+      attachments = options.resolveAttachments ? await options.resolveAttachments() : [];
+    } catch (error) {
+      reservation.release();
+      const message = error instanceof Error ? error.message : "Unable to validate Steering attachments.";
+      await options.repository.update(options.message.id, { deliveryState: "REJECTED", promptError: message });
+      throw new SteeringRequestError(message, 409, "REJECTED");
+    }
     let acceptance: SteeringAcceptance;
     try {
-      acceptance = await reservation.send(message.content);
+      acceptance = await reservation.send(message.content || "Please review the attached files.", attachments);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       await options.repository.update(message.id, {

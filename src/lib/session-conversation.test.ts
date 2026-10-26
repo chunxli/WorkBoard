@@ -19,6 +19,15 @@ const message = (content: string) => JSON.stringify({ type: "user.message", data
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
 
 describe("session conversation history", () => {
+  it("retains native attachment references without trusting them as registered Work files", () => {
+    const event = normalizeConversationEvent({ type: "user.message", data: { content: "", attachments: [
+      { type: "file", path: "C:\\synthetic\\image.png", displayName: "image.png" },
+      { type: "directory", path: "C:\\outside", displayName: "Not a Work attachment" },
+    ] } }, "fixture", 0);
+    expect(event).toMatchObject({ role: "user", text: "", attachmentPaths: ["C:\\synthetic\\image.png"] });
+    expect(event).not.toHaveProperty("attachments");
+  });
+
   it("keeps every retained event reachable beyond the old log limit", async () => {
     const state = await fixture(Array.from({ length: 2105 }, (_, index) => message(`turn ${index}`)).join(""));
     let page = await readSessionConversationPage(sessionId, { ...state, pageBytes: 1024 });

@@ -8,8 +8,10 @@ export async function POST() {
 
   try {
     await sendSystemNotification({
-      title: "Work Board notifications are ready",
-      message: "This test was sent by the Work Board background process.",
+      title: "Notifications ready",
+      message: "Work Board",
+      details: "Select to open notification settings.",
+      destination: { kind: "settings" },
     });
     return NextResponse.json({ ok: true });
   } catch (error) {

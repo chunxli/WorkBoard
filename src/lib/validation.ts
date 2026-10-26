@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { attachmentIdsSchema } from "@/lib/work-attachment-types";
 
 export const createRepoSchema = z.object({
   name: z.string().min(1).max(200),
@@ -131,9 +132,12 @@ export const runWorkSchema = z
   .strict();
 
 export const followUpWorkSchema = z.object({
-  prompt: z.string().trim().min(1).max(100000),
+  prompt: z.string().trim().max(100000).default(""),
   expectedParentRunId: z.string().min(1).max(128).nullable().optional(),
-}).strict();
+  requestId: z.string().uuid().optional(),
+  attachmentIds: attachmentIdsSchema.default([]),
+}).strict().refine((value) => value.prompt.length > 0 || value.attachmentIds.length > 0, "Enter a prompt or attach a file.")
+  .refine((value) => !value.attachmentIds.length || value.requestId, "Attachment messages require a request ID.");
 
 export const createWorkPathShortcutSchema = z.object({
   label: z.string().trim().min(1).max(80),

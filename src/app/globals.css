@@ -538,6 +538,318 @@ body::before {
   opacity: 0.5;
 }
 
+main:has(> .page-enter > .work-detail-page) {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+main:has(> .page-enter > .work-detail-page),
+body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
+  max-width: none;
+  padding-inline: 1rem;
+}
+
+@media (min-width: 640px) {
+  main:has(> .page-enter > .work-detail-page),
+  body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
+    padding-inline: 1.5rem;
+  }
+}
+
+.work-detail-layout {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.work-detail-layout > .work-detail-unified-toolbar {
+  flex-shrink: 0;
+}
+
+.work-workspace-grid {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-areas: "tabs" "panels";
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.work-section-tabs {
+  grid-area: tabs;
+  display: flex;
+  min-width: 0;
+  align-items: start;
+  gap: 0.25rem;
+  overflow: auto;
+}
+
+.work-section-tab {
+  min-height: 36px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  padding: 0.375rem 0.5rem;
+  color: var(--neutral-400);
+  font-size: 0.75rem;
+  text-align: left;
+}
+
+.work-section-tab:hover,
+.work-section-tab.is-active {
+  background: var(--neutral-800);
+  color: var(--strong-foreground);
+}
+
+.work-section-tab.is-active {
+  font-weight: 600;
+}
+
+.work-conversation-panel,
+.work-secondary-panel,
+.work-files-panel {
+  grid-area: panels;
+  min-width: 0;
+  min-height: 0;
+}
+
+.work-workspace-grid > [hidden] {
+  display: none;
+}
+
+.work-detail-layout .work-conversation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  overflow: hidden;
+}
+
+.work-detail-layout .work-conversation-panel[hidden] {
+  display: none;
+}
+
+.work-secondary-panel {
+  overflow: auto;
+  padding: 0.25rem;
+}
+
+.work-files-panel {
+  overflow: hidden;
+  padding: 0.25rem;
+}
+
+.work-detail-layout .work-conversation-log,
+.work-detail-layout .work-raw-output {
+  min-height: 0;
+  max-height: none;
+  flex: 1;
+  overflow: auto;
+}
+
+.work-detail-layout .work-conversation-composer {
+  position: sticky;
+  z-index: 20;
+  bottom: 0;
+  max-height: 45dvh;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: var(--background);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.work-detail-layout .work-conversation-composer textarea {
+  max-height: min(25dvh, 12rem);
+  background: var(--neutral-900);
+}
+
+.work-detail-layout .work-conversation-composer textarea::placeholder {
+  color: var(--neutral-400);
+  opacity: 1;
+}
+
+@media (min-width: 1024px) {
+  .work-workspace-grid {
+    grid-template-areas: "tabs panels";
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: 8rem minmax(0, 1fr);
+  }
+
+  .work-section-tabs {
+    flex-direction: column;
+  }
+
+  .work-section-tab {
+    width: 100%;
+  }
+}
+
+@media (min-width: 1280px) {
+  .work-workspace-grid.has-files {
+    grid-template-areas: "tabs panels files";
+    grid-template-columns: 8rem minmax(0, 1fr) 15rem;
+  }
+
+  .work-files-panel {
+    grid-area: files;
+    border-left: 1px solid var(--line);
+    padding-left: 0.5rem;
+  }
+}
+
+.work-detail-unified-toolbar {
+  position: sticky;
+  z-index: 30;
+  padding-block: 0.25rem;
+  background: var(--nav-background);
+  backdrop-filter: blur(12px);
+}
+
+.work-toolbar-identity {
+  flex: 1 1 10rem;
+}
+
+.work-detail-header > .work-toolbar-details[open] {
+  flex-basis: 100%;
+  order: 1;
+}
+
+.work-toolbar-details[open] > summary {
+  width: fit-content;
+  padding-inline: 0.5rem;
+}
+
+.work-toolbar-details > div {
+  max-height: 45dvh;
+  overflow-y: auto;
+}
+
+.work-detail-unified-toolbar .work-detail-actions,
+.work-detail-unified-toolbar .work-detail-actions > [role="group"] {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+@media (min-width: 1024px) and (pointer: fine) {
+  .work-toolbar-identity {
+    flex-basis: 5rem;
+  }
+}
+
+.work-detail-page :is(.work-detail-header, .work-conversation-toolbar) :is(a, button, summary) {
+  min-height: 32px;
+  height: 32px;
+}
+
+.work-detail-header :is(a, button).work-toolbar-control:not([role="tab"]),
+.work-detail-actions [role="group"] button {
+  width: 32px;
+}
+
+.work-detail-header [role="tab"] {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.work-detail-page .work-toolbar-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  background: transparent;
+  color: var(--neutral-300);
+  box-shadow: none;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+}
+
+.work-detail-page .work-toolbar-action:hover:not(:disabled) {
+  background: var(--neutral-800);
+  color: var(--strong-foreground);
+}
+
+.work-detail-page .work-toolbar-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.work-detail-page :is(.work-detail-header, .work-conversation-toolbar, .work-activity-group) :is(a, button, summary):focus-visible {
+  outline-color: var(--accent);
+}
+
+.work-detail-actions > .work-toolbar-action {
+  padding: 0;
+}
+
+.work-detail-actions .ui-primary-button {
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  box-shadow: none;
+  font-size: 0.75rem;
+}
+
+.work-conversation-log > * + * {
+  margin-block-start: 0.375rem;
+}
+
+.work-activity-records > * + * {
+  margin-block-start: 0.125rem;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result :is(h1, h2, h3, h4) {
+  margin: 0.75em 0 0.375em;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result h1 { font-size: 1.125rem; }
+.work-detail-page .work-conversation-log > article .markdown-result h2 { font-size: 1rem; }
+.work-detail-page .work-conversation-log > article .markdown-result h3 { font-size: 0.875rem; }
+.work-detail-page .work-conversation-log > article .markdown-result h4 { font-size: 0.8125rem; }
+
+.work-detail-page .work-conversation-log > article .markdown-result :is(p, ul, ol, blockquote, pre, table) {
+  margin: 0.5em 0;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result li + li {
+  margin-top: 0.15em;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result :is(th, td) {
+  padding: 0.3rem 0.5rem;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result pre {
+  padding: 0.5rem;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result code {
+  font-size: 0.75rem;
+}
+
+.work-detail-page .work-conversation-log > article .markdown-result > :first-child { margin-top: 0; }
+.work-detail-page .work-conversation-log > article .markdown-result > :last-child { margin-bottom: 0; }
+
+@media (max-width: 639px), (pointer: coarse) {
+  .work-detail-page :is(.work-detail-header, .work-conversation-toolbar) :is(a, button, summary),
+  .work-activity-group > summary,
+  .work-conversation-activity > summary,
+  .work-section-tab,
+  .work-file-browser :is(a, button) {
+    min-width: 44px;
+    min-height: 44px;
+    height: auto;
+  }
+}
+
 .ui-table-shell {
   overflow-x: auto;
   border: 1px solid var(--table-border);

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { readFile } from "node:fs/promises";
 import { prisma } from "@/lib/prisma";
+import { attachmentPrompt, type WorkAttachment } from "@/lib/work-attachment-types";
+import { parseWorkAttachments, runtimeWorkAttachments } from "@/lib/work-attachments";
 import {
   extractFinalCopilotOutput,
   startCopilotRun,
@@ -78,8 +80,10 @@ export async function createPendingFollowUpRun(options: {
   workId: string;
   prompt: string;
   parentRunId?: string | null;
+  requestId?: string;
+  attachments?: WorkAttachment[];
 }) {
-  const runId = randomUUID();
+  const runId = options.requestId ?? randomUUID();
   const work = await prisma.work.findUniqueOrThrow({ where: { id: options.workId } });
   const parent = options.parentRunId
     ? await prisma.run.findFirstOrThrow({
@@ -104,6 +108,7 @@ export async function createPendingFollowUpRun(options: {
       engine: settings.engine,
       executionPath,
       promptSnapshot: options.prompt,
+      attachmentsJson: options.attachments?.length ? JSON.stringify(options.attachments) : null,
       outputFormat: settings.outputFormat,
       timeoutSeconds: settings.timeoutSeconds,
       agent: settings.agent,
@@ -170,9 +175,10 @@ export function resolveWorkCliOutputOptions(outputFormat: RunOutputFormat) {
 
 export async function ensureFollowUpPrompt(
   work: { id: string; directoryPath: string; promptFileName: string },
-  run: { id: string; createdAt: Date; promptSnapshot: string | null }
+  run: { id: string; createdAt: Date; promptSnapshot: string | null; attachmentsJson?: string | null }
 ): Promise<void> {
-  await appendWorkFollowUp(work, run.promptSnapshot ?? "", {
+  const files = parseWorkAttachments(run.attachmentsJson);
+  await appendWorkFollowUp(work, files.length ? attachmentPrompt(run.promptSnapshot ?? "", work.id, files) : run.promptSnapshot ?? "", {
     createdAt: run.createdAt,
     followUpId: run.id,
     afterWrite: async (updatedPrompt) => {
@@ -186,9 +192,10 @@ export async function ensureFollowUpPrompt(
 
 export async function ensureSteeringPrompt(
   work: { id: string; directoryPath: string; promptFileName: string },
-  message: { id: string; createdAt: Date; content: string }
+  message: { id: string; createdAt: Date; content: string; attachmentsJson?: string | null }
 ): Promise<void> {
-  await appendWorkFollowUp(work, message.content, {
+  const files = parseWorkAttachments(message.attachmentsJson);
+  await appendWorkFollowUp(work, files.length ? attachmentPrompt(message.content, work.id, files) : message.content, {
     createdAt: message.createdAt,
     followUpId: message.id,
     kind: "steering",
@@ -211,6 +218,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
 
   const executionPath = run.executionPath ?? work.directoryPath;
   const prompt = run.promptSnapshot ?? work.promptCache;
+  const attachments = parseWorkAttachments(run.attachmentsJson);
   const engine = run.engine ?? work.defaultEngine;
   const outputFormat = run.outputFormat === "json" ? "json" : "text";
   const timeoutSeconds = run.timeoutSeconds;
@@ -229,6 +237,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
     workName: work.name,
     promptFileName: work.promptFileName,
     prompt,
+    attachments,
     promptHash: hashWorkContent(prompt),
     engine,
     sessionId,
@@ -339,6 +348,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
     }
 
     const controlledCliRun = engine === "CLI" && !run.experimentVariantId;
+    const messageAttachments = await runtimeWorkAttachments(work, attachments);
     const sdkUsageBaseline = engine === "SDK" || controlledCliRun
       ? await readCopilotSessionInsights(sessionId).catch(() => null)
       : null;
@@ -350,6 +360,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
             sessionId,
             workPath: executionPath,
             prompt,
+            attachments: messageAttachments,
             resumeSession: Boolean(run.resumedFromRunId),
             model: run.model,
             contextTier: run.contextTier,
@@ -365,6 +376,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
               sessionId,
               workPath: executionPath,
               prompt,
+              attachments: messageAttachments,
               resumeSession: Boolean(run.resumedFromRunId),
               agent: run.agent,
               model: run.model,

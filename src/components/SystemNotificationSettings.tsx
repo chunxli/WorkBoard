@@ -54,7 +54,7 @@ export default function SystemNotificationSettings({
           typeof body.error === "string" ? body.error : "Failed to send test notification"
         );
       }
-      setMessage("Test notification sent");
+      setMessage("Test notification submitted");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -85,6 +85,9 @@ export default function SystemNotificationSettings({
         </label>
         <p className="text-xs leading-5 text-neutral-500">
           Notifications appear on the machine running the Work Board background process, even when browser tabs are closed.
+        </p>
+        <p className="text-xs leading-5 text-neutral-500">
+          Windows notifications use Work Board branding and open the related Work when selected. Standalone Automations open their Run; this test opens Settings. Appearance and banner visibility follow Windows notification settings.
         </p>
         {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
       </div>

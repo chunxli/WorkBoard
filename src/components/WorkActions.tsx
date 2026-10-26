@@ -29,7 +29,7 @@ export default function WorkActions({
   const [copied, setCopied] = useState(false);
 
   return (
-    <div className="flex min-w-0 flex-wrap items-start gap-2">
+    <div className="work-detail-actions ml-auto flex min-w-0 flex-wrap items-center gap-1">
       <FollowUpDialog
         workId={workId}
         mode={followUpMode}
@@ -38,15 +38,17 @@ export default function WorkActions({
       />
       <button
         type="button"
+        title={copied ? "Copied" : "Copy path"}
+        aria-label={copied ? "Copied" : "Copy path"}
         onClick={async () => {
           await navigator.clipboard.writeText(directoryPath);
           setCopied(true);
           setTimeout(() => setCopied(false), 1500);
         }}
-        className="ui-secondary-button"
+        className="work-toolbar-action work-toolbar-control size-8 shrink-0"
       >
         {copied ? <Check size={14} aria-hidden="true" /> : <Clipboard size={14} aria-hidden="true" />}
-        {copied ? "Copied" : "Copy path"}
+        <span className="sr-only" aria-live="polite">{copied ? "Copied" : "Copy path"}</span>
       </button>
       <WorkQuickActions
         name={name}

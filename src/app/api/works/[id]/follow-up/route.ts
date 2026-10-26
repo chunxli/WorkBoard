@@ -19,6 +19,7 @@ import { RunStartInProgressError, withRunStartLock } from "@/lib/run-start-lock"
 import { findActiveRunConflicts } from "@/lib/run-access";
 import { getTerminalSessionActivity, reconcileTerminalRun } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { parseWorkAttachments, resolveWorkAttachments, WorkAttachmentError } from "@/lib/work-attachments";
 
 export async function POST(
   req: NextRequest,
@@ -55,6 +56,19 @@ export async function POST(
       if (!work) throw new FollowUpConflictError("Work not found", 404);
       if (work.status === "ARCHIVED") {
         throw new FollowUpConflictError("Restore this Work before following up");
+      }
+      if (work.hostname && work.hostname !== hostname()) throw new FollowUpConflictError("This Work belongs to another machine");
+      if (parsed.data.requestId) {
+        const existing = await prisma.run.findUnique({ where: { id: parsed.data.requestId } });
+        if (existing) {
+          if (existing.workId !== work.id || existing.trigger !== "FOLLOW_UP" ||
+            existing.promptSnapshot !== parsed.data.prompt ||
+            parsed.data.expectedParentRunId !== undefined && existing.resumedFromRunId !== parsed.data.expectedParentRunId ||
+            JSON.stringify(parseWorkAttachments(existing.attachmentsJson).map((file) => file.id)) !== JSON.stringify(parsed.data.attachmentIds)) {
+            throw new FollowUpConflictError("This request ID already refers to a different message.");
+          }
+          return { runId: existing.id, sessionId: existing.copilotSessionId, resumed: Boolean(existing.resumedFromRunId) };
+        }
       }
       const activeWorkRun = await prisma.run.findFirst({
         where: { workId: work.id, status: { in: ["PENDING", "RUNNING"] } },
@@ -110,10 +124,14 @@ export async function POST(
           await repairLegacyCopilotSessionEvents(parent.copilotSessionId);
         }
 
+        const attachments = parsed.data.attachmentIds.length && parsed.data.requestId
+          ? await resolveWorkAttachments(work, parsed.data.requestId, parsed.data.attachmentIds, true) : [];
         const run = await createPendingFollowUpRun({
           workId: work.id,
           prompt: parsed.data.prompt,
           parentRunId: parent?.id,
+          requestId: parsed.data.requestId,
+          attachments,
         });
         try {
           await ensureFollowUpPrompt(work, run);
@@ -133,13 +151,12 @@ export async function POST(
     if (error instanceof FollowUpConflictError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
+    if (error instanceof WorkAttachmentError) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error instanceof RunStartInProgressError || error instanceof CopilotSessionInUseError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to start Follow Up" },
-      { status: 400 }
-    );
+    console.error("[follow-up] Failed to create or enqueue Follow Up:", error);
+    return NextResponse.json({ error: "Unable to confirm Follow Up. Retry this same request." }, { status: 500 });
   }
 }
 

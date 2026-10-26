@@ -33,6 +33,7 @@ interface ManagedRunOptions {
   sessionId: string;
   workPath: string;
   prompt: string;
+  attachments?: { type: "file"; path: string; displayName?: string }[];
   resumeSession?: boolean;
   agent?: string | null;
   model?: string | null;
@@ -313,8 +314,8 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
       }, timeoutMs);
     }
 
-    const sendAndWait = async (prompt: string) => {
-      await session!.send({ prompt });
+    const sendAndWait = async (prompt: string, attachments?: ManagedRunOptions["attachments"]) => {
+      await session!.send({ prompt, ...(attachments?.length ? { attachments } : {}) });
       await controller!.waitForIdle();
     };
 
@@ -322,7 +323,7 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
       if (cancelledRuns.has(options.runId)) {
         await controller!.abort();
       } else {
-        await sendAndWait(options.prompt);
+        await sendAndWait(options.prompt || "Please review the attached files.", options.attachments);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -341,7 +342,7 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
       const notice = `[CodeBoard] Model "${options.model}" is unavailable; retrying with fallback "${fallbackModel}".`;
       appendEvent({ type: "workboard.notice", data: { message: notice } });
       await connectSession(true, fallbackModel);
-      await sendAndWait(options.prompt);
+      await sendAndWait(options.prompt || "Please review the attached files.", options.attachments);
     }
 
     while (!timedOut && !cancelledRuns.has(options.runId)) {

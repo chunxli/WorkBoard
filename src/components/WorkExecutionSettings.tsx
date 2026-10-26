@@ -11,9 +11,11 @@ import WorkExecutionFields, {
 export default function WorkExecutionSettings({
   workId,
   initialValue,
+  embedded = false,
 }: {
   workId: string;
   initialValue: WorkExecutionSettingsValue;
+  embedded?: boolean;
 }) {
   const router = useRouter();
   const [value, setValue] = useState(initialValue);
@@ -45,9 +47,11 @@ export default function WorkExecutionSettings({
     }
   }
 
+  const Container = embedded ? "section" : "details";
+  const Heading = embedded ? "div" : "summary";
   return (
-    <details className="ui-panel group overflow-hidden">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3.5 sm:px-5 [&::-webkit-details-marker]:hidden">
+    <Container className="ui-panel group overflow-hidden">
+      <Heading className="flex list-none items-center justify-between gap-3 px-4 py-3.5 sm:px-5 [&::-webkit-details-marker]:hidden">
         <div className="flex items-center gap-3">
           <span className="grid size-8 place-items-center rounded-md bg-neutral-800 text-neutral-300">
             <SlidersHorizontal size={16} aria-hidden="true" />
@@ -61,9 +65,9 @@ export default function WorkExecutionSettings({
               Saved
             </span>
           )}
-          <ChevronDown size={15} className="shrink-0 text-neutral-500 transition-transform group-open:rotate-180" aria-hidden="true" />
+          {!embedded && <ChevronDown size={15} className="shrink-0 text-neutral-500 transition-transform group-open:rotate-180" aria-hidden="true" />}
         </span>
-      </summary>
+      </Heading>
       <form onSubmit={save}>
       <div className="border-t border-neutral-800 p-4 sm:p-5">
         <WorkExecutionFields value={value} onChange={(nextValue) => {
@@ -79,6 +83,6 @@ export default function WorkExecutionSettings({
         </button>
       </div>
       </form>
-    </details>
+    </Container>
   );
 }

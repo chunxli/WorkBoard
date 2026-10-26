@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   dispatchPendingSystemNotifications,
+  buildRunSystemNotification,
   resolveExperimentNotificationStatus,
   type ExperimentNotificationCandidate,
   type NotificationDispatcherDependencies,
@@ -21,7 +22,7 @@ function runCandidate(overrides: Partial<RunNotificationCandidate> = {}): RunNot
     modelsUsed: JSON.stringify(["gpt-main", "gpt-reviewer"]),
     inputTokens: 12_000,
     outputTokens: 345,
-    work: { userId: "user-work", name: "Investigate incident" },
+    work: { id: "work-1", userId: "user-work", name: "Investigate incident" },
     task: null,
     ...overrides,
   };
@@ -37,7 +38,7 @@ function experimentCandidate(
     status: "COMPLETED",
     finishedAt,
     errorMessage: null,
-    work: { userId: "user-work" },
+    work: { id: "work-1", userId: "user-work" },
     variants: statuses.map((status) => ({ runs: [{ status }] })),
     ...overrides,
   };
@@ -83,9 +84,47 @@ function createDependencies(options: {
 }
 
 describe("system notification dispatcher", () => {
+  it("targets the exact Work or the Automation's linked Work while preserving owner precedence", () => {
+    expect(buildRunSystemNotification(runCandidate())?.notification.destination).toEqual({ kind: "work", id: "work-1" });
+    const linked = buildRunSystemNotification(runCandidate({
+      task: { name: "Linked review", workId: "automation-work", repo: { userId: "automation-owner" } },
+    }));
+    expect(linked?.userId).toBe("automation-owner");
+    expect(linked?.notification.destination).toEqual({ kind: "work", id: "automation-work" });
+  });
+
+  it.each(["SUCCESS", "FAILED", "TIMED_OUT"])("keeps %s explicit and excludes missing metrics and Run-ID clutter", (status) => {
+    const built = buildRunSystemNotification(runCandidate({
+      status, startedAt: null, model: null, modelsUsed: null, inputTokens: null, outputTokens: null,
+    }));
+    expect(built?.notification.title).toBe(`Work ${status === "SUCCESS" ? "completed" : status === "FAILED" ? "failed" : "timed out"}`);
+    expect(built?.notification.details).toBe("");
+    expect(built?.notification.message).not.toContain("Run run-");
+  });
+
+  it("bounds long Work/model labels and counts distinct additional models", () => {
+    const model = "long-model-".repeat(20);
+    const prepared = buildRunSystemNotification(runCandidate({
+      work: { id: "work-1", userId: "user-work", name: "👩‍💻".repeat(130) },
+      modelsUsed: JSON.stringify([" ", model, model, "short-model"]),
+    }));
+    expect([...new Intl.Segmenter().segment(prepared?.notification.message ?? "")]).toHaveLength(100);
+    expect(prepared?.notification.message.endsWith("…")).toBe(true);
+    expect((prepared?.notification.details?.length ?? 0)).toBeLessThanOrEqual(100);
+    expect(prepared?.notification.details).not.toContain(" | Run ");
+    expect(prepared?.notification.details).toContain("+1");
+  });
+
+  it("deduplicates model names without inventing missing telemetry", () => {
+    const prepared = buildRunSystemNotification(runCandidate({
+      modelsUsed: JSON.stringify(["gpt-main", " gpt-main ", "", "gpt-second"]),
+    }));
+    expect(prepared?.notification.details).toBe("5m 0s · gpt-main +1 · 12.3K tokens");
+  });
+
   it("claims a Run once across concurrent dispatchers and uses Task ownership first", async () => {
     const run = runCandidate({
-      task: { name: "Nightly review", repo: { userId: "user-automation" } },
+      task: { name: "Nightly review", workId: null, repo: { userId: "user-automation" } },
     });
     const state = createDependencies({ runs: [run] });
 
@@ -97,7 +136,9 @@ describe("system notification dispatcher", () => {
     expect(state.notify).toHaveBeenCalledTimes(1);
     expect(state.notify).toHaveBeenCalledWith({
       title: "Automation completed",
-      message: expect.stringContaining("Nightly review | Run run-1234 | 5m 0s | gpt-main, gpt-reviewer | 12.3K tokens"),
+      message: "Nightly review",
+      details: "5m 0s · gpt-main +1 · 12.3K tokens",
+      destination: { kind: "run", id: run.id },
     });
     expect(state.runOutcomes).toEqual([{ id: run.id, outcome: "sent", error: undefined }]);
   });
@@ -164,7 +205,9 @@ describe("system notification dispatcher", () => {
     expect(state.notify).toHaveBeenCalledOnce();
     expect(state.notify).toHaveBeenCalledWith({
       title: "Experiment completed",
-      message: "Skill comparison | 2 variants",
+      message: "Skill comparison",
+      details: "2 variants",
+      destination: { kind: "work", id: "work-1" },
     });
     expect(state.experimentOutcomes).toEqual([{
       id: experiment.id,

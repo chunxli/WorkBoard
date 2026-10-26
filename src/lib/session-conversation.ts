@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import { getCopilotSessionEventsPath, upgradeLegacyPermissionEvent } from "@/lib/copilot-session-compat";
+import type { WorkAttachment } from "@/lib/work-attachment-types";
 
 export interface ConversationEvent {
   id: string;
@@ -15,6 +16,8 @@ export interface ConversationEvent {
   agentId: string | null;
   toolCallId: string | null;
   status: "info" | "running" | "success" | "failed";
+  attachmentPaths?: string[];
+  attachments?: WorkAttachment[];
 }
 
 export interface ConversationRun {
@@ -61,7 +64,7 @@ export interface SessionConversationData {
     transportMessageId: string | null;
   }[];
   promptHash: string | null;
-  pendingPrompt: { runId: string; text: string; status: string } | null;
+  pendingPrompt: { runId: string; text: string; status: string; attachments?: WorkAttachment[] } | null;
 }
 
 interface HistoryCursor {
@@ -113,7 +116,13 @@ export function normalizeConversationEvent(value: unknown, generation: string, o
     agentId, toolCallId, status: "info",
   };
   if (type === "user.message" || type === "assistant.message") {
-    return { ...base, role: type === "user.message" ? "user" : "assistant", title: type === "user.message" ? "You" : agentId ? "Subagent" : "Copilot", text: contentText(data.content) };
+    const paths = type === "user.message" && Array.isArray(data.attachments)
+      ? data.attachments.flatMap((value) => {
+        const attachment = record(value);
+        return attachment.type === "file" && typeof attachment.path === "string" ? [attachment.path] : [];
+      }).slice(0, 10) : [];
+    return { ...base, role: type === "user.message" ? "user" : "assistant", title: type === "user.message" ? "You" : agentId ? "Subagent" : "Copilot",
+      text: contentText(data.content), ...(paths.length ? { attachmentPaths: paths } : {}) };
   }
   if (type === "tool.execution_start") {
     return { ...base, role: "tool", title: typeof data.toolName === "string" ? data.toolName : "Tool call", status: "running",

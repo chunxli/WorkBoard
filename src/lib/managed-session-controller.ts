@@ -1,6 +1,7 @@
 export interface ManagedSessionMessageOptions {
   prompt: string;
   mode: "immediate";
+  attachments?: { type: "file"; path: string; displayName?: string }[];
 }
 
 export interface ManagedSessionMessageResult {
@@ -18,7 +19,7 @@ export interface SteeringAcceptance {
 }
 
 export interface SteeringReservation {
-  send(prompt: string): Promise<SteeringAcceptance>;
+  send(prompt: string, attachments?: ManagedSessionMessageOptions["attachments"]): Promise<SteeringAcceptance>;
   release(): void;
 }
 
@@ -60,11 +61,11 @@ export class ManagedSessionController {
       this.settleIfReady();
     };
     return {
-      send: async (prompt) => {
+      send: async (prompt, attachments) => {
         if (sent || finished) throw new Error("Steering reservation has already been used");
         sent = true;
         try {
-          const result = await this.transport.send({ prompt, mode: "immediate" });
+          const result = await this.transport.send({ prompt, mode: "immediate", ...(attachments?.length ? { attachments } : {}) });
           finish(true);
           return {
             accepted: true,

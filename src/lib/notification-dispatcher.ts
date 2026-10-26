@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { formatDuration, formatTokenCount } from "@/lib/format";
 import {
   sendSystemNotification,
+  compactNotificationText,
   type SystemNotification,
   type SystemNotifier,
 } from "@/lib/system-notifier";
@@ -24,8 +25,8 @@ export interface RunNotificationCandidate {
   modelsUsed: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
-  work: { userId: string; name: string } | null;
-  task: { name: string; repo: { userId: string } } | null;
+  work: { id: string; userId: string; name: string } | null;
+  task: { name: string; workId: string | null; repo: { userId: string } } | null;
 }
 
 export interface ExperimentNotificationCandidate {
@@ -34,7 +35,7 @@ export interface ExperimentNotificationCandidate {
   status: string;
   finishedAt: Date;
   errorMessage: string | null;
-  work: { userId: string };
+  work: { id: string; userId: string };
   variants: Array<{
     runs: Array<{ status: string }>;
   }>;
@@ -66,13 +67,14 @@ function parseModels(modelsUsed: string | null, fallback: string | null): string
   try {
     const parsed = modelsUsed ? JSON.parse(modelsUsed) : [];
     if (Array.isArray(parsed)) {
-      const models = parsed.filter((model): model is string => typeof model === "string");
+      const models = [...new Set(parsed.filter((model): model is string => typeof model === "string")
+        .map((model) => model.trim()).filter(Boolean))];
       if (models.length > 0) return models;
     }
   } catch {
     // Fall back to the frozen primary model for malformed legacy data.
   }
-  return fallback ? [fallback] : [];
+  return fallback?.trim() ? [fallback.trim()] : [];
 }
 
 function statusLabel(status: RunNotificationStatus): string {
@@ -99,17 +101,22 @@ export function buildRunSystemNotification(
   if (!owner) return null;
 
   const status = run.status as RunNotificationStatus;
-  const details = [`Run ${run.id.slice(0, 8)}`, formatDuration(run.startedAt, run.finishedAt)];
+  const details = run.startedAt ? [formatDuration(run.startedAt, run.finishedAt)] : [];
   const models = parseModels(run.modelsUsed, run.model);
-  if (models.length > 0) details.push(models.join(", "));
+  if (models.length > 0) {
+    details.push(`${compactNotificationText(models[0], 40)}${models.length > 1 ? ` +${models.length - 1}` : ""}`);
+  }
   if (run.inputTokens !== null || run.outputTokens !== null) {
     details.push(`${formatTokenCount((run.inputTokens ?? 0) + (run.outputTokens ?? 0))} tokens`);
   }
+  const workId = run.task ? run.task.workId : run.work?.id;
   return {
     userId: owner.userId,
     notification: {
       title: `${owner.kind} ${statusLabel(status)}`,
-      message: `${owner.name} | ${details.join(" | ")}`,
+      message: compactNotificationText(owner.name, 100),
+      details: compactNotificationText(details.join(" · "), 100),
+      destination: workId ? { kind: "work", id: workId } : { kind: "run", id: run.id },
     },
   };
 }
@@ -136,7 +143,9 @@ export function buildExperimentSystemNotification(
 ): SystemNotification {
   return {
     title: `Experiment ${statusLabel(status)}`,
-    message: `${experiment.name} | ${experiment.variants.length} variants`,
+    message: compactNotificationText(experiment.name, 100),
+    details: `${experiment.variants.length} variants`,
+    destination: { kind: "work", id: experiment.work.id },
   };
 }
 
@@ -252,8 +261,8 @@ const prismaNotificationDependencies: NotificationDispatcherDependencies = {
       modelsUsed: true,
       inputTokens: true,
       outputTokens: true,
-      work: { select: { userId: true, name: true } },
-      task: { select: { name: true, repo: { select: { userId: true } } } },
+      work: { select: { id: true, userId: true, name: true } },
+      task: { select: { name: true, workId: true, repo: { select: { userId: true } } } },
     },
   }) as Promise<RunNotificationCandidate[]>,
   claimRun: async (id, claimedAt) => (await prisma.run.updateMany({
@@ -276,7 +285,7 @@ const prismaNotificationDependencies: NotificationDispatcherDependencies = {
       status: true,
       finishedAt: true,
       errorMessage: true,
-      work: { select: { userId: true } },
+      work: { select: { id: true, userId: true } },
       variants: {
         select: {
           runs: {

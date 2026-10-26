@@ -8,6 +8,7 @@ import { hashWorkContent, readWorkPrompt } from "@/lib/work-files";
 import PromptEditor from "@/components/PromptEditor";
 import WorkActions from "@/components/WorkActions";
 import SessionConversation from "@/components/SessionConversation";
+import WorkFileBrowser from "@/components/WorkFileBrowser";
 import StatusBadge from "@/components/StatusBadge";
 import CancelRunButton from "@/components/CancelRunButton";
 import RunStatusRefresher from "@/components/RunStatusRefresher";
@@ -19,7 +20,7 @@ import { findActiveRunConflicts } from "@/lib/run-access";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
 import { copilotSessionExists } from "@/lib/copilot-session-compat";
-import { ArrowLeft, ArrowUpRight, Bot, Boxes, ChevronDown, Clock3, Cpu, FlaskConical, FolderOpen, History, Info, ListTodo, Radio } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bot, Boxes, Clock3, Cpu, FlaskConical, FolderOpen, History, Info, ListTodo } from "lucide-react";
 import WorkExecutionSettings from "@/components/WorkExecutionSettings";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
@@ -73,6 +74,12 @@ export default async function WorkDetailPage({
   });
   if (!work) notFound();
 
+  const skillComparisonSetting = process.env.WORKBOARD_SHOW_SKILL_COMPARISON?.trim().toLowerCase() ?? "";
+  if (skillComparisonSetting && skillComparisonSetting !== "true" && skillComparisonSetting !== "false") {
+    throw new Error("WORKBOARD_SHOW_SKILL_COMPARISON must be true or false (defaults to false).");
+  }
+  const showSkillComparison = skillComparisonSetting === "true" && work.status !== "ARCHIVED";
+
   const prompt = await readWorkPrompt(work).catch(() => ({
     content: work.promptCache,
     hash: work.promptHash ?? hashWorkContent(work.promptCache),
@@ -108,7 +115,9 @@ export default async function WorkDetailPage({
   const followUpConflicts = followUpDirectory === work.directoryPath
     ? activeConflicts
     : await findActiveRunConflicts(userId, followUpDirectory);
-  const projectSkills = await discoverProjectSkills(work.directoryPath).catch(() => []);
+  const projectSkills = showSkillComparison
+    ? await discoverProjectSkills(work.directoryPath).catch(() => [])
+    : [];
   const hasActiveExperiment = work.experiments.some((experiment) =>
     ["PROVISIONING", "RUNNING"].includes(experiment.status)
   );
@@ -136,38 +145,30 @@ export default async function WorkDetailPage({
           : null;
 
   return (
-    <div className="space-y-5">
-      <header className="space-y-2 border-b border-neutral-800 pb-3">
-        <div className="flex min-w-0 flex-col justify-between gap-2 lg:flex-row lg:items-start">
-          <div className="min-w-0">
-            <Link href="/work" className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-500 hover:text-emerald-300">
-              <ArrowLeft size={13} aria-hidden="true" />
-              Work Board
-            </Link>
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              <h1 className="min-w-0 max-w-full break-words text-xl font-bold text-white sm:text-2xl">{work.name}</h1>
-              <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-400">{work.status}</span>
-            </div>
-          </div>
-          <WorkActions
-            workId={work.id}
-            name={work.name}
-            directoryPath={work.directoryPath}
-            archived={work.status === "ARCHIVED"}
-            followUpMode={followUpParent ? "resume" : "new"}
-            followUpDisabledReason={followUpDisabledReason}
-            canOpenLocal={canOpenLocal}
-            terminalRunId={latestRun?.id ?? null}
-            terminalState={terminalState}
-          />
+    <div className="work-detail-page space-y-1">
+      <SessionConversation
+        key={work.id}
+        workId={work.id}
+        runId={latestRun?.id ?? null}
+        initialLog={latestLog}
+        isLive={latestRun?.status === "PENDING" || latestRun?.status === "RUNNING"}
+        historySync={Boolean(latestRun && isTerminalRunTrigger(latestRun.trigger) && (latestRun.status === "RUNNING" || latestRun.status === "UNKNOWN"))}
+        outputFormat={latestRun?.outputFormat === "json" ? "json" : "text"}
+        workHeader={<>
+        <div className="work-toolbar-identity flex min-w-0 items-center gap-2">
+          <Link href="/work" title="Back to Work Board" aria-label="Back to Work Board" className="work-toolbar-control grid size-9 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-emerald-300">
+            <ArrowLeft size={15} aria-hidden="true" />
+          </Link>
+          <h1 title={work.name} className="min-w-0 flex-1 truncate text-sm font-bold text-white">{work.name}</h1>
+          <span className="shrink-0 rounded-full border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-400">{work.status}</span>
         </div>
-        <details key={`details:${work.id}`} className="group min-w-0 text-xs">
-          <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-2 text-neutral-400 hover:text-neutral-200 [&::-webkit-details-marker]:hidden">
-            <Info size={13} aria-hidden="true" />
-            Work details
-            <ChevronDown size={13} className="transition-transform group-open:rotate-180" aria-hidden="true" />
+        <details key={`details:${work.id}`} className="work-toolbar-details group min-w-0 shrink-0 text-xs">
+          <summary title="Work details" aria-label="Work details" className="work-toolbar-control flex size-8 cursor-pointer list-none items-center justify-center gap-1 rounded-md text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 [&::-webkit-details-marker]:hidden">
+            <Info size={15} aria-hidden="true" />
+            <span className="sr-only group-open:not-sr-only">Work details</span>
           </summary>
           <div className="space-y-2 pt-2">
+            <p className="break-words font-semibold text-neutral-200">{work.name}</p>
             <p className="flex min-w-0 items-start gap-2 text-neutral-400">
               <FolderOpen size={13} className="mt-1 shrink-0" aria-hidden="true" />
               <span className="break-all font-mono leading-5">{work.directoryPath}</span>
@@ -181,54 +182,54 @@ export default async function WorkDetailPage({
             {latestRun && (
               <p className="text-neutral-500">Latest Run: {latestRun.trigger} · {latestRun.engine ?? "CLI"}</p>
             )}
+            {latestRun?.copilotSessionId && (
+              <p className="break-all font-mono text-neutral-400">Session {latestRun.copilotSessionId}</p>
+            )}
           </div>
         </details>
-      </header>
-
-      {startError && (
-        <p role="alert" className="border border-red-800 bg-red-950/30 p-3 text-sm text-red-300">
-          {startError}
-        </p>
-      )}
-
-      <section className="space-y-2">
-        <SectionHeading icon={Radio} title="Session conversation">
-          {latestRun && (
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={latestRunState?.displayStatus ?? latestRun.status} />
-              <span className="text-xs text-neutral-500">
-                {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
-              </span>
-              {canCancelRun(latestRun) && (
-                <CancelRunButton runId={latestRun.id} />
-              )}
-              <Link
-                href={`/runs/${latestRun.id}`}
-                className="ui-secondary-button min-h-8 px-3 py-1.5"
-              >
-                Full details
-                <ArrowUpRight size={13} aria-hidden="true" />
-              </Link>
-            </div>
-          )}
-        </SectionHeading>
+        </>}
+        workActions={<WorkActions
+          workId={work.id}
+          name={work.name}
+          directoryPath={work.directoryPath}
+          archived={work.status === "ARCHIVED"}
+          followUpMode={followUpParent ? "resume" : "new"}
+          followUpDisabledReason={followUpDisabledReason}
+          canOpenLocal={canOpenLocal}
+          terminalRunId={latestRun?.id ?? null}
+          terminalState={terminalState}
+        />}
+        notices={<>
+        {startError && (
+          <p role="alert" className="border border-red-800 bg-red-950/30 p-3 text-sm text-red-300">
+            {startError}
+          </p>
+        )}
         {latestRunState && <RunStatusRefresher key={latestRunState.id} initialState={latestRunState} />}
+        <ExperimentRefresher active={hasActiveExperiment} />
         {latestRunState?.displayStatus === "SYNCING" && (
           <p role="status" className="text-xs text-emerald-200">{TERMINAL_SYNCING_MESSAGE}</p>
         )}
         {latestRunState?.observationError && (
           <p role="alert" className="break-words text-sm text-red-400">{latestRunState.observationError}</p>
         )}
-        <SessionConversation
-          key={work.id}
-          workId={work.id}
-          runId={latestRun?.id ?? null}
-          initialLog={latestLog}
-          isLive={latestRun?.status === "PENDING" || latestRun?.status === "RUNNING"}
-          historySync={Boolean(latestRun && isTerminalRunTrigger(latestRun.trigger) && (latestRun.status === "RUNNING" || latestRun.status === "UNKNOWN"))}
-          outputFormat={latestRun?.outputFormat === "json" ? "json" : "text"}
-        />
-        {latestRun?.errorMessage && (
+        </>}
+          runActions={latestRun && (
+            <div className="flex shrink-0 items-center gap-1">
+              <StatusBadge status={latestRunState?.displayStatus ?? latestRun.status} />
+              <span className="whitespace-nowrap text-[10px] text-neutral-400">
+                {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
+              </span>
+              {canCancelRun(latestRun) && (
+                <CancelRunButton runId={latestRun.id} />
+              )}
+              <Link href={`/runs/${latestRun.id}`} title="Full details" aria-label="Full details" className="work-toolbar-action work-toolbar-control size-8 shrink-0">
+                <span className="sr-only">Full details</span>
+                <ArrowUpRight size={14} aria-hidden="true" />
+              </Link>
+            </div>
+          )}
+        runError={latestRun?.errorMessage && (
           <p
             role={latestRun.status === "UNKNOWN" ? "status" : "alert"}
             className={`rounded-md border px-3 py-2 text-sm ${
@@ -240,9 +241,10 @@ export default async function WorkDetailPage({
             {getRunStatusMessage(latestRun.status, latestRun.errorMessage)}
           </p>
         )}
-      </section>
-
-      <WorkExecutionSettings
+        fileBrowser={<WorkFileBrowser workId={work.id} />}
+        panels={[
+        { id: "settings", label: "Execution settings", content: <WorkExecutionSettings
+        embedded
         key={`settings:${work.id}`}
         workId={work.id}
         initialValue={{
@@ -256,9 +258,9 @@ export default async function WorkDetailPage({
           outputFormat: work.outputFormat === "json" ? "json" : "text",
           timeoutSeconds: work.timeoutSeconds,
         }}
-      />
-
-      <PromptEditor
+      /> },
+        { id: "prompt", label: "Prompt", content: <PromptEditor
+        embedded
         key={`prompt:${work.id}`}
         workId={work.id}
         promptFileName={work.promptFileName}
@@ -267,9 +269,9 @@ export default async function WorkDetailPage({
         defaultEngine={work.defaultEngine}
         hasActiveConflict={activeConflicts.length > 0}
         archived={work.status === "ARCHIVED"}
-      />
-
-      {work.status !== "ARCHIVED" && (
+      /> },
+        ...((showSkillComparison || work.experiments.length > 0) ? [{ id: "comparisons", label: "Comparisons", content: <>
+      {showSkillComparison && (
         <ExperimentBuilder
           workId={work.id}
           initialSkills={projectSkills}
@@ -277,7 +279,6 @@ export default async function WorkDetailPage({
         />
       )}
 
-      <ExperimentRefresher active={hasActiveExperiment} />
       {work.experiments.map((experiment) => (
         <section key={experiment.id} className="space-y-3 border-t border-neutral-800 pt-6">
           <SectionHeading icon={FlaskConical} title={experiment.name}>
@@ -329,16 +330,12 @@ export default async function WorkDetailPage({
           </div>
         </section>
       ))}
-
-      {work.runs.length > 1 && (
-        <details key={`history:${work.id}`} className="ui-panel group min-w-0 overflow-hidden">
-          <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
-            <History size={15} className="shrink-0 text-neutral-500" aria-hidden="true" />
-            <h2 className="text-sm font-bold">Run history</h2>
-            <span className="text-xs text-neutral-500">{work.runs.length - 1} earlier {work.runs.length === 2 ? "Run" : "Runs"}</span>
-            <ChevronDown size={15} className="ml-auto shrink-0 text-neutral-500 transition-transform group-open:rotate-180" aria-hidden="true" />
-          </summary>
-          <div className="border-t border-neutral-800 bg-neutral-900/40">
+      </> }] : []),
+        { id: "history", label: "Run history", content: <section className="space-y-3">
+          <SectionHeading icon={History} title="Run history">
+            <span className="text-xs text-neutral-500">{Math.max(0, work.runs.length - 1)} earlier {work.runs.length === 2 ? "Run" : "Runs"}</span>
+          </SectionHeading>
+          {work.runs.length > 1 ? <div className="rounded-md border border-neutral-800 bg-neutral-900/40">
             {work.runs.slice(1).map((run) => (
               <Link
                 key={run.id}
@@ -352,12 +349,9 @@ export default async function WorkDetailPage({
                 </span>
               </Link>
             ))}
-          </div>
-        </details>
-      )}
-
-      {work.tasks.length > 0 && (
-        <section>
+          </div> : <p className="text-sm text-neutral-400">No earlier Runs yet.</p>}
+        </section> },
+        ...(work.tasks.length > 0 ? [{ id: "automations", label: "Automations", content: <section>
           <SectionHeading icon={ListTodo} title="Automations" />
           <div className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
             {work.tasks.map((task) => (
@@ -371,8 +365,9 @@ export default async function WorkDetailPage({
               </Link>
             ))}
           </div>
-        </section>
-      )}
+        </section> }] : []),
+      ]}
+      />
     </div>
   );
 }

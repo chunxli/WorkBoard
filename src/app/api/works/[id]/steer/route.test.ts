@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   messageUpdate: vi.fn(),
   appendArtifact: vi.fn(),
   ensurePrompt: vi.fn(),
+  resolveAttachments: vi.fn(),
+  runtimeAttachments: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUserId: mocks.getSessionUserId }));
@@ -37,6 +39,10 @@ vi.mock("@/lib/run-artifacts", () => ({
   appendWorkRunSteeringArtifact: mocks.appendArtifact,
 }));
 vi.mock("@/lib/work-executor", () => ({ ensureSteeringPrompt: mocks.ensurePrompt }));
+vi.mock("@/lib/work-attachments", async (original) => ({
+  ...await original<typeof import("@/lib/work-attachments")>(),
+  resolveWorkAttachments: mocks.resolveAttachments, runtimeWorkAttachments: mocks.runtimeAttachments,
+}));
 
 import { POST } from "./route";
 
@@ -96,6 +102,8 @@ describe("Work Steering API", () => {
     });
     mocks.appendArtifact.mockResolvedValue(undefined);
     mocks.ensurePrompt.mockResolvedValue(undefined);
+    mocks.resolveAttachments.mockResolvedValue([]);
+    mocks.runtimeAttachments.mockResolvedValue([]);
   });
 
   async function post(input: Record<string, unknown>, workId = "work-1") {
@@ -211,10 +219,36 @@ describe("Work Steering API", () => {
       runId: run.id,
       sessionId: run.copilotSessionId,
     });
+
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ deliveryState: "UNCERTAIN" });
     expect(stored.deliveryState).toBe("UNCERTAIN");
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("delivers attachment-only Steering through the immediate transport and binds retries to the same files", async () => {
+    const requestId = randomUUID(); const id = randomUUID();
+    const file = { id, requestId, uploadId: randomUUID(), name: "diagram.png", storedName: `${id}-diagram.png`, size: 20, mediaType: "image/png", sha256: "a".repeat(64) };
+    const transport = [{ type: "file", path: "C:\\synthetic\\diagram.png", displayName: file.name }];
+    mocks.resolveAttachments.mockResolvedValue([file]); mocks.runtimeAttachments.mockResolvedValue(transport);
+    const input = { prompt: "", requestId, runId: run.id, sessionId: run.copilotSessionId, attachmentIds: [id] };
+    expect((await post(input)).status).toBe(202);
+    expect(send).toHaveBeenCalledWith({ prompt: "Please review the attached files.", mode: "immediate", attachments: transport });
+    expect(stored?.attachmentsJson).toBe(JSON.stringify([file]));
+    expect(mocks.appendArtifact).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ attachments: [file] }));
+    expect((await post(input)).status).toBe(200);
+    expect(send).toHaveBeenCalledOnce(); expect(mocks.runtimeAttachments).toHaveBeenCalledOnce();
+    expect((await post({ ...input, attachmentIds: [randomUUID()] })).status).toBe(409);
+  });
+
+  it("rejects invalid files before transport instead of declaring uncertain delivery", async () => {
+    mocks.runtimeAttachments.mockRejectedValue(new Error("Saved attachment changed"));
+    const response = await post({ prompt: "Read the file", requestId: randomUUID(), runId: run.id, sessionId: run.copilotSessionId });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ deliveryState: "REJECTED", error: "Saved attachment changed" });
+    expect(send).not.toHaveBeenCalled();
+    expect(stored?.deliveryState).toBe("REJECTED");
+    expect(controller.canAcceptSteering).toBe(true);
   });
 
   afterEach(() => unregisterManagedSessionController(runId, controller));

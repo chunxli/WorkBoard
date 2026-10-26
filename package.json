@@ -15,6 +15,9 @@
     "background:restart:fast": "node scripts/codeboard-background.mjs restart --skip-build",
     "background:status": "node scripts/codeboard-background.mjs status",
     "background:logs": "node scripts/codeboard-background.mjs logs",
+    "autostart:status": "node scripts/autostart.mjs status",
+    "autostart:sync": "node scripts/autostart.mjs sync",
+    "autostart:remove": "node scripts/autostart.mjs remove",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
+import path from "node:path";
 import { hostname } from "node:os";
 import { Readable } from "node:stream";
 import { NextRequest, NextResponse } from "next/server";
@@ -14,6 +15,8 @@ import { getTerminalSessionActivity } from "@/lib/terminal-resume";
 import { findActiveRunConflicts } from "@/lib/run-access";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { ConversationReadError, readSessionConversationPage, type SessionConversationData } from "@/lib/session-conversation";
+import { parseWorkAttachments } from "@/lib/work-attachments";
+import { attachmentRelativePath } from "@/lib/work-attachment-types";
 
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "private, no-store", "Vary": "Cookie" };
@@ -73,7 +76,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       where: { workId: id, copilotSessionId: sessionId, experimentVariantId: null },
       orderBy: { createdAt: "desc" },
       select: { id: true, status: true, trigger: true, hostname: true, createdAt: true, startedAt: true, finishedAt: true,
-        engine: true,
+        engine: true, attachmentsJson: true,
         terminalLaunches: { select: { id: true }, take: 1 } },
     });
     if (!work.hostname && !anchor.hostname && !runs.some((run) => run.hostname === hostname()) && authMode !== "local") {
@@ -126,8 +129,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         : activeOwner || conflicts.some((run) => run.id !== stoppedRunId) ? "Wait for the active Run to finish."
           : !parent ? "This session has not started yet." : null;
     if (current?.trigger === "FOLLOW_UP" && ["PENDING", "RUNNING", "FAILED"].includes(current.status)) {
-      const pending = await prisma.run.findUnique({ where: { id: current.id }, select: { promptSnapshot: true } });
-      if (pending?.promptSnapshot) base.pendingPrompt = { runId: current.id, text: pending.promptSnapshot, status: current.status };
+      const pending = await prisma.run.findUnique({ where: { id: current.id }, select: { promptSnapshot: true, attachmentsJson: true } });
+      const attachments = parseWorkAttachments(pending?.attachmentsJson);
+      if (pending?.promptSnapshot || attachments.length) base.pendingPrompt = { runId: current.id, text: pending?.promptSnapshot ?? "", status: current.status, attachments };
     }
     if (parsed.data.download) {
       const filePath = getCopilotSessionEventsPath(sessionId);
@@ -148,8 +152,28 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         select: {
           id: true, runId: true, requestId: true, content: true, deliveryState: true, promptSynced: true,
           promptError: true, artifactSynced: true, artifactError: true, createdAt: true,
-          acceptedAt: true, transportMessageId: true,
+          acceptedAt: true, transportMessageId: true, attachmentsJson: true,
         },
+      });
+      const knownFiles = [...runs, ...steeringMessages].flatMap((message) => parseWorkAttachments(message.attachmentsJson));
+      const attachmentRoot = knownFiles.length ? await realpath(work.directoryPath) : work.directoryPath;
+      const normalizePath = (value: string) => {
+        const resolved = path.resolve(value);
+        return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+      };
+      const knownPaths = new Map(knownFiles.map((file) => [
+        normalizePath(path.join(attachmentRoot, ...attachmentRelativePath(work.id, file).split("/"))), file,
+      ]));
+      base.events = page.events.map(({ attachmentPaths, ...event }) => {
+        const attachments = (attachmentPaths ?? []).flatMap((filePath) => {
+          const file = knownPaths.get(normalizePath(filePath));
+          return file ? [file] : [];
+        });
+        const steering = steeringMessages.find((message) => message.transportMessageId === event.messageId && event.messageId);
+        for (const file of parseWorkAttachments(steering?.attachmentsJson)) {
+          if (!attachments.some((existing) => existing.id === file.id)) attachments.push(file);
+        }
+        return { ...event, ...(attachments.length ? { attachments } : {}) };
       });
       const uncertainMessageIds = new Set<string>();
       for (const message of steeringMessages) {

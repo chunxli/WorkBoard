@@ -14,6 +14,8 @@ import {
   SteeringRequestError,
   type WorkSteeringMessageRecord,
 } from "@/lib/work-steering";
+import { attachmentIdsSchema } from "@/lib/work-attachment-types";
+import { parseWorkAttachments, resolveWorkAttachments, runtimeWorkAttachments, WorkAttachmentError } from "@/lib/work-attachments";
 
 export const dynamic = "force-dynamic";
 
@@ -22,8 +24,9 @@ const requestSchema = z.object({
   runId: z.string().min(1).max(128),
   sessionId: z.string().min(1).max(128),
   requestId: z.string().uuid(),
-  prompt: z.string().trim().min(1).max(100_000),
-}).strict();
+  prompt: z.string().trim().max(100_000).default(""),
+  attachmentIds: attachmentIdsSchema.default([]),
+}).strict().refine((value) => value.prompt.length > 0 || value.attachmentIds.length > 0, "Enter a prompt or attach a file.");
 
 export async function POST(
   request: NextRequest,
@@ -73,7 +76,8 @@ export async function POST(
     if (
       message.workId !== work.id ||
       message.sessionId !== run.copilotSessionId ||
-      message.content !== parsed.data.prompt
+      message.content !== parsed.data.prompt ||
+      JSON.stringify(parseWorkAttachments(message.attachmentsJson).map((file) => file.id)) !== JSON.stringify(parsed.data.attachmentIds)
     ) {
       return NextResponse.json(
         { error: "This request ID is already associated with a different instruction." },
@@ -103,6 +107,8 @@ export async function POST(
       );
     }
     try {
+      const attachments = parsed.data.attachmentIds.length
+        ? await resolveWorkAttachments(work, parsed.data.requestId, parsed.data.attachmentIds, true) : [];
       message = await prisma.workSteeringMessage.create({
         data: {
           id: randomUUID(),
@@ -111,17 +117,20 @@ export async function POST(
           sessionId: run.copilotSessionId,
           requestId: parsed.data.requestId,
           content: parsed.data.prompt,
+          attachmentsJson: attachments.length ? JSON.stringify(attachments) : null,
         },
       });
       newlyCreated = true;
     } catch (error) {
+      if (error instanceof WorkAttachmentError) return NextResponse.json({ error: error.message, deliveryState: "REJECTED" }, { status: error.status, headers });
       if (!isUniqueConstraintError(error)) throw error;
       message = await prisma.workSteeringMessage.findUnique({ where: { runId_requestId: key } });
       if (!message) throw error;
       if (
         message.workId !== work.id ||
         message.sessionId !== run.copilotSessionId ||
-        message.content !== parsed.data.prompt
+        message.content !== parsed.data.prompt ||
+        JSON.stringify(parseWorkAttachments(message.attachmentsJson).map((file) => file.id)) !== JSON.stringify(parsed.data.attachmentIds)
       ) {
         return NextResponse.json(
           { error: "This request ID is already associated with a different instruction." },
@@ -138,6 +147,7 @@ export async function POST(
       message: record,
       newlyCreated,
       controller,
+      resolveAttachments: () => runtimeWorkAttachments(work, parseWorkAttachments(record.attachmentsJson)),
       repository: {
         update: async (messageId, changes) =>
           prisma.workSteeringMessage.update({ where: { id: messageId }, data: changes }),
@@ -151,6 +161,7 @@ export async function POST(
             requestId: accepted.requestId,
             sessionId: accepted.sessionId,
             content: accepted.content,
+            attachments: parseWorkAttachments(accepted.attachmentsJson),
             transportMessageId: accepted.transportMessageId,
             acceptedAt: accepted.acceptedAt.toISOString(),
           }
@@ -161,6 +172,7 @@ export async function POST(
           id: accepted.id,
           createdAt: accepted.acceptedAt ?? accepted.createdAt,
           content: accepted.content,
+          attachmentsJson: accepted.attachmentsJson,
         }),
     });
     return NextResponse.json(

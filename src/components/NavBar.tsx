@@ -14,7 +14,7 @@ export default async function NavBar() {
 
   return (
     <nav className="sticky top-0 z-40 border-b border-neutral-800/90 bg-[var(--nav-background)] backdrop-blur-xl">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-5 gap-y-3 px-4 py-3 sm:px-6 lg:flex-nowrap lg:px-8">
+      <div className="app-nav-content mx-auto flex max-w-7xl flex-wrap items-center gap-x-5 gap-y-3 px-4 py-3 sm:px-6 lg:flex-nowrap lg:px-8">
         <Link
           href="/work"
           className="order-1 flex shrink-0 items-center gap-2.5 whitespace-nowrap text-white"
@@ -86,4 +86,3 @@ export default async function NavBar() {
     </nav>
   );
 }
-

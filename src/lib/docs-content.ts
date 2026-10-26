@@ -41,14 +41,54 @@ export const docsNavigation = [
 
 export const releaseNotes: ReleaseEntry[] = [
   {
-    date: "2026-09-04",
+    date: "2026-10-26",
     version: "Latest changes",
     status: "latest",
     title: {
-      zh: "最新源码功能",
-      en: "Latest source changes",
+      zh: "近期源码更新：目录引用、附件与工作区",
+      en: "Recent source updates: directory references, attachments and workspace",
     },
     notes: [
+      {
+        title: "Selected Directory References",
+        zh: "New work 名称栏显示单击选中文件夹内部的直接内容，不显示兄弟目录。支持光标插入、选区替换和独立刷新；只引用名称，不递归或上传。",
+        en: "The New work strip shows the selected Work Directory's immediate contents, not its siblings. Insert names at the caret or replace selected text, with independent refresh and no recursion or upload.",
+      },
+      {
+        title: "Message Attachments",
+        zh: "Follow Up / Steer now 支持粘贴、拖放、选文件及仅附件发送：单文件 25 MiB、每条最多 10 个、合计 100 MiB。点击发送才保存到所属 Work，失败保留草稿和上传引用。",
+        en: "Follow Up / Steer now support paste, drop, selection and attachment-only messages: 25 MiB per file, 10 files and 100 MiB per message. Send saves files in the owning Work; failures retain drafts and upload receipts.",
+      },
+      {
+        title: "Conversation Workspace",
+        zh: "Work 详情使用可用宽度，独立侧边选项卡、固定工具栏和底部 Follow Up 输入框为对话留出空间；文件区支持展开目录和安全新标签页访问。",
+        en: "Available-width Work details use side tabs, a pinned toolbar and a bottom-docked Follow Up composer. Expand folders in the file pane and open files safely in a new tab.",
+      },
+      {
+        title: "Compact Conversation Activity",
+        zh: "正文与间距更紧凑，工具调用按相关 ID 合并并在完成后折叠；空正文和重复展示不再占位，底层历史与审计仍保留。",
+        en: "Denser prose and spacing emphasize answers. Related tool calls are grouped and fold on completion; empty prose and duplicate panels are omitted without deleting history or audit records.",
+      },
+      {
+        title: "Default-on Login Autostart",
+        zh: "后台 start/restart 就绪后按配置登记当前用户登录自启，显式 stop 移除；默认启用意图不等于已登记。登录仅启动已构建版本，不构建、迁移或崩溃自动重启。",
+        en: "Ready background start/restart reconciles current-user login startup; explicit stop removes it. Default-enabled intent is not registration. Login starts a prepared Release without building, migrating or crash restart.",
+      },
+      {
+        title: "Windows PowerShell Compatibility",
+        zh: "修复 PowerShell 5.1 将缺失自启值输出为空导致的检查误报；明确区分未登记、有效值与读取失败。只读 status 不会登记自启，服务启动与登记结果分别报告。",
+        en: "Fixes Windows PowerShell 5.1 emitting no JSON for an absent startup value. Absence, valid values and read failures remain distinct; read-only status never registers startup, and process/registration results stay separate.",
+      },
+      {
+        title: "Optional Skill Comparison UI",
+        zh: "Skill comparison 创建区域默认隐藏，WORKBOARD_SHOW_SKILL_COMPARISON=true 才显示；已有比较结果和后台 API 不受影响。",
+        en: "Skill comparison creation is hidden by default; WORKBOARD_SHOW_SKILL_COMPARISON=true reveals it without disabling existing results or APIs.",
+      },
+      {
+        title: "Source Upgrade & Data Retention",
+        zh: "本条日期表示当前源码汇总，不是发布或部署确认。附件更新需先迁移数据库再构建/重启；备份应包含 Work 附件、数据库及 Copilot session 历史。",
+        en: "This date identifies the source summary, not a release or deployment. Apply the attachment migration before building/restarting; back up Work attachments, SQLite and Copilot session history together.",
+      },
       {
         title: "First Run in Terminal",
         zh: "创建 Work 时可直接打开 Windows Terminal，用已保存 Prompt 启动全新的交互式 Copilot Session。",
@@ -56,8 +96,8 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Background System Notifications",
-        zh: "Work、Automation 和聚合 Experiment 在成功、失败或超时时发送主机系统通知；关闭全部浏览器标签后仍有效。",
-        en: "Host OS notifications now cover successful, failed, and timed-out Work and Automation Runs, plus aggregate Experiments, even with every browser tab closed.",
+        zh: "Work、Automation 和聚合 Experiment 在成功、失败或超时时发送主机系统通知，浏览器关闭后仍有效。Windows 使用 Work Board 名称与绿色图标，精简显示状态、名称和指标；点击打开所属 Work，独立 Automation 打开其 Run。",
+        en: "Host notifications cover successful, failed and timed-out Work/Automation Runs and aggregate Experiments even with browsers closed. Windows uses the Work Board name/green icon and compact status, name and metrics; selecting opens its Work, or the Run for standalone Automations.",
       },
       {
         title: "Stable Process Info",
@@ -66,8 +106,8 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Terminal Lifecycle Hardening",
-        zh: "Terminal 历史每分钟同步，启动时补扫；运行中不结束 Run，停止后依据退出码或完整历史收口。",
-        en: "Terminal history syncs every minute and catches up at startup; active Runs stay open and stopped Runs settle from exit codes or complete history.",
+        zh: "Terminal 历史每分钟同步，启动时补扫；运行中不结束 Run，停止后依据退出码或完整历史收口。IN TERMINAL、浅绿色 SYNCING / TERMINAL 区分活动、收口和缺少完成证据，不因关窗口就判成功。",
+        en: "Minute history sync catches up at startup, preserves active Runs and settles stopped ones from exit codes or complete history. IN TERMINAL and light-green SYNCING / TERMINAL distinguish activity, settlement and missing evidence; closing a window is not success.",
       },
       {
         title: "In-App Documentation",
@@ -177,6 +217,11 @@ export const docsSections: DocsSection[] = [
         label: "Open Work Board",
       },
       {
+        title: "Prompt File Names",
+        zh: "New work 的 Prompt 下方提供单行横向滚动栏，显示已选 Work Directory 内的全部直接子项（含点号开头名称），不递归。单击左侧文件夹即可显示它内部的内容，无需双击进入；Directory 输入、Browse、Use current、新建及复制后的路径均同步，单纯浏览其他父目录不会改变来源。点击或键盘激活名称后替换选中文字，或在上次光标处插入，按需补空格并恢复焦点。仅引用名称，不改变路径、不读取或上传内容。名称栏有独立刷新/重试；未选、缺失或无权读取时明确提示，不用上级目录兜底，保留原有模板、Read Prompt 与创建流程。",
+        en: "A single-row horizontal strip below the New work Prompt lists all immediate entries inside the selected Work Directory, including dot-prefixed names, without recursion. Single-click a left-side folder to show its contents without double-clicking into it. Directory input, Browse, Use current, new folders and copied destinations all update that source; merely browsing another parent does not. Activate a name to replace selected text or insert at the remembered caret, adding spaces only as needed and restoring focus. Names do not change paths or read/upload contents. The strip has independent refresh/retry; unselected, missing or unreadable paths show explicit feedback, never parent-folder fallback. Templates, Read Prompt and Create actions remain unchanged.",
+      },
+      {
         title: "Create Actions",
         zh: "Create only 只保存；Create & Run 在应用内启动 Run；Create & Open Terminal 用保存后的 Prompt 启动第一个交互式 Terminal Session。",
         en: "Create only saves; Create & Run starts an in-app Run; Create & Open Terminal starts the first interactive Terminal session from the saved Prompt.",
@@ -192,23 +237,28 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Execution Settings",
-        zh: "执行设置与 Prompt 默认折叠，展开后保留编辑草稿。每个 Work 可独立设置引擎、模型、权限、输出与 timeout；每个 Run 冻结当次设置。",
-        en: "Execution settings and Prompt start collapsed while retaining drafts. Each Work configures its engine, models, permissions, output, and timeout; every Run freezes its settings.",
+        zh: "执行设置与 Prompt 位于独立侧边选项卡，切换时保留草稿。每个 Work 可独立设置引擎、模型、权限、输出与 timeout；每个 Run 冻结当次设置。",
+        en: "Execution settings and Prompt have separate sidebar tabs that preserve drafts when switching. Each Work configures its engine, models, permissions, output, and timeout; every Run freezes its settings.",
       },
       {
         title: "Compact Work Details",
-        zh: "紧凑页头保留快捷操作，对话区优先展示。目录与默认设置收进 Work details；Run history 默认折叠，数量仅表示当前已加载列表中的较早 Run，不代表历史总数。每次进入页面默认收起，当前页面手动展开后自动刷新不会将其收起。",
-        en: "Compact headers keep shortcuts available and prioritize conversation. Work details holds the directory and default settings; Run history starts collapsed and counts only earlier Runs in the loaded list, not the lifetime total. New page visits start closed; same-page automatic refreshes preserve manual expansion.",
+        zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；左右栏维持原宽，额外空间留给对话，其他页面仍居中。Work 信息、会话视图、Run 状态与快捷操作合并为一条顶部工具栏，吸附在全局导航下。桌面控件高 32px，触控目标至少 44px。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。长名称可悬停或展开 Work details 查看；历史数量仅表示当前已加载的较早 Run。右侧文件区可展开目录并在新标签页打开文件，窄屏提供 Files 选项卡。",
+        en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters. Side columns keep their widths, giving extra space to the conversation; other pages stay centered. Work identity, session views, Run state and shortcuts share a compact toolbar pinned below global navigation. Desktop controls are 32px with at least 44px touch targets. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up returns to the conversation and focuses its draft; the composer stays at the panel bottom while messages scroll independently. Full titles remain in Work details; history counts only loaded earlier Runs. The right file pane expands folders and opens files in new tabs, with a Files tab on narrow screens.",
       },
       {
         title: "Session Conversation",
-        zh: "同一 session 的用户与助手消息跨 Run 展示，工具活动可展开，早期历史分页加载；保留原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
-        en: "User and assistant turns span linked Runs in the same session, with expandable tools, earlier-history pagination, raw output and full session download. Different sessions and missing data are never merged or invented.",
+        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。工具与运行元数据按活动归组，执行中展示进度，完成后折叠；失败在摘要可见，技术事件可展开检查。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
+        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Tool/runtime activity opens for progress and folds after completion; failures stay visible and technical events remain inspectable. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
       },
       {
         title: "In-App Follow Up",
-        zh: "在对话区继续发送，停留在 Work 页面；输入保存为独立 Run，并按 Run 标记追加到 Prompt 文件。Terminal 占用期间只读，释放后才能发送；草稿与追加内容冲突时不静默覆盖。",
-        en: "Send inline and stay on Work details. Input becomes a separate linked Run and is appended to the Prompt once by Run marker. Terminal-owned sessions are read-only until released; dirty Prompt drafts are never silently overwritten.",
+        zh: "在对话区继续发送，停留在 Work 页面；创建独立关联 Run 后，在入队前尝试按 Run 标记幂等追加 Prompt，延后的追加在执行时修复。同请求重试返回原 Run，不重复创建。Terminal 占用期间只读；草稿与外部修改冲突时不静默覆盖。",
+        en: "Send inline and stay on Work details. A separate linked Run attempts its idempotent Prompt append before enqueueing; execution repairs deferred appends. A same-request retry returns the existing Run. Terminal-owned sessions stay read-only and Prompt conflicts are not silently overwritten.",
+      },
+      {
+        title: "Message Attachments",
+        zh: "Follow Up 与 Steer now 支持粘贴图片、拖放和选择文件，也可只发送附件。单文件最多 25 MiB，每条消息最多 10 个、合计 100 MiB。选择时仅在页面本地预览，点击发送才写入所属 Work 的 .workboard/attachments/<work-id>/<message-id>/，上传完成后向 CLI/SDK 传递真实文件。失败保留草稿与已成功上传的引用，同请求重试不会重复发送已确认或不确定的 Steering。切换选项卡保留草稿，整页刷新或离开页面不会恢复未发送的 File 对象。文件长期保留，备份时需包含附件目录、数据库与 Session；不自动执行、解压、安装或作为 Skill 导入，也不随 Work/实验复制。历史附件可通过所属 Work 的授权链接查看或下载；25 MiB 附件使用专用下载，普通文件预览仍限 16 MiB。浏览器剪贴板文件支持和模型图片/文档能力存在差异，传输确认不代表模型已理解。",
+        en: "Follow Up and Steer now accept pasted images, dropped or selected files, including attachment-only messages: 25 MiB per file, 10 files and 100 MiB per message. Selection creates a page-local preview; Send saves files under the owning Work's .workboard/attachments/<work-id>/<message-id>/ before passing real file attachments to CLI/SDK. Failure retains drafts and successful receipts; same-request repair never replays accepted or uncertain Steering. Tabs preserve drafts, but full reload/navigation does not restore unsent File objects. Files are retained without automatic deletion: back up the attachment directory, database and sessions together. Files are not executed, unpacked, installed, imported as skills, or included in Work/experiment copies. Owned history links allow safe viewing/download; the dedicated download supports 25 MiB while ordinary file preview stays at 16 MiB. Clipboard file support and model image/document capabilities vary; transport acceptance is not evidence of comprehension.",
       },
       {
         title: "Live Steering",
@@ -239,8 +289,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Auto Load on Path Selection",
-        zh: "从目录浏览器或常用根目录切换路径时，自动发现并加载对应 Prompt；多个文件可在选择器中切换。",
-        en: "Selecting a path from the browser or common roots automatically discovers and loads its Prompt; switch among multiple files from the selector.",
+        zh: "单击目录、Use current、Browse 或新建/复制成功选定 Work 路径时，自动发现并加载该目录的 Prompt；手动输入路径后可点 Read Prompt。仅浏览另一个根目录不切换已选 Work 或读取其 Prompt；多个文件可在选择器中切换。",
+        en: "Selecting a Work path through a folder, Use current, Browse, creation or copying discovers and loads its Prompt. After typing a path, use Read Prompt. Browsing another root alone does not change the selected Work or import its Prompt; choose among multiple files from the selector.",
       },
       {
         title: "Autosave & Conflict Detection",
@@ -263,8 +313,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Portable Directory Layout",
-        zh: "`.workboard/` 保存 manifest、Runs 和 variants；复制 Work 时排除该目录，避免递归复制。",
-        en: "`.workboard/` stores manifests, Runs, and variants; Work copies exclude it to prevent recursive copies.",
+        zh: "`.workboard/` 保存 manifest、Run 输出、variants 与 `attachments/<work-id>/<message-id>/`。附件留在所属 Work，Work/实验复制和托管 Git 快照排除它；不自动删除，备份时应保留。",
+        en: "`.workboard/` stores manifests, Run outputs, variants and `attachments/<work-id>/<message-id>/`. Attachments stay in the owning Work and are excluded from Work/experiment copies and managed Git snapshots; retain them in backups because there is no automatic deletion.",
       },
     ],
   },
@@ -371,8 +421,8 @@ export const docsSections: DocsSection[] = [
     features: [
       {
         title: "Skill Discovery",
-        zh: "发现项目 `.github/skills`，也可添加任意本地 Skill 目录并校验内容 hash。",
-        en: "Discover project `.github/skills` or add any local Skill directory with content-hash verification.",
+        zh: "Skill comparison 创建区域默认隐藏；在 .env 设置 `WORKBOARD_SHOW_SKILL_COMPARISON=true` 并重启后，可在 Comparisons 选项卡创建比较。发现项目 `.github/skills`，也可添加本地 Skill 目录并校验 hash。开关只影响创建界面及初始扫描，不禁用已有结果或后台 API。",
+        en: "The Skill comparison builder is hidden by default. Set `WORKBOARD_SHOW_SKILL_COMPARISON=true` in .env and restart to create comparisons in the Comparisons tab. Discover project `.github/skills` or add a local directory with hash verification. The switch controls only the creation UI and initial scan, not existing results or APIs.",
       },
       {
         title: "Frozen Variants",
@@ -415,8 +465,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "System Notifications",
-        zh: "默认开启成功、失败、超时通知，可关闭或发送测试通知；toast 显示在运行后台进程的主机。",
-        en: "Success, failure, and timeout notifications are enabled by default; disable them or send a test toast on the background host.",
+        zh: "成功、失败、超时通知默认开启，可关闭或发送测试。Windows 首次发送登记当前用户的 Work Board 通知身份，不涉及开机自启；外框和主题由系统控制。点击测试通知打开此设置页；链接使用 AUTH_URL（默认 localhost:3100）。已提交不等于横幅已显示，系统勿扰/通知权限仍有效；原生错误明确提示，macOS/Linux 保留现有能力。",
+        en: "Success, failure and timeout notifications default on; disable them or submit a test. Windows prepares a current-user Work Board identity, not login startup; native frames/themes remain OS-controlled. Selecting the test opens Settings; links use AUTH_URL (localhost:3100 by default). Submitted does not mean a banner was shown: OS policy still applies and native errors stay explicit. macOS/Linux retain existing capabilities.",
         href: "/settings#notifications",
         label: "Notification settings",
       },
@@ -449,8 +499,18 @@ export const docsSections: DocsSection[] = [
     features: [
       {
         title: "Background Commands",
-        zh: "使用 `background:start`、`restart`、`status`、`logs` 和 `stop` 管理 detached release；代码、依赖或 migration 变化后使用完整 restart。",
-        en: "Use `background:start`, `restart`, `status`, `logs`, and `stop` to manage the detached release; use a full restart after code, dependency, or migration changes.",
+        zh: "使用 `background:start`、`restart`、`status`、`logs` 和 `stop` 管理后台 Release；代码、依赖或 migration 变化后使用完整 restart。start/restart 成功后按配置登记登录自启；显式 stop 即使服务已停止也移除自启项。",
+        en: "Use `background:start`, `restart`, `status`, `logs`, and `stop` for the background Release; use a full restart after code, dependencies, or migrations change. Successful start/restart reconciles login startup; explicit stop removes it even when already stopped.",
+      },
+      {
+        title: "Login Autostart",
+        zh: "`WORKBOARD_AUTOSTART` 未配置或为空时默认 true，false 允许手动启动但禁用登录自启。支持 Windows 当前用户隐藏启动、macOS LaunchAgent、Linux systemd 用户服务，不提权、不改 linger。登录只启动已构建 Release，不构建、迁移、打开浏览器或提交新指令；无崩溃自动拉起，macOS 退出登录时结束，Linux 已有 linger 可能使用户服务在开机时启动。",
+        en: "`WORKBOARD_AUTOSTART` defaults to true when unset/empty; false permits manual startup but disables login startup. Supports hidden Windows current-user startup, macOS LaunchAgents, and Linux systemd user services without elevation or linger changes. Login only starts a prepared Release: no build, migration, browser, new instruction, or crash restart. macOS ends at logout; existing Linux linger can start the user manager at boot.",
+      },
+      {
+        title: "Autostart Status & Recovery",
+        zh: "`autostart:status` 只读检查配置意图和实际登记；`sync` 应用开关，`remove` 仅移除登记，不停止运行中的服务，配置错误也可清理。stop/remove 后仅改 true 不会恢复系统项，需显式登记。后台启动成功但登记失败会保留服务。旧脚本的 Cannot inspect Run entry 可能是 Windows PowerShell 5.1 将不存在的值序列化为空输出，更新脚本用明确对象区分缺失、有效值和真正错误，无需重启应用；status 不会自动登记，只有打算修改本机项时才执行 sync。保留 WSH、ACL、冲突等检查；勿删除其他启动项。Linux 仍需可用的 systemd 用户会话。",
+        en: "`autostart:status` reads intent and registration; `sync` applies policy and `remove` unregisters without stopping a running server, even with an invalid flag. After removal, true alone cannot recreate an entry; explicit registration is required. A started server stays running if registration fails. Older Cannot inspect Run entry errors can come from Windows PowerShell 5.1 emitting no JSON for a missing value. Updated scripts use a validated object to distinguish absence, values and real errors without an application restart. Status never registers anything; run sync only when you intend to change this machine's entry. WSH, ACL and conflict checks remain; never remove other entries. Linux still needs a working systemd user session.",
       },
       {
         title: "Scheduler & Keep Awake",
@@ -464,8 +524,13 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Data & Backup",
-        zh: "SQLite、session 与后台日志位于应用目录；Prompt、资源和 `.workboard` artifacts 位于各 Work 目录。备份时应保留两部分。",
-        en: "SQLite, sessions, and server logs live with the app; prompts, resources, and `.workboard` artifacts live in each Work directory. Back up both.",
+        zh: "备份应包括 DATABASE_URL 对应的 SQLite、应用 data/ 与后台日志，各 Work 的 Prompt、资源和 `.workboard`（含附件），以及 COPILOT_HOME（默认 ~/.copilot）下的会话历史。不能只备份数据库或输出日志来代替原始附件与 session 历史。",
+        en: "Back up SQLite at DATABASE_URL, app data/logs, each Work's prompts/resources and `.workboard` including attachments, and conversation history under COPILOT_HOME (default ~/.copilot). Database or output-log backups alone do not replace original attachments and session history.",
+      },
+      {
+        title: "Source Updates & Migrations",
+        zh: "Latest source 不表示运行中的后台版本已更新。附件功能新增 Run/Steering 可空元数据列，升级时先停旧服务、应用 migration，再构建并启动；旧记录无需补附件。登录自启不代做迁移或构建，自启脚本修复本身无需重启应用。",
+        en: "Latest source does not mean a background instance is current. Attachments add nullable Run/Steering metadata: stop the old server, apply migrations, then build/start; older records need no attachments. Login startup does not migrate or build, and an autostart-script-only fix needs no application restart.",
       },
       {
         title: "Single-Host Boundary",
@@ -482,6 +547,14 @@ export const docsSections: DocsSection[] = [
 ];
 
 export const operationalLimits: BilingualText[] = [
+  {
+    zh: "New work 名称栏仅引用已选目录的直接子项名称，不递归读取或上传；Follow Up / Steer now 的 Add files 才保存并传递真实附件。",
+    en: "The New work strip inserts only immediate names from the selected directory, without recursively reading or uploading files. Add files in Follow Up / Steer now saves and delivers actual attachments.",
+  },
+  {
+    zh: "消息附件单文件 25 MiB、每条最多 10 个/100 MiB；专用附件下载支持完整 25 MiB，普通文件预览仍限 16 MiB。传输确认不代表所选模型已理解内容；整页刷新不恢复未发送的浏览器文件草稿。",
+    en: "Message attachments allow 25 MiB per file, 10 files and 100 MiB per message. Dedicated downloads support 25 MiB; ordinary previews remain limited to 16 MiB. Acceptance is not model comprehension, and a full reload does not restore unsent browser-file drafts.",
+  },
   {
     zh: "First Run in Terminal 只在 Work 尚无任何 Run 时可用，并要求 Windows 与本机/受信任访问。",
     en: "First Run in Terminal is available only before a Work has any Run and requires Windows plus local or explicitly trusted access.",

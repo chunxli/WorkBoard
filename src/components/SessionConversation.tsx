@@ -1,59 +1,104 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, Download, LoaderCircle, Send, TerminalSquare, User, Wrench } from "lucide-react";
+import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, Download, LoaderCircle, Radio, Send, TerminalSquare, User, Wrench } from "lucide-react";
 import MarkdownResult from "@/components/MarkdownResult";
 import LiveRunLog from "@/components/LiveRunLog";
+import { AttachmentDraft, MessageAttachments, useMessageAttachments } from "@/components/WorkMessageAttachments";
+import type { WorkAttachment } from "@/lib/work-attachment-types";
+import { activityRecords, conversationTimeline, isAuxiliaryEvent, type ConversationActivity } from "@/lib/conversation-activity";
 import type { ConversationEvent, SessionConversationData } from "@/lib/session-conversation";
 
-function eventTime(value: string | null): string {
+function eventTime(value: string | null, timeOnly = false): string {
   if (!value || Number.isNaN(Date.parse(value))) return "";
-  return new Date(value).toLocaleString();
+  const date = new Date(value);
+  return timeOnly ? date.toLocaleTimeString() : date.toLocaleString();
 }
 
-export function ConversationMessage({ event }: { event: ConversationEvent }) {
+export function ConversationMessage({ event, relatedEvents = [event], workId }: { event: ConversationEvent; relatedEvents?: ConversationEvent[]; workId?: string }) {
   const [expanded, setExpanded] = useState(false);
-  const auxiliary = event.role === "tool" || event.role === "system" || event.agentId !== null;
+  const auxiliary = isAuxiliaryEvent(event);
   if (auxiliary) {
+    const latest = relatedEvents[relatedEvents.length - 1];
     return (
-      <details className="group border-l-2 border-neutral-800 pl-3 text-xs" onToggle={(change) => setExpanded(change.currentTarget.open)}>
-        <summary className={`flex cursor-pointer list-none items-center gap-2 py-2 [&::-webkit-details-marker]:hidden ${event.status === "failed" ? "text-red-400" : "text-neutral-500"}`}>
+      <details className="work-conversation-activity group min-w-0 border-l border-neutral-800 pl-2 text-xs" onToggle={(change) => setExpanded(change.currentTarget.open)}>
+        <summary className={`flex min-h-7 cursor-pointer list-none items-center gap-1.5 rounded-sm py-0.5 [&::-webkit-details-marker]:hidden ${latest.status === "failed" ? "text-red-400" : "text-neutral-400"}`}>
           {event.role === "tool" ? <Wrench size={13} className="shrink-0" aria-hidden="true" /> : <TerminalSquare size={13} className="shrink-0" aria-hidden="true" />}
-          <span className="min-w-0 break-words">{event.title}</span>
-          {event.status === "running" && <span className="text-[10px] text-neutral-600">Started</span>}
-          {event.status === "success" && <Check size={12} className="shrink-0 text-emerald-400" aria-hidden="true" />}
-          <time className="ml-auto shrink-0 text-[10px] text-neutral-600" dateTime={event.timestamp ?? undefined}>{eventTime(event.timestamp)}</time>
+          <span className="min-w-0 truncate" title={event.title}>{event.title}</span>
+          {latest.status === "running" && <span className="text-[10px]">Started</span>}
+          {latest.status === "failed" && <span className="text-[10px] font-semibold">Failed</span>}
+          {latest.status === "success" && <Check size={12} className="shrink-0 text-emerald-400" aria-hidden="true" />}
+          <time className="ml-auto shrink-0 text-[10px]" dateTime={latest.timestamp ?? undefined} title={eventTime(latest.timestamp)} aria-label={eventTime(latest.timestamp)}>{eventTime(latest.timestamp, true)}</time>
           <ChevronDown size={12} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
         </summary>
-        {expanded && <div className="space-y-2 pb-3">
-          {event.text && (event.role === "assistant" ? <MarkdownResult content={event.text} compact />
-            : <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-neutral-950/50 p-3 font-mono text-[11px] leading-5 text-neutral-300">{event.text}</pre>)}
-          <p className="break-all font-mono text-[10px] text-neutral-600">{event.type}{event.toolCallId ? ` / ${event.toolCallId}` : ""}{event.agentId ? ` / ${event.agentId}` : ""}</p>
-        </div>}
+        {expanded && <div className="space-y-2 pb-2 pt-1">{relatedEvents.map((record) => <div key={record.id} className="space-y-1">
+          {record.text && (record.role === "assistant" ? <MarkdownResult content={record.text} compact />
+            : <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-neutral-950/50 p-3 font-mono text-[11px] leading-5 text-neutral-300">{record.text}</pre>)}
+          <p className="break-all font-mono text-[10px] text-neutral-400">{record.type}{record.toolCallId ? ` / ${record.toolCallId}` : ""}{record.agentId ? ` / ${record.agentId}` : ""} · {eventTime(record.timestamp)}</p>
+        </div>)}</div>}
       </details>
     );
   }
+  if (!event.text.trim() && !event.attachments?.length) return null;
   return (
-    <article className={`min-w-0 space-y-2 py-3 ${event.role === "user" ? "ml-auto w-fit max-w-[95%] rounded-md bg-neutral-800/45 px-4" : "pr-2"}`} aria-label={`${event.title} message`}>
+    <article className={`min-w-0 space-y-1 py-1.5 ${event.role === "user" ? "ml-auto w-fit max-w-[95%] rounded-md bg-neutral-800/45 px-3" : "pr-2"}`} aria-label={`${event.title} message`}>
       <div className="flex items-center gap-2 text-xs text-neutral-500">
         {event.role === "user" ? <User size={14} aria-hidden="true" /> : <Bot size={14} className="text-emerald-400" aria-hidden="true" />}
         <span className="font-semibold text-neutral-300">{event.title}</span>
         <time className="ml-auto text-[10px] text-neutral-600" dateTime={event.timestamp ?? undefined}>{eventTime(event.timestamp)}</time>
       </div>
       <MarkdownResult content={event.text} />
+      {workId && event.attachments?.length ? <MessageAttachments workId={workId} files={event.attachments} /> : null}
     </article>
   );
 }
 
-export default function SessionConversation({ workId, runId, initialLog, isLive, historySync, outputFormat }: {
+export function ConversationActivityGroup({ activity, live }: { activity: ConversationActivity; live: boolean }) {
+  const records = activityRecords(activity.events);
+  const tools = records.filter((record) => record.events[0].role === "tool");
+  const unfinished = records.some((record) => record.events[record.events.length - 1].status === "running");
+  const failures = records.filter((record) => record.events.some((event) => event.status === "failed")).length;
+  const active = live && !activity.finished && (unfinished || !activity.turnEnded);
+  const [manual, setManual] = useState<{ active: boolean; open: boolean } | null>(null);
+  const open = manual?.active === active ? manual.open : active;
+  const latest = activity.events[activity.events.length - 1];
+  const completed = activity.finished || activity.turnEnded ||
+    (tools.length > 0 && tools.every((record) => record.events[record.events.length - 1].status === "success"));
+  const status = active ? "Running" : failures ? "Failed" : completed && !unfinished ? "Completed" : "Recorded";
+  return (
+    <details className="work-activity-group min-w-0 text-xs" open={open} onToggle={(change) => {
+      if (change.currentTarget.open !== open) setManual({ active, open: change.currentTarget.open });
+    }}>
+      <summary className={`flex min-h-7 cursor-pointer list-none items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-neutral-800/50 [&::-webkit-details-marker]:hidden ${failures ? "text-red-400" : "text-neutral-400"}`}>
+        {active ? <LoaderCircle size={13} className="shrink-0 animate-spin" aria-hidden="true" /> : <Wrench size={13} className="shrink-0" aria-hidden="true" />}
+        <span className="font-medium">{tools.length ? "Tools & run details" : "Run details"}</span>
+        <span className="min-w-0 truncate">{tools.length ? `${tools.length} tool${tools.length === 1 ? "" : "s"} · ` : ""}{activity.events.length} events · {status}{failures ? ` · ${failures} failed` : ""}</span>
+        <time className="ml-auto shrink-0 text-[10px]" dateTime={latest.timestamp ?? undefined} title={eventTime(latest.timestamp)} aria-label={eventTime(latest.timestamp)}>{eventTime(latest.timestamp, true)}</time>
+        <ChevronDown size={12} className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+      </summary>
+      <div className="work-activity-records py-1 pl-2">
+        {records.map((record) => <ConversationMessage key={record.id} event={record.events[0]} relatedEvents={record.events} />)}
+      </div>
+    </details>
+  );
+}
+
+export default function SessionConversation({ workId, runId, initialLog, isLive, historySync, outputFormat, runActions, workHeader, workActions, notices, runError, panels = [], fileBrowser }: {
   workId: string;
   runId: string | null;
   initialLog: string;
   isLive: boolean;
   historySync: boolean;
   outputFormat: "text" | "json";
+  runActions?: ReactNode;
+  workHeader?: ReactNode;
+  workActions?: ReactNode;
+  notices?: ReactNode;
+  runError?: ReactNode;
+  panels?: { id: string; label: string; content: ReactNode }[];
+  fileBrowser?: ReactNode;
 }) {
   const router = useRouter();
   const [data, setData] = useState<SessionConversationData | null>(null);
@@ -64,6 +109,12 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
   const [sendError, setSendError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const attachments = useMessageAttachments(workId);
+  const [frozenDraft, setFrozenDraft] = useState(false);
+  const attempt = useRef<{
+    requestId: string; text: string; fileIds: string; kind: "steer" | "follow-up";
+    runId: string; sessionId: string; expectedParentRunId: string | null | undefined; dispatched: boolean;
+  } | null>(null);
   const [sending, setSending] = useState(false);
   const [steeringUncertain, setSteeringUncertain] = useState<{
     requestId: string; text: string; runId: string; sessionId: string;
@@ -73,7 +124,14 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
   } | null>(null);
   const steeringRequest = useRef<typeof steeringRequestState>(null);
   const [view, setView] = useState<"conversation" | "raw">("conversation");
-  const [pending, setPending] = useState<{ runId: string; text: string; afterOffset: number } | null>(null);
+  const [navigationHeight, setNavigationHeight] = useState(61);
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  const [selectedPanel, setSelectedPanel] = useState("conversation");
+  const [wideFiles, setWideFiles] = useState(false);
+  const [verticalTabs, setVerticalTabs] = useState(false);
+  const panelPrefix = useId();
+  const hasWorkspace = Boolean(workHeader);
+  const [pending, setPending] = useState<{ runId: string; text: string; afterOffset: number; attachments?: WorkAttachment[] } | null>(null);
   const container = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const nearBottom = useRef(true);
@@ -85,6 +143,28 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
   const promptHash = useRef<string | null>(null);
   const latestRunId = useRef(runId);
   const reload = useRef<() => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    if (!hasWorkspace) return;
+    const navigation = document.querySelector("body > nav");
+    if (!navigation) return;
+    const measure = () => {
+      setNavigationHeight(Math.ceil(navigation.getBoundingClientRect().height));
+      setViewportHeight(window.visualViewport?.height ?? window.innerHeight);
+      setWideFiles(window.matchMedia("(min-width: 1280px)").matches);
+      setVerticalTabs(window.matchMedia("(min-width: 1024px)").matches);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(navigation);
+    window.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+    };
+  }, [hasWorkspace]);
 
   function endpoint(extra?: { cursor?: string; before?: string; download?: string }) {
     const query = new URLSearchParams({ ...(runId ? { runId } : {}), ...extra });
@@ -175,9 +255,9 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
   useEffect(() => {
     const focusComposer = (event: Event) => {
       if ((event as CustomEvent<{ workId: string }>).detail?.workId !== workId) return;
+      setSelectedPanel("conversation");
       setView("conversation");
       requestAnimationFrame(() => {
-        textarea.current?.scrollIntoView({ block: "center", behavior: "smooth" });
         textarea.current?.focus({ preventScroll: true });
       });
     };
@@ -208,57 +288,40 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
     finally { readBusy.current = false; setEarlierLoading(false); }
   }
 
-  async function repairSteeringMessage(message: SessionConversationData["steeringMessages"][number]) {
-    setSending(true);
-    setSendError(null);
-    try {
-      const response = await fetch(`/api/works/${encodeURIComponent(workId)}/steer`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: message.content,
-          requestId: message.requestId,
-          runId: message.runId,
-          sessionId: data?.sessionId ?? "",
-        }),
-      });
-      const body = await response.json();
-      if (!response.ok || body.transportAccepted !== true) {
-        throw new Error(typeof body.error === "string" ? body.error : "Steering record repair failed");
-      }
-      if (body.promptSynced !== true || body.artifactSynced !== true) {
-        throw new Error(typeof body.notice === "string" ? body.notice : "Local Steering records still need repair.");
-      }
-      window.dispatchEvent(new CustomEvent("workboard:prompt-updated", { detail: { workId } }));
-      setNotice("Accepted Steering records repaired without resending the instruction.");
-      await reload.current();
-    } catch (error) {
-      setSendError(error instanceof Error ? error.message : "Unable to repair Steering records");
-    } finally {
-      setSending(false);
-    }
-  }
-
   async function send(event?: React.FormEvent) {
     event?.preventDefault();
     const text = draft.trim();
-    const useSteering = steeringRequest.current !== null || data?.canSteer === true;
-    if (!text || sending || (steeringUncertain && steeringUncertain.text !== text) ||
+    const fileIds = attachments.files.map((file) => file.id).join(",");
+    const useSteering = attempt.current && (attempt.current.dispatched || attempt.current.text === text && attempt.current.fileIds === fileIds)
+      ? attempt.current.kind === "steer" : data?.canSteer === true;
+    if ((!text && !attachments.files.length) || sending || (steeringUncertain && steeringUncertain.text !== text) ||
       (steeringRequest.current && steeringRequest.current.text !== text) ||
-      (!useSteering && !data?.canFollowUp)) return;
+      (!attempt.current?.dispatched && !useSteering && !data?.canFollowUp)) return;
     setSending(true); setSendError(null);
     try {
+      if (!attempt.current || !attempt.current.dispatched && (attempt.current.text !== text || attempt.current.fileIds !== fileIds)) {
+        attempt.current = {
+          requestId: window.crypto.randomUUID(), text, fileIds, kind: useSteering ? "steer" : "follow-up",
+          runId: data?.steeringRunId ?? "", sessionId: data?.sessionId ?? "",
+          expectedParentRunId: data?.continuationParentRunId, dispatched: false,
+        };
+      }
+      const sendAttempt = attempt.current;
+      const savedAttachments = await attachments.upload(sendAttempt.requestId);
+      const attachmentIds = savedAttachments.map((file) => file.id);
       if (useSteering) {
         const request = steeringRequest.current?.text === text
           ? steeringRequest.current
           : {
-              requestId: window.crypto.randomUUID(),
+              requestId: sendAttempt.requestId,
               text,
-              runId: data?.steeringRunId ?? "",
-              sessionId: data?.sessionId ?? "",
+              runId: sendAttempt.runId,
+              sessionId: sendAttempt.sessionId,
             };
         steeringRequest.current = request;
         setSteeringRequestState(request);
+        sendAttempt.dispatched = true;
+        setFrozenDraft(true);
         const response = await fetch(`/api/works/${encodeURIComponent(workId)}/steer`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -266,6 +329,7 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
             requestId: request.requestId,
             runId: request.runId,
             sessionId: request.sessionId,
+            attachmentIds,
           }),
         });
         const body = await response.json();
@@ -278,6 +342,8 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
             steeringRequest.current = null;
             setSteeringRequestState(null);
             setSteeringUncertain(null);
+            setFrozenDraft(false);
+            attempt.current = null;
           }
           throw new Error(typeof body.error === "string" ? body.error : "Steering was not accepted");
         }
@@ -292,6 +358,8 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
         setSteeringRequestState(null);
         setSteeringUncertain(null);
         setDraft("");
+        attachments.clear();
+        setFrozenDraft(false); attempt.current = null;
         nearBottom.current = true;
         setNotice("Accepted by the active session. Acceptance does not guarantee the model has applied the instruction yet.");
         window.dispatchEvent(new CustomEvent("workboard:prompt-updated", { detail: { workId } }));
@@ -299,14 +367,20 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
         await reload.current();
         return;
       }
+      sendAttempt.dispatched = true;
+      setFrozenDraft(true);
       const response = await fetch(`/api/works/${encodeURIComponent(workId)}/follow-up`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: text, expectedParentRunId: data?.continuationParentRunId }),
+        body: JSON.stringify({ prompt: text, expectedParentRunId: sendAttempt.expectedParentRunId, requestId: sendAttempt.requestId, attachmentIds }),
       });
       const body = await response.json();
-      if (!response.ok || typeof body.runId !== "string") throw new Error(typeof body.error === "string" ? body.error : "Follow Up did not start");
-      setPending({ runId: body.runId, text, afterOffset: events.at(-1)?.offset ?? -1 });
+      if (!response.ok || typeof body.runId !== "string") {
+        if (response.status < 500) { sendAttempt.dispatched = false; setFrozenDraft(false); }
+        throw new Error(typeof body.error === "string" ? body.error : "Follow Up did not start");
+      }
+      setPending({ runId: body.runId, text, attachments: savedAttachments, afterOffset: events.at(-1)?.offset ?? -1 });
       setDraft(""); nearBottom.current = true;
+      attachments.clear(); setFrozenDraft(false); attempt.current = null;
       window.dispatchEvent(new CustomEvent("workboard:prompt-updated", { detail: { workId } }));
       router.refresh();
       await reload.current();
@@ -323,76 +397,123 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
   }
 
   const acceptedStatus = pending ? data?.runs.find((run) => run.id === pending.runId)?.status : null;
-  const pendingMessage = pending && acceptedStatus !== "SUCCESS" && !events.some((event) => event.offset > pending.afterOffset && event.role === "user" && event.text.includes(pending.text))
-    ? pending : data?.pendingPrompt && !events.some((event) => event.role === "user" && event.text.trim() === data.pendingPrompt?.text.trim())
-      ? { runId: data.pendingPrompt.runId, text: data.pendingPrompt.text, afterOffset: -1 } : null;
+  const isObserved = (event: ConversationEvent, message: { text: string; attachments?: WorkAttachment[] }) =>
+    event.role === "user" && (message.text ? event.text.includes(message.text) : Boolean(message.attachments?.length)) &&
+    (message.attachments ?? []).every((file) => event.attachments?.some((observed) => observed.id === file.id));
+  const pendingMessage = pending && acceptedStatus !== "SUCCESS" && !events.some((event) => event.offset > pending.afterOffset && isObserved(event, pending))
+    ? pending : data?.pendingPrompt && !events.some((event) => isObserved(event, data.pendingPrompt!))
+      ? { ...data.pendingPrompt, afterOffset: -1 } : null;
   const pendingStatus = pendingMessage ? data?.runs.find((run) => run.id === pendingMessage.runId)?.status : null;
+  const timeline = conversationTimeline(events);
+  const latestActivity = timeline.findLast((item) => item.kind === "activity");
+  const Toolbar = workHeader ? "header" : "div";
+  const tabs = [
+    { id: "conversation", label: "Conversation" },
+    ...panels,
+    ...(fileBrowser && !wideFiles ? [{ id: "files", label: "Files" }] : []),
+  ];
+  const activePanel = tabs.some((tab) => tab.id === selectedPanel) ? selectedPanel : "conversation";
 
   return (
-    <div id="session-conversation" className="min-w-0 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1" role="tablist" aria-label="Session view">
+    <div id="session-conversation" className={hasWorkspace ? "work-detail-layout min-w-0" : "min-w-0 space-y-2"}
+      style={hasWorkspace ? { height: viewportHeight === null ? `calc(100dvh - ${navigationHeight}px - 1rem)` : Math.max(120, viewportHeight - navigationHeight - 16) } : undefined}>
+      <Toolbar className={`work-conversation-toolbar flex flex-wrap items-center gap-x-2 gap-y-1${workHeader ? " work-detail-header work-detail-unified-toolbar" : ""}`} style={workHeader ? { top: navigationHeight } : undefined}>
+        {workHeader}
+        <h2 id="session-conversation-heading" className={workHeader ? "sr-only" : "flex shrink-0 items-center gap-2 text-xs font-bold text-white sm:text-sm"}>
+          <Radio size={14} aria-hidden="true" />
+          Session conversation
+        </h2>
+        <div className="flex shrink-0 items-center gap-1" role="tablist" aria-label="Session view">
           {(["conversation", "raw"] as const).map((tab) => <button key={tab} type="button" role="tab" aria-selected={view === tab}
-            onClick={() => setView(tab)} className={`rounded-md px-3 py-2 text-xs font-semibold ${view === tab ? "bg-neutral-800 text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}`}>
+            onClick={() => { setSelectedPanel("conversation"); setView(tab); }} className={`work-toolbar-control min-h-8 rounded-md px-2 py-1 text-xs font-semibold ${view === tab ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:text-neutral-100"}`}>
             {tab === "conversation" ? "Conversation" : "Raw output"}
           </button>)}
         </div>
-        <div className="flex min-w-0 items-center gap-3 text-[10px] text-neutral-500">
-          {data?.sessionId && <span className="font-mono" title={data.sessionId}>Session {data.sessionId.slice(0, 8)}</span>}
-          {runId && (data?.historyAvailable || readError) && <a href={endpoint({ download: "1" })} title="Download full session history" aria-label="Download full session history" className="grid size-8 place-items-center rounded-md hover:bg-neutral-800 hover:text-emerald-400"><Download size={14} aria-hidden="true" /></a>}
+        {runActions}
+        <div className={`${workHeader ? "" : "ml-auto "}flex shrink-0 items-center gap-1 text-[10px] text-neutral-400`}>
+          {data?.sessionId && <span className={workHeader ? "sr-only" : "font-mono"} title={data.sessionId}>Session {data.sessionId.slice(0, 8)}</span>}
+          {view === "conversation" && data?.hasEarlier && <button type="button" title="Earlier messages" aria-label="Earlier messages" disabled={earlierLoading} onClick={() => { setSelectedPanel("conversation"); void loadEarlier(); }} className="work-toolbar-action">
+            {earlierLoading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <ArrowUp size={13} aria-hidden="true" />}{workHeader ? "Earlier" : "Earlier messages"}
+          </button>}
+          {runId && (data?.historyAvailable || readError) && <a href={endpoint({ download: "1" })} title="Download full session history" aria-label="Download full session history" className="work-toolbar-control grid size-8 place-items-center rounded-md hover:bg-neutral-800 hover:text-emerald-400"><Download size={14} aria-hidden="true" /></a>}
+          {view === "conversation" && <button type="button" title="Latest messages" aria-label="Latest messages" onClick={() => {
+            setSelectedPanel("conversation");
+            nearBottom.current = true;
+            requestAnimationFrame(() => container.current?.scrollTo({ top: container.current.scrollHeight, behavior: "smooth" }));
+          }} className="work-toolbar-control grid size-8 place-items-center rounded-md hover:bg-neutral-800"><ArrowDown size={14} aria-hidden="true" /></button>}
         </div>
-      </div>
-      {view === "raw" ? runId ? <LiveRunLog key={runId} runId={runId} initialLog={initialLog} isLive={isLive} historySync={historySync} outputFormat={outputFormat} refreshOnStatusChange={false} />
-        : <p className="py-4 text-sm text-neutral-500">No Run output yet.</p>
-        : <>
+        {workActions}
+      </Toolbar>
+      <div className={hasWorkspace ? `work-workspace-grid${fileBrowser ? " has-files" : ""}` : ""}>
+        {hasWorkspace && <div className="work-section-tabs" role="tablist" aria-label="Work sections" aria-orientation={verticalTabs ? "vertical" : "horizontal"}
+          onKeyDown={(event) => {
+            if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const index = tabs.findIndex((tab) => tab.id === activePanel);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+              : (index + (["ArrowUp", "ArrowLeft"].includes(event.key) ? -1 : 1) + tabs.length) % tabs.length;
+            setSelectedPanel(tabs[next].id);
+            document.getElementById(`${panelPrefix}-tab-${tabs[next].id}`)?.focus();
+          }}>
+          {tabs.map((tab) => <button key={tab.id} type="button" role="tab" id={`${panelPrefix}-tab-${tab.id}`}
+            aria-selected={activePanel === tab.id} aria-controls={`${panelPrefix}-panel-${tab.id}`} tabIndex={activePanel === tab.id ? 0 : -1}
+            onClick={() => setSelectedPanel(tab.id)} className={`work-section-tab ${activePanel === tab.id ? "is-active" : ""}`}>
+            {tab.label}
+          </button>)}
+        </div>}
+        <section id={`${panelPrefix}-panel-conversation`} role={hasWorkspace ? "tabpanel" : undefined}
+          aria-labelledby={hasWorkspace ? `${panelPrefix}-tab-conversation` : "session-conversation-heading"}
+          hidden={activePanel !== "conversation"} className={hasWorkspace ? "work-conversation-panel" : "space-y-2"}>
+          {notices}
           {notice && <p role="status" className="text-xs text-neutral-500">{notice}</p>}
           {readError && <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-400">{readError}<button type="button" onClick={() => void reload.current()} className="ui-secondary-button">Retry</button></div>}
-          {data?.hasEarlier && <button type="button" disabled={earlierLoading} onClick={() => void loadEarlier()} className="ui-secondary-button min-h-8 text-xs">
-            {earlierLoading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <ArrowUp size={13} aria-hidden="true" />}Earlier messages
-          </button>}
-          <div ref={container} className="max-h-[65dvh] min-h-48 space-y-3 overflow-y-auto overscroll-contain pr-2"
+          {view === "raw" ? <div className="work-raw-output">{runId
+            ? <LiveRunLog key={runId} runId={runId} initialLog={initialLog} isLive={isLive} historySync={historySync} outputFormat={outputFormat} refreshOnStatusChange={false} />
+            : <p className="py-4 text-sm text-neutral-500">No Run output yet.</p>}</div>
+          : <div ref={container} className="work-conversation-log max-h-[65dvh] min-h-48 overflow-y-auto overscroll-contain pr-2"
             role="log" aria-label="Session conversation" aria-busy={loading}
             onScroll={(change) => { const element = change.currentTarget; nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; }}>
             {loading && <p className="flex items-center gap-2 py-6 text-sm text-neutral-500"><LoaderCircle size={14} className="animate-spin" aria-hidden="true" />Loading conversation...</p>}
-            {!loading && events.length === 0 && <p className="py-6 text-sm text-neutral-500">{data?.historyUnavailableReason ?? "Waiting for recorded messages..."}</p>}
-            {events.map((event) => <ConversationMessage key={event.id} event={event} />)}
+            {!loading && timeline.length === 0 && <p className="py-6 text-sm text-neutral-500">{data?.historyUnavailableReason ?? "Waiting for recorded messages..."}</p>}
+            {timeline.map((item) => item.kind === "activity"
+              ? <ConversationActivityGroup key={item.id} activity={item} live={isLive && item.id === latestActivity?.id} />
+              : <ConversationMessage key={item.event.id} event={item.event} workId={workId} />)}
             {pendingMessage && <article className="ml-auto max-w-[95%] space-y-2 rounded-md bg-neutral-800/45 p-4" aria-label="Pending follow up">
               <div className="flex items-center gap-2 text-xs text-neutral-500"><User size={14} aria-hidden="true" />You<Link href={`/runs/${pendingMessage.runId}`} className="ml-auto font-mono text-[10px]">{pendingStatus ?? "PENDING"} / {pendingMessage.runId.slice(0, 8)}</Link></div>
               <MarkdownResult content={pendingMessage.text} />
+              {"attachments" in pendingMessage && pendingMessage.attachments?.length
+                ? <MessageAttachments workId={workId} files={pendingMessage.attachments} /> : null}
             </article>}
-          </div>
-          <div className="flex justify-end"><button type="button" title="Latest messages" aria-label="Latest messages" onClick={() => { nearBottom.current = true; container.current?.scrollTo({ top: container.current.scrollHeight, behavior: "smooth" }); }} className="grid size-8 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800"><ArrowDown size={14} aria-hidden="true" /></button></div>
+          </div>}
           {data?.incompleteTail && <p role="status" className="text-xs text-neutral-500">Waiting for the current event to finish writing.</p>}
-          {data?.runs && data.runs.length > 1 && <details className="text-xs text-neutral-500"><summary className="cursor-pointer">{data.runs.length} Runs in this session</summary><div className="mt-2 flex flex-wrap gap-2">{data.runs.map((run) => <Link key={run.id} href={`/runs/${run.id}`} className="border-b border-neutral-700 py-1 font-mono">{run.id.slice(0, 8)} / {run.status}</Link>)}</div></details>}
-          {data?.steeringMessages.length ? <details className="text-xs text-neutral-500">
-            <summary className="cursor-pointer">Steering delivery audit ({data.steeringMessages.length})</summary>
-            <div className="mt-2 space-y-3">
-              {data.steeringMessages.map((message) => <div key={message.id} className="rounded-md border border-neutral-800 p-3">
-                <p className="mb-2 text-[10px] uppercase tracking-wide text-neutral-500">
-                  {message.deliveryState} · Prompt {message.promptSynced ? "updated" : "needs repair"} · Run audit {message.artifactSynced ? "saved" : "needs repair"}
-                </p>
-                {message.deliveryState === "UNCERTAIN" &&
-                  <p className="mb-2 text-xs text-amber-400">The instruction may have reached the session. It was not replayed; inspect the full session history before creating another instruction.</p>}
-                <MarkdownResult content={message.content} compact />
-                {(message.promptError || message.artifactError) && <p className="mt-2 text-[10px] text-amber-400">{message.promptError ?? message.artifactError}</p>}
-                {["ACCEPTED", "OBSERVED"].includes(message.deliveryState) &&
-                  (!message.promptSynced || !message.artifactSynced) &&
-                  <button type="button" disabled={sending} className="mt-2 text-xs text-emerald-400 underline"
-                    onClick={() => void repairSteeringMessage(message)}>
-                    Repair local records (does not resend)
-                  </button>}
-              </div>)}
-            </div>
-          </details> : null}
-          <form onSubmit={(event) => void send(event)} className="border-t border-neutral-800 pt-3">
-            <label htmlFor="session-follow-up" className="mb-2 block text-xs font-semibold text-neutral-300">
+          {runError}
+          <form onSubmit={(event) => void send(event)} className="work-conversation-composer border-t border-neutral-800 pt-2"
+            onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+            onDrop={(event) => {
+              if (!event.dataTransfer.files.length) return;
+              event.preventDefault();
+              if (!sending && !frozenDraft) attachments.add([...event.dataTransfer.files]);
+            }}>
+            <label htmlFor="session-follow-up" className="mb-1 block text-xs font-semibold text-neutral-300">
               {steeringRequestState ? "Steering status / repair" : data?.canSteer ? "Steer now" : "Follow Up"}
             </label>
-            <textarea id="session-follow-up" ref={textarea} value={draft} onChange={(event) => setDraft(event.target.value)} rows={3} maxLength={100000}
-              placeholder={data?.canSteer ? "Redirect the active task..." : "Continue this conversation..."} disabled={sending}
+            <textarea id="session-follow-up" ref={textarea} value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={100000}
+              placeholder={data?.canSteer ? "Redirect the active task..." : "Continue this conversation..."} disabled={sending || frozenDraft}
+              onPaste={(event) => {
+                const files = [...event.clipboardData.files];
+                if (!files.length) return;
+                event.preventDefault();
+                attachments.add(files);
+                const pastedText = event.clipboardData.getData("text/plain");
+                if (pastedText) {
+                  const { selectionStart, selectionEnd } = event.currentTarget;
+                  setDraft((value) => value.slice(0, selectionStart) + pastedText + value.slice(selectionEnd));
+                }
+              }}
               onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void send(); } }}
-              className="ui-input min-h-24 w-full resize-y px-3 py-3 text-sm leading-6" />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+              className="ui-input min-h-14 w-full resize-y px-3 py-2 text-sm leading-5" />
+            <AttachmentDraft {...attachments} disabled={sending || frozenDraft} />
+            <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
               <p className="min-w-0 flex-1 text-xs text-neutral-500" role="status">
                 {steeringUncertain
                   ? "Acceptance is uncertain. Retry only with this exact draft and request ID, or explicitly dismiss it after checking session history."
@@ -400,27 +521,41 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
                     ? "Adds an instruction to this active Run/session; it does not undo work or guarantee that a running tool stops."
                     : data?.blockedReason ?? data?.steeringBlockedReason ?? (data?.terminalActive ? "Session open in Terminal" : "")}
               </p>
-              <button type="submit" disabled={sending || !draft.trim() ||
+              <button type="submit" disabled={sending || (!draft.trim() && !attachments.files.length) ||
                 (steeringUncertain !== null && steeringUncertain.text !== draft.trim()) ||
                 (steeringRequestState !== null && steeringRequestState.text !== draft.trim()) ||
-                (!steeringRequestState && !data?.canFollowUp && !data?.canSteer) || readError !== null} className="ui-primary-button">
+                (!frozenDraft && !steeringRequestState && !data?.canFollowUp && !data?.canSteer) || readError !== null} className="ui-primary-button">
                 {sending ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
-                {steeringRequestState ? "Retry / repair Steering" : data?.canSteer ? "Steer now" : "Send Follow Up"}
+                {steeringRequestState ? "Retry / repair Steering" : frozenDraft ? "Retry Follow Up" : data?.canSteer ? "Steer now" : "Send Follow Up"}
               </button>
             </div>
             {sendError && <p role="alert" className="mt-2 text-sm text-red-400">{sendError}</p>}
+            {frozenDraft && !steeringUncertain && !steeringRequestState && <p role="status" className="mt-1 text-xs text-neutral-400">
+              This draft is frozen until delivery is resolved. Retry uses the same message and attachment IDs.
+            </p>}
             {steeringUncertain && <button type="button" className="mt-2 text-xs text-amber-400 underline"
               onClick={() => {
                 setSteeringUncertain(null);
                 steeringRequest.current = null;
                 setSteeringRequestState(null);
                 setDraft("");
+                attachments.clear(); setFrozenDraft(false); attempt.current = null;
                 setSendError(null);
               }}>
               Dismiss this uncertain draft after checking session history
             </button>}
           </form>
-        </>}
+        </section>
+        {panels.map((panel) => <section key={panel.id} id={`${panelPrefix}-panel-${panel.id}`} role="tabpanel"
+          aria-labelledby={`${panelPrefix}-tab-${panel.id}`} hidden={activePanel !== panel.id} tabIndex={0} className="work-secondary-panel">
+          {panel.content}
+        </section>)}
+        {fileBrowser && <aside id={`${panelPrefix}-panel-files`} aria-label="Work files" role={wideFiles ? undefined : "tabpanel"}
+          aria-labelledby={wideFiles ? undefined : `${panelPrefix}-tab-files`}
+          hidden={!wideFiles && activePanel !== "files"} className="work-files-panel">
+          {fileBrowser}
+        </aside>}
+      </div>
     </div>
   );
 }

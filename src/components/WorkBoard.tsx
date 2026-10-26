@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   closestCenter,
@@ -43,6 +43,10 @@ import {
 import FolderBrowserModal from "@/components/FolderBrowserModal";
 import ConfirmFolderCopyModal from "@/components/ConfirmFolderCopyModal";
 import PromptTemplatePicker from "@/components/PromptTemplatePicker";
+import PromptFileStrip, {
+  promptDirectoryResponseSchema,
+  type PromptDirectoryState,
+} from "@/components/PromptFileStrip";
 import RootDirectoryPicker, {
   type RootDirectoryOption,
 } from "@/components/RootDirectoryPicker";
@@ -56,6 +60,7 @@ import {
 } from "@/lib/execution-defaults";
 import { formatTokenCount } from "@/lib/format";
 import { TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
+import { insertPromptName, type PromptSelection } from "@/lib/prompt-insertion";
 
 type Initialization = "USE_PATH" | "COPY_REPO";
 
@@ -100,6 +105,12 @@ function inferName(directoryPath: string): string {
   return trimmed.split(/[\\/]/).pop() ?? "";
 }
 
+function restorePromptSelection(textarea: HTMLTextAreaElement | null, selection: PromptSelection) {
+  if (!textarea) return;
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(selection.start, selection.end);
+}
+
 export default function WorkBoard({
   works,
   resources,
@@ -132,6 +143,18 @@ export default function WorkBoard({
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const promptValue = useRef("");
+  const promptTextarea = useRef<HTMLTextAreaElement>(null);
+  const promptSelection = useRef<PromptSelection | null>(null);
+  const pendingPromptSelection = useRef<PromptSelection | null>(null);
+  const [promptComposing, setPromptComposing] = useState(false);
+  const [promptInsertionError, setPromptInsertionError] = useState<string | null>(null);
+  const [directoryContents, setDirectoryContents] = useState<PromptDirectoryState>({
+    current: "", items: [], loading: false, error: null,
+  });
+  const [directoryContentsVersion, setDirectoryContentsVersion] = useState(0);
+  const directoryContentsRequest = useRef(0);
+  const selectedDirectory = directoryPath.trim();
   const [folderPromptFiles, setFolderPromptFiles] = useState<DirectoryPromptFile[]>([]);
   const [selectedFolderPrompt, setSelectedFolderPrompt] = useState("");
   const [loadedFolderPrompt, setLoadedFolderPrompt] = useState<string | null>(null);
@@ -165,6 +188,42 @@ export default function WorkBoard({
     ["PENDING", "RUNNING", "IN_TERMINAL", "SYNCING", "UNKNOWN"].includes(work.latestRunStatus ?? "")
   );
 
+  useLayoutEffect(() => {
+    if (!pendingPromptSelection.current) return;
+    restorePromptSelection(promptTextarea.current, pendingPromptSelection.current);
+    pendingPromptSelection.current = null;
+  }, [prompt]);
+
+  useEffect(() => {
+    if (!selectedDirectory) return;
+    const requestId = ++directoryContentsRequest.current;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void fetch(`/api/fs/browse?${new URLSearchParams({ path: selectedDirectory, includeFiles: "1" })}`, {
+        signal: controller.signal,
+        cache: "no-store",
+      }).then(async (response) => {
+        const body: unknown = await response.json();
+        if (controller.signal.aborted || requestId !== directoryContentsRequest.current) return;
+        if (!response.ok) {
+          throw new Error(typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
+            ? body.error : "Unable to read the selected directory.");
+        }
+        const parsed = promptDirectoryResponseSchema.safeParse(body);
+        if (!parsed.success) throw new Error("The server returned invalid selected-directory contents.");
+        setDirectoryContents({ ...parsed.data, loading: false, error: null });
+      }).catch((reason) => {
+        if (controller.signal.aborted || requestId !== directoryContentsRequest.current) return;
+        setDirectoryContents({ current: selectedDirectory, items: [], loading: false,
+          error: reason instanceof Error ? reason.message : String(reason) });
+      });
+    }, 200);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [selectedDirectory, directoryContentsVersion]);
+
   useEffect(() => {
     const refresh = () => {
       if (!document.hidden && !draggingWork.current && !savingOrder && archivingWorkId === null) {
@@ -182,9 +241,17 @@ export default function WorkBoard({
     };
   }, [hasLiveRuns, savingOrder, archivingWorkId, router]);
 
+  function refreshDirectoryContents(value = directoryPath) {
+    const current = value.trim();
+    directoryContentsRequest.current += 1;
+    setDirectoryContents({ current, items: [], loading: Boolean(current), error: null });
+    setDirectoryContentsVersion((version) => version + 1);
+  }
+
   function updateDirectoryPath(value: string) {
     promptImportRequest.current += 1;
     setDirectoryPath(value);
+    refreshDirectoryContents(value);
     setCopiedFolderPath(null);
     setFolderPromptFiles([]);
     setSelectedFolderPrompt("");
@@ -197,13 +264,37 @@ export default function WorkBoard({
   function selectDirectoryPath(value: string) {
     const shouldClearImportedPrompt = loadedFolderPrompt !== null;
     updateDirectoryPath(value);
-    if (shouldClearImportedPrompt) setPrompt("");
+    if (shouldClearImportedPrompt) updatePrompt("");
     void discoverFolderPrompts(value.trim(), false);
   }
 
   function updatePrompt(value: string) {
+    promptValue.current = value;
+    promptSelection.current = null;
+    pendingPromptSelection.current = null;
+    setPromptInsertionError(null);
     setPrompt(value);
     setLoadedFolderPrompt(null);
+  }
+
+  function rememberPromptSelection(textarea: HTMLTextAreaElement) {
+    promptSelection.current = { start: textarea.selectionStart, end: textarea.selectionEnd };
+  }
+
+  function insertDirectoryName(name: string) {
+    if (submitting !== null || copyingFolder || loadingFolderPrompt || promptComposing) return;
+    const current = promptValue.current;
+    const selection = promptSelection.current;
+    const result = insertPromptName(current, name, selection);
+    if (!result.ok) {
+      setPromptInsertionError(result.error);
+      restorePromptSelection(promptTextarea.current, selection ?? { start: current.length, end: current.length });
+      return;
+    }
+    updatePrompt(result.value);
+    promptSelection.current = result.selection;
+    if (result.value === current) restorePromptSelection(promptTextarea.current, result.selection);
+    else pendingPromptSelection.current = result.selection;
   }
 
   async function readFolderPrompt(
@@ -221,7 +312,7 @@ export default function WorkBoard({
       );
     }
     if (promptImportRequest.current !== requestId) return;
-    setPrompt(body.content);
+    updatePrompt(body.content);
     setSelectedFolderPrompt(promptFileName);
     setLoadedFolderPrompt(promptFileName);
   }
@@ -705,7 +796,7 @@ export default function WorkBoard({
             )}
           </fieldset>
 
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="flex items-center gap-2 text-xs font-bold uppercase text-neutral-400" htmlFor="work-prompt">
                 <MessageSquareText size={14} aria-hidden="true" />
@@ -762,15 +853,28 @@ export default function WorkBoard({
             {folderPromptError && (
               <p role="alert" className="text-xs text-red-400">{folderPromptError}</p>
             )}
-            <textarea
-              id="work-prompt"
-              value={prompt}
-              onChange={(event) => updatePrompt(event.target.value)}
-              placeholder="Describe the result you want..."
-              required
-              rows={7}
-              className="min-h-52 w-full resize-y rounded-md border border-neutral-700 bg-neutral-950/80 px-4 py-3 font-mono text-sm leading-6 text-neutral-200 shadow-inner shadow-black/20 placeholder:font-sans placeholder:text-neutral-600 focus:border-emerald-700"
-            />
+            <div className="min-w-0 space-y-1.5">
+              <textarea
+                ref={promptTextarea}
+                id="work-prompt"
+                value={prompt}
+                onChange={(event) => {
+                  updatePrompt(event.currentTarget.value);
+                  rememberPromptSelection(event.currentTarget);
+                }}
+                onSelect={(event) => rememberPromptSelection(event.currentTarget)}
+                onBlur={(event) => rememberPromptSelection(event.currentTarget)}
+                onCompositionStart={() => setPromptComposing(true)}
+                onCompositionEnd={() => setPromptComposing(false)}
+                placeholder="Describe the result you want..."
+                required
+                rows={7}
+                className="min-h-52 w-full resize-y rounded-md border border-neutral-700 bg-neutral-950/80 px-4 py-3 font-mono text-sm leading-6 text-neutral-200 shadow-inner shadow-black/20 placeholder:font-sans placeholder:text-neutral-600 focus:border-emerald-700"
+              />
+              <PromptFileStrip directory={directoryContents} error={promptInsertionError}
+                disabled={submitting !== null || copyingFolder || loadingFolderPrompt || promptComposing}
+                onInsert={insertDirectoryName} onRefresh={() => refreshDirectoryContents()} />
+            </div>
           </div>
         </div>
 

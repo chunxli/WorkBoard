@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 import {
   ArrowUp,
   Folder,
@@ -25,6 +26,12 @@ interface DirectoryEntry {
   name: string;
   path: string;
 }
+
+const browseResponseSchema = z.object({
+  current: z.string(),
+  parent: z.string().nullable(),
+  entries: z.array(z.object({ name: z.string(), path: z.string() })),
+});
 
 function comparablePath(value: string): string {
   const trimmed = value.trim().replace(/[\\/]+$/, "");
@@ -59,39 +66,57 @@ export default function RootDirectoryPicker({
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const browseRequest = useRef(0);
   const selectedRoot = roots.find((root) => root.path === rootPath) ?? null;
   const shortcutPath = selectedPath.trim() || browsePath;
   const shortcutAlreadySaved = roots.some(
     (root) => comparablePath(root.path) === comparablePath(shortcutPath)
   );
 
+  function navigateBrowser(nextPath: string) {
+    browseRequest.current += 1;
+    setBrowsePath(nextPath);
+    setRefreshKey((current) => current + 1);
+    setEntries([]);
+    setParentPath(null);
+    setError(null);
+    setLoading(Boolean(nextPath));
+  }
+
   useEffect(() => {
     if (!browsePath) {
       return;
     }
+    const requestId = ++browseRequest.current;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       setLoading(true);
       setError(null);
       void fetch(`/api/fs/browse?path=${encodeURIComponent(browsePath)}`, {
         signal: controller.signal,
+        cache: "no-store",
       })
         .then(async (response) => {
-          const body = await response.json().catch(() => ({}));
+          const body: unknown = await response.json();
+          if (controller.signal.aborted || requestId !== browseRequest.current) return;
           if (!response.ok) {
-            throw new Error(typeof body.error === "string" ? body.error : "Failed to list directory");
+            const failure = z.object({ error: z.string() }).safeParse(body);
+            throw new Error(failure.success ? failure.data.error : "Failed to list directory");
           }
-          setEntries(body.entries ?? []);
-          setParentPath(typeof body.parent === "string" ? body.parent : null);
+          const parsed = browseResponseSchema.safeParse(body);
+          if (!parsed.success) throw new Error("The server returned invalid directory contents.");
+          setEntries(parsed.data.entries);
+          setParentPath(parsed.data.parent);
         })
         .catch((reason) => {
-          if (reason instanceof DOMException && reason.name === "AbortError") return;
+          if (controller.signal.aborted || requestId !== browseRequest.current) return;
+          const message = reason instanceof Error ? reason.message : String(reason);
           setEntries([]);
           setParentPath(null);
-          setError(reason instanceof Error ? reason.message : String(reason));
+          setError(message);
         })
         .finally(() => {
-          if (!controller.signal.aborted) setLoading(false);
+          if (!controller.signal.aborted && requestId === browseRequest.current) setLoading(false);
         });
     }, 0);
     return () => {
@@ -148,7 +173,7 @@ export default function RootDirectoryPicker({
       };
       setRoots((current) => [saved, ...current]);
       setRootPath(saved.path);
-      setBrowsePath(saved.path);
+      navigateBrowser(saved.path);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -169,7 +194,7 @@ export default function RootDirectoryPicker({
       setRoots(remaining);
       const nextRootPath = remaining[0]?.path ?? "";
       setRootPath(nextRootPath);
-      setBrowsePath(nextRootPath);
+      navigateBrowser(nextRootPath);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -186,7 +211,7 @@ export default function RootDirectoryPicker({
           value={rootPath}
           onChange={(event) => {
             setRootPath(event.target.value);
-            setBrowsePath(event.target.value);
+            navigateBrowser(event.target.value);
             setCreatingFolder(false);
           }}
           className="min-h-8 min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 text-xs text-neutral-300"
@@ -197,7 +222,7 @@ export default function RootDirectoryPicker({
         </select>
         <button
           type="button"
-          onClick={() => setRefreshKey((current) => current + 1)}
+          onClick={() => navigateBrowser(browsePath)}
           disabled={loading || !browsePath}
           aria-label="Refresh root directory"
           title="Refresh directory list"
@@ -262,7 +287,7 @@ export default function RootDirectoryPicker({
           onCancel={() => setCreatingFolder(false)}
           onCreated={(createdPath) => {
             setCreatingFolder(false);
-            setBrowsePath(createdPath);
+            navigateBrowser(createdPath);
             onSelect(createdPath);
           }}
         />
@@ -273,7 +298,7 @@ export default function RootDirectoryPicker({
           <button
             type="button"
             onClick={() => {
-              setBrowsePath(parentPath);
+              navigateBrowser(parentPath);
               setCreatingFolder(false);
             }}
             aria-label="Go to parent folder"
@@ -312,7 +337,7 @@ export default function RootDirectoryPicker({
                 type="button"
                 onClick={() => onSelect(entry.path)}
                 onDoubleClick={() => {
-                  setBrowsePath(entry.path);
+                  navigateBrowser(entry.path);
                   setCreatingFolder(false);
                 }}
                 title={entry.path}

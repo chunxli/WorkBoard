@@ -63,13 +63,26 @@ describe("Work execution settings", () => {
     }).success).toBe(false);
   });
 
-  it("accepts only a non-empty Follow Up prompt", () => {
+  it("keeps text-only Follow Up compatible with default empty attachments", () => {
     expect(followUpWorkSchema.parse({ prompt: "  Continue the analysis  " })).toEqual({
       prompt: "Continue the analysis",
+      attachmentIds: [],
     });
     expect(followUpWorkSchema.safeParse({ prompt: "   " }).success).toBe(false);
     expect(followUpWorkSchema.safeParse({ prompt: "valid", sessionId: "client-controlled" }).success).toBe(false);
     expect(followUpWorkSchema.parse({ prompt: "Continue", expectedParentRunId: "owned-run" }))
-      .toEqual({ prompt: "Continue", expectedParentRunId: "owned-run" });
+      .toEqual({ prompt: "Continue", expectedParentRunId: "owned-run", attachmentIds: [] });
+  });
+
+  it("accepts attachment-only Follow Up only with a valid request identity and unique file references", () => {
+    const requestId = "12345678-1234-4234-8234-123456789abc";
+    const attachmentId = "22345678-1234-4234-8234-123456789abc";
+    expect(followUpWorkSchema.parse({ requestId, attachmentIds: [attachmentId] })).toEqual({
+      prompt: "", requestId, attachmentIds: [attachmentId],
+    });
+    expect(followUpWorkSchema.safeParse({ attachmentIds: [attachmentId] }).success).toBe(false);
+    expect(followUpWorkSchema.safeParse({ requestId: "invalid", attachmentIds: [attachmentId] }).success).toBe(false);
+    expect(followUpWorkSchema.safeParse({ requestId, attachmentIds: ["invalid"] }).success).toBe(false);
+    expect(followUpWorkSchema.safeParse({ requestId, attachmentIds: [attachmentId, attachmentId] }).success).toBe(false);
   });
 });

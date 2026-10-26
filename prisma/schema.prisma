@@ -241,6 +241,7 @@ model Run {
   engine       WorkEngine?
   executionPath String?
   promptSnapshot String?
+  attachmentsJson String?
   finalOutput  String?
   outputDir    String?
   copilotSessionId String?
@@ -317,6 +318,7 @@ model WorkSteeringMessage {
   sessionId          String
   requestId          String
   content            String
+  attachmentsJson    String?
   deliveryState      SteeringDeliveryState @default(SUBMITTING)
   transportMessageId String?
   promptSynced       Boolean               @default(false)

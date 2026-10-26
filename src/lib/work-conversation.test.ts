@@ -139,7 +139,9 @@ describe("conversation follow-up submission", () => {
     expect(response.status).toBe(202);
     expect(services.reconcile).toHaveBeenCalledWith(parent.id, expect.any(Date), { settleStopped: true });
     expect(services.reconcile.mock.invocationCallOrder[0]).toBeLessThan(services.create.mock.invocationCallOrder[0]);
-    expect(services.create).toHaveBeenCalledWith({ workId: "work-1", prompt: "Continue", parentRunId: parent.id });
+    expect(services.create).toHaveBeenCalledWith({
+      workId: "work-1", prompt: "Continue", parentRunId: parent.id, requestId: undefined, attachments: [],
+    });
   });
 
   it("does not force continuation when a Terminal parent cannot yet settle", async () => {
@@ -155,22 +157,32 @@ describe("conversation follow-up submission", () => {
     expect(services.append).not.toHaveBeenCalled();
   });
 
-  it("preserves a settlement failure instead of silently creating another session", async () => {
+  it("logs settlement failures and requires a same-request retry without creating or enqueueing another session", async () => {
     parent.status = "RUNNING";
     parent.trigger = "TERMINAL_RESUME";
-    services.reconcile.mockRejectedValueOnce(new Error("Session history changed; retry synchronization"));
-    const response = await followUp({ prompt: "Keep my draft", expectedParentRunId: parent.id });
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "Session history changed; retry synchronization" });
-    expect(services.create).not.toHaveBeenCalled();
-    expect(services.append).not.toHaveBeenCalled();
+    const failure = new Error("Session history changed; retry synchronization");
+    services.reconcile.mockRejectedValueOnce(failure);
+    const logger = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await followUp({ prompt: "Keep my draft", expectedParentRunId: parent.id });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "Unable to confirm Follow Up. Retry this same request." });
+      expect(logger).toHaveBeenCalledWith("[follow-up] Failed to create or enqueue Follow Up:", failure);
+      expect(services.create).not.toHaveBeenCalled();
+      expect(services.append).not.toHaveBeenCalled();
+      expect(services.enqueue).not.toHaveBeenCalled();
+    } finally {
+      logger.mockRestore();
+    }
   });
 
   it("appends accepted input to Prompt once per Run and queues the same session", async () => {
     const response = await followUp({ prompt: "Continue", expectedParentRunId: "run-1" });
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ runId: "follow-up-run", sessionId, resumed: true });
-    expect(services.create).toHaveBeenCalledWith({ workId: "work-1", prompt: "Continue", parentRunId: "run-1" });
+    expect(services.create).toHaveBeenCalledWith({
+      workId: "work-1", prompt: "Continue", parentRunId: "run-1", requestId: undefined, attachments: [],
+    });
     expect(services.append).toHaveBeenCalledWith(expect.objectContaining({ id: "work-1" }), expect.objectContaining({ id: "follow-up-run" }));
     expect(services.enqueue).toHaveBeenCalledWith("session:test", expect.any(Function));
   });

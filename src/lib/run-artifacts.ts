@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFile, copyFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { WorkAttachment } from "@/lib/work-attachment-types";
 
 const RUN_LOG_TAIL_BYTES = 512 * 1024;
 const RUN_DIFF_PREVIEW_BYTES = 512 * 1024;
@@ -36,6 +37,7 @@ export interface WorkRunSteeringArtifact {
   requestId: string;
   sessionId: string;
   content: string;
+  attachments?: WorkAttachment[];
   transportMessageId: string | null;
   acceptedAt: string;
 }
@@ -48,6 +50,7 @@ export interface WorkRunSnapshot {
   promptFileName: string | null;
   prompt: string;
   promptHash: string;
+  attachments?: WorkAttachment[];
   engine: "CLI" | "SDK";
   sessionId: string;
   executionPath: string;
