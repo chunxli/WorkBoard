@@ -156,6 +156,7 @@ export default async function WorkBoardPage() {
     <div className="space-y-6">
       <LegacyMigrationPanel count={legacyTaskCount} />
       <WorkBoard
+        userId={userId}
         works={workSummaries}
         resources={resources}
         shortcuts={shortcuts}

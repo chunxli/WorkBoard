@@ -45,19 +45,21 @@ function directoryName(value: string): string {
 }
 
 export default function RootDirectoryPicker({
+  userId,
   initialRoots,
   selectedPath,
   canOpenExplorer,
   onSelect,
 }: {
+  userId: string;
   initialRoots: RootDirectoryOption[];
   selectedPath: string;
   canOpenExplorer: boolean;
   onSelect: (path: string) => void;
 }) {
   const [roots, setRoots] = useState(initialRoots);
-  const [rootPath, setRootPath] = useState(initialRoots[0]?.path ?? "");
-  const [browsePath, setBrowsePath] = useState(initialRoots[0]?.path ?? "");
+  const [rootPath, setRootPath] = useState("");
+  const [browsePath, setBrowsePath] = useState("");
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -66,7 +68,11 @@ export default function RootDirectoryPicker({
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(true);
   const browseRequest = useRef(0);
+  const restoredPreference = useRef<string | null>(null);
+  const preferenceKey = `workboard:last-root:${userId}`;
   const selectedRoot = roots.find((root) => root.path === rootPath) ?? null;
   const shortcutPath = selectedPath.trim() || browsePath;
   const shortcutAlreadySaved = roots.some(
@@ -82,6 +88,46 @@ export default function RootDirectoryPicker({
     setError(null);
     setLoading(Boolean(nextPath));
   }
+
+  function selectRoot(nextPath: string) {
+    setRootPath(nextPath);
+    navigateBrowser(nextPath);
+    setCreatingFolder(false);
+    try {
+      if (nextPath) window.localStorage.setItem(preferenceKey, nextPath);
+      else window.localStorage.removeItem(preferenceKey);
+      setPreferenceError(null);
+    } catch (reason) {
+      setPreferenceError(`Cannot remember the selected folder: ${reason instanceof Error ? reason.message : String(reason)}`);
+    }
+  }
+
+  useEffect(() => {
+    if (restoredPreference.current === preferenceKey) return;
+    const timer = setTimeout(() => {
+      let nextPath = initialRoots[0]?.path ?? "";
+      try {
+        const remembered = window.localStorage.getItem(preferenceKey);
+        const match = initialRoots.find((root) => root.path === remembered);
+        if (match) nextPath = match.path;
+        else if (remembered !== null) window.localStorage.removeItem(preferenceKey);
+        setPreferenceError(null);
+      } catch (reason) {
+        setPreferenceError(`Cannot restore the last selected folder: ${reason instanceof Error ? reason.message : String(reason)}`);
+      }
+      restoredPreference.current = preferenceKey;
+      browseRequest.current += 1;
+      setRoots(initialRoots);
+      setRootPath(nextPath);
+      setBrowsePath(nextPath);
+      setEntries([]);
+      setParentPath(null);
+      setError(null);
+      setLoading(Boolean(nextPath));
+      setRestoring(false);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [initialRoots, preferenceKey]);
 
   useEffect(() => {
     if (!browsePath) {
@@ -172,8 +218,7 @@ export default function RootDirectoryPicker({
         builtIn: false,
       };
       setRoots((current) => [saved, ...current]);
-      setRootPath(saved.path);
-      navigateBrowser(saved.path);
+      selectRoot(saved.path);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -193,8 +238,7 @@ export default function RootDirectoryPicker({
       const remaining = roots.filter((root) => root.id !== selectedRoot.id);
       setRoots(remaining);
       const nextRootPath = remaining[0]?.path ?? "";
-      setRootPath(nextRootPath);
-      navigateBrowser(nextRootPath);
+      selectRoot(nextRootPath);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -209,11 +253,8 @@ export default function RootDirectoryPicker({
         <select
           aria-label="Common root directory"
           value={rootPath}
-          onChange={(event) => {
-            setRootPath(event.target.value);
-            navigateBrowser(event.target.value);
-            setCreatingFolder(false);
-          }}
+          disabled={restoring}
+          onChange={(event) => selectRoot(event.target.value)}
           className="min-h-8 min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 text-xs text-neutral-300"
         >
           {roots.map((root) => (
@@ -366,6 +407,7 @@ export default function RootDirectoryPicker({
         )}
       </div>
       {error && <p role="alert" className="border-t border-red-900/50 px-3 py-2 text-xs text-red-400">{error}</p>}
+      {preferenceError && <p role="alert" className="border-t border-red-900/50 px-3 py-2 text-xs text-red-400">{preferenceError}</p>}
     </div>
   );
 }

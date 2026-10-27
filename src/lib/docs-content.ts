@@ -306,8 +306,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Common Roots & Explorer",
-        zh: "保存常用根目录、浏览直接子目录、在当前目录创建并自动选择新文件夹，以及在 Windows Explorer 打开根目录、子目录或 Work。Work Card 还可直接在 VS Code 打开目录。",
-        en: "Save common roots, browse immediate children, create and select a new child folder, and open roots, child folders, or Works in Windows Explorer. Work cards can also open their directory directly in VS Code.",
+        zh: "保存常用根目录、浏览直接子目录、在当前目录创建并自动选择新文件夹，以及在 Windows Explorer 打开根目录、子目录或 Work。下拉框按用户在当前浏览器记住上次选择，刷新或重启后恢复；已删除的快捷目录回退到第一项，恢复根目录不会自动选择 Work 路径或读取 Prompt，清除站点存储会重置此偏好。后台更新和窗口焦点刷新不会清空目录列表或中断加载，可用目录刷新按钮重新读取。Work Card 还可直接在 VS Code 打开目录。",
+        en: "Save common roots, browse immediate children, create and select a new child folder, and open roots, child folders, or Works in Windows Explorer. The dropdown remembers the last selection per user in this browser across refreshes and restarts; removed shortcuts fall back to the first root. Restoring a root does not select a Work path or read its Prompt, and clearing site storage resets the preference. Background updates and window-focus refreshes preserve the folder list and in-flight loading; use the directory refresh button to reload. Work cards can also open their directory directly in VS Code.",
         href: "/settings",
         label: "Manage paths",
       },

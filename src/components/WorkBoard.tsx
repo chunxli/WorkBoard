@@ -112,12 +112,14 @@ function restorePromptSelection(textarea: HTMLTextAreaElement | null, selection:
 }
 
 export default function WorkBoard({
+  userId,
   works,
   resources,
   shortcuts,
   executionDefaults,
   canOpenExplorer,
 }: {
+  userId: string;
   works: WorkSummary[];
   resources: ResourceOption[];
   shortcuts: RootDirectoryOption[];
@@ -705,6 +707,7 @@ export default function WorkBoard({
               </button>
             </div>
             <RootDirectoryPicker
+              userId={userId}
               initialRoots={shortcuts}
               selectedPath={directoryPath}
               canOpenExplorer={canOpenExplorer}
