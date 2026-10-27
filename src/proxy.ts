@@ -30,11 +30,11 @@ function localProxy(req: NextRequest) {
 export default authMode === "local" ? localProxy : authenticatedProxy;
 
 export const config = {
-  // Everything except: the auth routes themselves, the GitHub webhook receiver (HMAC-signed,
+  // Everything except: the public health check, the auth routes themselves, the GitHub webhook receiver (HMAC-signed,
   // called by GitHub not a signed-in user) and the external trigger endpoint (Bearer-token
   // authenticated), plus static assets. Note `/api/webhooks/github/...` is excluded but
   // `/api/webhooks` (the CRUD routes for managing webhook configs) is NOT — those need login.
   matcher: [
-    "/((?!api/auth|api/webhooks/github|api/external|_next/static|_next/image|favicon.ico|icon.svg).*)",
+    "/((?!api/health$|api/auth|api/webhooks/github|api/external|_next/static|_next/image|favicon.ico|icon.svg).*)",
   ],
 };

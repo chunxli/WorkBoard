@@ -547,8 +547,8 @@ describe("background autostart lifecycle", () => {
 const http = require("node:http");
 const port = Number(process.argv[process.argv.indexOf("-p") + 1]);
 const server = http.createServer((request, response) => {
-  response.writeHead(200, { "Content-Type": "application/json" });
-  response.end("{}");
+  response.writeHead(request.url === "/api/health" ? 200 : 404, { "Content-Type": "application/json" });
+  response.end(request.url === "/api/health" ? '{"status":"ok"}' : "{}");
 });
 server.listen(port, "127.0.0.1");
 process.once("SIGTERM", () => server.close(() => process.exit(0)));

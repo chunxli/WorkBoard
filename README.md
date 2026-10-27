@@ -184,6 +184,8 @@ The terminal can be closed after the command reports that Work Board started. Ch
 
 Use the full `background:restart` after pulling code, changing dependencies, or adding migrations. Preparation generates Prisma, applies pending migrations, and builds the Release; the fast commands require those steps to have been completed already.
 
+Background startup and status require HTTP 200 from `/api/health`. This uncached, public endpoint returns only `{"status":"ok"}` in both login-free local and Entra modes; it checks HTTP serving, not database or external-service availability. Authentication endpoints remain disabled (HTTP 404) in local mode and are not used for readiness.
+
 ### Start automatically after login
 
 After registration, the current user's next login starts the prepared Release without opening a terminal or browser. Login startup never installs dependencies, rebuilds, migrates the database, or submits a new Copilot instruction.

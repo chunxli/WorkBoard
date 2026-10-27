@@ -95,7 +95,7 @@ export function inspectManagedProcess(pid, root, platform = process.platform, po
 function httpIsReady(port) {
   return new Promise((resolve) => {
     const connection = request({
-      host: "127.0.0.1", port, path: "/api/auth/session", timeout: 1_500,
+      host: "127.0.0.1", port, path: "/api/health", timeout: 1_500,
     }, (response) => {
       response.resume();
       resolve(response.statusCode === 200);
