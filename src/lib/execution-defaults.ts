@@ -146,6 +146,10 @@ export function workExecutionSettingsValue(
   };
 }
 
+export function newWorkExecutionSettingsValue(value: ExecutionDefaultsValue): WorkExecutionSettingsValue {
+  return workExecutionSettingsValue(value);
+}
+
 export function automationDefaultsPayload(value: ExecutionDefaultsValue) {
   const defaults = executionDefaultsPayload(value);
   return {

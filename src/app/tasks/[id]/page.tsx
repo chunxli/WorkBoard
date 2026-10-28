@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import { formatDuration } from "@/lib/format";
+import RunDuration from "@/components/RunDuration";
 import { getNextRunDate } from "@/lib/cron-next-run";
 import StatusBadge from "@/components/StatusBadge";
 import TriggerRunButton from "@/components/TriggerRunButton";
@@ -107,7 +108,9 @@ export default async function TaskDetailPage({
                       {run.startedAt ? new Date(run.startedAt).toLocaleString() : "-"}
                     </td>
                     <td className="px-4 py-2 text-neutral-400">
-                      {formatDuration(run.startedAt, run.finishedAt)}
+                      <RunDuration startedAt={run.startedAt?.toISOString() ?? null}
+                        finishedAt={run.finishedAt?.toISOString() ?? null} status={run.status}
+                        initialLabel={formatDuration(run.startedAt, run.finishedAt)} />
                     </td>
                     <td className="px-4 py-2 text-right">{isLive && <CancelRunButton runId={run.id} />}</td>
                   </tr>

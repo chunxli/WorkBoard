@@ -4,6 +4,8 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import pidusage from "pidusage";
 import { CopilotCompletionTracker } from "@/lib/copilot-completion";
+import { resolveCopilotCliExecutable } from "@/lib/copilot-cli-executable";
+import { stopCopilotProcess } from "@/lib/copilot-process";
 import {
   readCopilotSessionInsights,
   subtractCopilotTokenUsage,
@@ -24,6 +26,7 @@ export interface StartCopilotRunOptions {
   runId: string;
   repoPath: string;
   prompt: string;
+  attachmentPaths?: string[];
   sessionId?: string | null;
   resumeSession?: boolean;
   agent?: string | null;
@@ -64,6 +67,7 @@ const globalForRunner = globalThis as unknown as {
   copilotRunProcesses?: Map<string, ChildProcessWithoutNullStreams>;
   copilotCancelledRunIds?: Set<string>;
   copilotRunStats?: Map<string, RunProcessStats>;
+  copilotRunStops?: Map<string, Promise<boolean>>;
 };
 
 // One emitter per in-flight run; SSE endpoints subscribe to stream live output.
@@ -75,6 +79,7 @@ const runProcesses =
 const cancelledRunIds = globalForRunner.copilotCancelledRunIds ?? new Set<string>();
 // Latest pidusage sample per in-flight run, for the "process info" panel / live polling endpoint.
 const runStats = globalForRunner.copilotRunStats ?? new Map<string, RunProcessStats>();
+const runStops = globalForRunner.copilotRunStops ??= new Map<string, Promise<boolean>>();
 
 globalForRunner.copilotRunEmitters = runEmitters;
 globalForRunner.copilotRunProcesses = runProcesses;
@@ -105,15 +110,22 @@ export function getRunProcessStats(runId: string): RunProcessStats | undefined {
  * grace period). Returns false if no in-memory process is tracked for this runId (e.g. the
  * run already finished, or the server restarted since it started).
  */
-export function cancelRun(runId: string): boolean {
+export function isNativeCopilotRunActive(runId: string): boolean {
+  return runProcesses.has(runId);
+}
+
+export async function cancelRun(runId: string): Promise<boolean> {
+  const stopping = runStops.get(runId);
+  if (stopping) return stopping;
   cancelledRunIds.add(runId);
   const child = runProcesses.get(runId);
   if (!child) return false;
-  child.kill("SIGTERM");
-  setTimeout(() => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  }, 5000);
-  return true;
+  const operation = stopCopilotProcess(child)
+    .then(() => true)
+    .catch((error: unknown) => { cancelledRunIds.delete(runId); throw error; })
+    .finally(() => { runStops.delete(runId); });
+  runStops.set(runId, operation);
+  return operation;
 }
 
 export function buildCopilotEnvironment(
@@ -205,12 +217,17 @@ function buildArgs(
 ): string[] {
   const args: string[] = [
     "-p",
-    automaticContinuation ? INCOMPLETE_SESSION_PROMPT : opts.prompt,
+    automaticContinuation ? INCOMPLETE_SESSION_PROMPT
+      : !opts.prompt.trim() && opts.attachmentPaths?.length ? "Please review the attached files." : opts.prompt,
     "--output-format",
     opts.outputFormat ?? "text",
   ];
 
   args.push(opts.permissionMode === "full" ? "--allow-all" : "--allow-all-tools");
+  if (opts.outputFormat === "json") args.push("--stream", "on");
+  if (!automaticContinuation) {
+    for (const attachment of opts.attachmentPaths ?? []) args.push("--attachment", attachment);
+  }
 
   if (opts.sessionId) {
     args.push(resumeSession ? `--resume=${opts.sessionId}` : "--session-id");
@@ -222,7 +239,7 @@ function buildArgs(
   if (opts.reasoningEffort) args.push("--effort", opts.reasoningEffort);
 
   // Auto-redact common credential env vars from captured output.
-  args.push("--secret-env-vars", "GH_TOKEN,GITHUB_TOKEN");
+  args.push("--secret-env-vars", "GH_TOKEN,GITHUB_TOKEN,COPILOT_GITHUB_TOKEN");
 
   return args;
 }
@@ -278,6 +295,8 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
     ? await readCopilotSessionInsights(opts.sessionId).catch(() => null)
     : null;
 
+  const executable = process.env.NODE_ENV === "test" && opts.executable
+    ? opts.executable : resolveCopilotCliExecutable();
   const emitter = createRunEmitter(opts.runId);
 
   const timeoutMs = resolveCopilotTimeoutMs(opts.timeoutSeconds);
@@ -297,7 +316,6 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
       sessionEventCursor = sessionBaseline?.eventCount ?? 0
     ) => {
       const args = buildArgs(opts, model, resumeSession, automaticContinuation);
-      const testExecutable = process.env.NODE_ENV === "test" ? opts.executable : undefined;
       const testExecutableArgs = process.env.NODE_ENV === "test" ? opts.executableArgs : undefined;
       const processArgs = [...(testExecutableArgs ?? []), ...args];
       const commandArgs = args.map((arg, index) => (index > 0 && args[index - 1] === "-p" ? "<prompt>" : arg));
@@ -310,12 +328,13 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
       const completionTracker = new CopilotCompletionTracker();
 
       const child: ChildProcessWithoutNullStreams = spawn(
-        /* turbopackIgnore: true */ testExecutable ?? "copilot",
+        /* turbopackIgnore: true */ executable,
         processArgs,
         {
         cwd: opts.repoPath,
         env: buildCopilotEnvironment(),
         windowsHide: true,
+        detached: process.platform !== "win32",
         }
       );
       runProcesses.set(opts.runId, child);
@@ -347,18 +366,20 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
           ? undefined
           : setTimeout(() => {
               timedOut = true;
-              child.kill("SIGTERM");
-              setTimeout(() => {
-                if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-              }, 5000);
+              void stopCopilotProcess(child).catch((error: unknown) => {
+                console.error("[Work Board] Native CLI timeout cleanup failed.", error);
+                emitter.emit("event", { type: "error", message: "Native CLI timed out but its process could not be stopped. Retry cancellation and inspect local diagnostics." } satisfies CopilotRunEvent);
+              });
             }, remainingTimeoutMs);
 
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdin.end();
       const handleChunk = (
-        chunk: Buffer,
+        text: string,
         streamLogPath?: string,
         trackCompletion = false
       ) => {
-        const text = chunk.toString("utf8");
         if (trackCompletion) completionTracker.push(text);
         recentOutput = (recentOutput + text).slice(-16_384);
         pendingWrites = pendingWrites.then(async () => {
@@ -371,20 +392,22 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
         }
       };
 
-      child.stdout.on("data", (chunk: Buffer) => handleChunk(chunk, opts.stdoutLogPath, true));
-      child.stderr.on("data", (chunk: Buffer) => handleChunk(chunk, opts.stderrLogPath));
+      child.stdout.on("data", (text: string) => handleChunk(text, opts.stdoutLogPath, true));
+      child.stderr.on("data", (text: string) => handleChunk(text, opts.stderrLogPath));
 
       const finish = async (
         exitCode: number | null,
         cancelled: boolean,
         errorMessage?: string,
-        incompleteReason: string | null = null
+        incompleteReason: string | null = null,
+        rootFinalOutput: string | null = null
       ) => {
         await pendingWrites;
         const finalSessionInsights = opts.sessionId
           ? await readCopilotSessionInsights(opts.sessionId).catch(() => null)
           : null;
         const finalStats = runStats.get(opts.runId);
+        const wasCancelled = cancelled || cancelledRunIds.has(opts.runId);
         runProcesses.delete(opts.runId);
         runStats.delete(opts.runId);
         cancelledRunIds.delete(opts.runId);
@@ -395,21 +418,21 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
             type: "exit",
             code: exitCode,
             timedOut,
-            cancelled,
+            cancelled: wasCancelled,
           } satisfies CopilotRunEvent);
         }
         releaseRunEmitter(opts.runId);
         resolve({
           exitCode,
           timedOut,
-          cancelled,
+          cancelled: wasCancelled,
           logPath,
           pid: child.pid ?? null,
           command,
           model,
           cpuTimeMs: finalStats?.cpuTimeMs ?? null,
           peakMemoryMb: finalStats?.memoryMb ?? null,
-          finalOutput: opts.outputFormat === "json" ? null : extractFinalCopilotOutput(recentOutput),
+          finalOutput: opts.outputFormat === "json" ? null : rootFinalOutput ?? extractFinalCopilotOutput(recentOutput),
           incomplete: incompleteReason !== null,
           incompleteReason,
           continuationCount,
@@ -544,7 +567,7 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
             : `Copilot exited without a root-level final response after ${continuationCount} automatic continuation attempt(s).`
           : null;
 
-        await finish(code, cancelled, undefined, incompleteReason);
+        await finish(code, cancelled, undefined, incompleteReason, completion.rootFinalOutput);
       });
     };
 

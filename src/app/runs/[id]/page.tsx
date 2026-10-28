@@ -9,6 +9,7 @@ import { getRunDiff, getRemoteUrl } from "@/lib/git-safety";
 import { getRunProcessStats } from "@/lib/copilot-runner";
 import { getRepoWorkdirPath } from "@/lib/repo-workdir";
 import { formatDuration } from "@/lib/format";
+import RunDuration from "@/components/RunDuration";
 import StatusBadge from "@/components/StatusBadge";
 import LiveRunLog from "@/components/LiveRunLog";
 import CancelRunButton from "@/components/CancelRunButton";
@@ -107,7 +108,9 @@ export default async function RunDetailPage({
             {run.startedAt && (
               <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500" aria-label="Elapsed time">
                 <Clock3 size={13} aria-hidden="true" />
-                {formatDuration(run.startedAt, run.finishedAt)}
+                <RunDuration key={run.id} startedAt={run.startedAt.toISOString()}
+                  finishedAt={run.finishedAt?.toISOString() ?? null} status={run.status}
+                  initialLabel={formatDuration(run.startedAt, run.finishedAt)} />
               </span>
             )}
             {canCancelRun(run) && <CancelRunButton runId={run.id} />}

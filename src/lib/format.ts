@@ -1,8 +1,8 @@
 /** Formats a run's elapsed time (or in-progress elapsed time) as a short human string. */
-export function formatDuration(startedAt: Date | string | null, finishedAt: Date | string | null): string {
+export function formatDuration(startedAt: Date | string | null, finishedAt: Date | string | null, now = Date.now()): string {
   if (!startedAt) return "-";
   const start = new Date(startedAt).getTime();
-  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  const end = finishedAt ? new Date(finishedAt).getTime() : now;
   const totalSeconds = Math.max(0, Math.round((end - start) / 1000));
 
   if (totalSeconds < 60) return `${totalSeconds}s`;

@@ -5,10 +5,20 @@ import {
   executionDefaultsPayload,
   normalizeExecutionDefaults,
   workDefaultsPayload,
+  newWorkExecutionSettingsValue,
+  workExecutionSettingsValue,
 } from "./execution-defaults";
 import { executionDefaultsSchema } from "./validation";
 
 describe("execution defaults", () => {
+  it("defaults to CLI while respecting explicitly saved SDK settings for new Work", () => {
+    const stored = { ...BUILT_IN_EXECUTION_DEFAULTS, defaultEngine: "SDK" as const, model: "existing-model", permissionMode: "full" as const };
+    expect(newWorkExecutionSettingsValue(BUILT_IN_EXECUTION_DEFAULTS).defaultEngine).toBe("CLI");
+    expect(newWorkExecutionSettingsValue(stored)).toEqual(workExecutionSettingsValue(stored));
+    expect(workExecutionSettingsValue(stored).defaultEngine).toBe("SDK");
+    expect(workDefaultsPayload(stored).defaultEngine).toBe("SDK");
+    expect(stored.defaultEngine).toBe("SDK");
+  });
   it("falls back to the built-in defaults when no user settings exist", () => {
     expect(normalizeExecutionDefaults(null)).toEqual(BUILT_IN_EXECUTION_DEFAULTS);
   });

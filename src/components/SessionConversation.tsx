@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, Download, LoaderCircle, Radio, Send, TerminalSquare, User, Wrench } from "lucide-react";
 import MarkdownResult from "@/components/MarkdownResult";
 import LiveRunLog from "@/components/LiveRunLog";
+import ManagedRuntimePanel from "@/components/ManagedRuntimePanel";
 import { AttachmentDraft, MessageAttachments, useMessageAttachments } from "@/components/WorkMessageAttachments";
 import type { WorkAttachment } from "@/lib/work-attachment-types";
 import { activityRecords, conversationTimeline, isAuxiliaryEvent, type ConversationActivity } from "@/lib/conversation-activity";
@@ -85,9 +86,23 @@ export function ConversationActivityGroup({ activity, live }: { activity: Conver
   );
 }
 
-export default function SessionConversation({ workId, runId, initialLog, isLive, historySync, outputFormat, runActions, workHeader, workActions, notices, runError, panels = [], fileBrowser }: {
+export function conversationControlCapabilities(
+  data: Pick<SessionConversationData, "anchorRunId" | "steeringRunId" | "canSteer" | "canFollowUp"> | null,
+  runtimeEngine: "CLI" | "SDK" | null,
+  runId: string | null,
+  isLive: boolean,
+) {
+  const current = data !== null && data.anchorRunId === runId;
+  return {
+    canSteer: Boolean(current && runtimeEngine === "SDK" && isLive && data?.steeringRunId === runId && data.canSteer),
+    canFollowUp: Boolean(current && data?.canFollowUp),
+  };
+}
+
+export default function SessionConversation({ workId, runId, runtimeEngine, initialLog, isLive, historySync, outputFormat, runActions, workHeader, workActions, notices, runError, panels = [], fileBrowser }: {
   workId: string;
   runId: string | null;
+  runtimeEngine: "CLI" | "SDK" | null;
   initialLog: string;
   isLive: boolean;
   historySync: boolean;
@@ -143,6 +158,7 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
   const promptHash = useRef<string | null>(null);
   const latestRunId = useRef(runId);
   const reload = useRef<() => Promise<void>>(async () => {});
+  const { canSteer, canFollowUp } = conversationControlCapabilities(data, runtimeEngine, runId, isLive);
 
   useEffect(() => {
     if (!hasWorkspace) return;
@@ -292,14 +308,18 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
     event?.preventDefault();
     const text = draft.trim();
     const fileIds = attachments.files.map((file) => file.id).join(",");
-    const useSteering = attempt.current && (attempt.current.dispatched || attempt.current.text === text && attempt.current.fileIds === fileIds)
-      ? attempt.current.kind === "steer" : data?.canSteer === true;
+    const useSteering = attempt.current?.dispatched ? attempt.current.kind === "steer" : canSteer;
     if ((!text && !attachments.files.length) || sending || (steeringUncertain && steeringUncertain.text !== text) ||
       (steeringRequest.current && steeringRequest.current.text !== text) ||
-      (!attempt.current?.dispatched && !useSteering && !data?.canFollowUp)) return;
+      (!attempt.current?.dispatched && !useSteering && !canFollowUp)) return;
     setSending(true); setSendError(null);
     try {
-      if (!attempt.current || !attempt.current.dispatched && (attempt.current.text !== text || attempt.current.fileIds !== fileIds)) {
+      if (!attempt.current || !attempt.current.dispatched && (
+        attempt.current.text !== text || attempt.current.fileIds !== fileIds ||
+        attempt.current.kind !== (useSteering ? "steer" : "follow-up") ||
+        attempt.current.runId !== (data?.steeringRunId ?? "") ||
+        attempt.current.sessionId !== (data?.sessionId ?? "")
+      )) {
         attempt.current = {
           requestId: window.crypto.randomUUID(), text, fileIds, kind: useSteering ? "steer" : "follow-up",
           runId: data?.steeringRunId ?? "", sessionId: data?.sessionId ?? "",
@@ -465,6 +485,7 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
           aria-labelledby={hasWorkspace ? `${panelPrefix}-tab-conversation` : "session-conversation-heading"}
           hidden={activePanel !== "conversation"} className={hasWorkspace ? "work-conversation-panel" : "space-y-2"}>
           {notices}
+          {isLive && runId && runtimeEngine === "SDK" && <ManagedRuntimePanel key={runId} workId={workId} runId={runId} />}
           {notice && <p role="status" className="text-xs text-neutral-500">{notice}</p>}
           {readError && <div role="alert" className="flex flex-wrap items-center gap-3 text-sm text-red-400">{readError}<button type="button" onClick={() => void reload.current()} className="ui-secondary-button">Retry</button></div>}
           {view === "raw" ? <div className="work-raw-output">{runId
@@ -495,10 +516,11 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
               if (!sending && !frozenDraft) attachments.add([...event.dataTransfer.files]);
             }}>
             <label htmlFor="session-follow-up" className="mb-1 block text-xs font-semibold text-neutral-300">
-              {steeringRequestState ? "Steering status / repair" : data?.canSteer ? "Steer now" : "Follow Up"}
+              {steeringRequestState ? "Steering status / repair" : canSteer ? "Steer now" : "Follow Up"}
             </label>
             <textarea id="session-follow-up" ref={textarea} value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={100000}
-              placeholder={data?.canSteer ? "Redirect the active task..." : "Continue this conversation..."} disabled={sending || frozenDraft}
+              placeholder={canSteer ? "Redirect the active task..." : runtimeEngine === "CLI" && isLive && !canFollowUp
+                ? "Draft a follow-up to send after this Run finishes..." : "Continue this conversation..."} disabled={sending || frozenDraft}
               onPaste={(event) => {
                 const files = [...event.clipboardData.files];
                 if (!files.length) return;
@@ -517,16 +539,18 @@ export default function SessionConversation({ workId, runId, initialLog, isLive,
               <p className="min-w-0 flex-1 text-xs text-neutral-500" role="status">
                 {steeringUncertain
                   ? "Acceptance is uncertain. Retry only with this exact draft and request ID, or explicitly dismiss it after checking session history."
-                  : data?.canSteer
+                  : canSteer
                     ? "Adds an instruction to this active Run/session; it does not undo work or guarantee that a running tool stops."
-                    : data?.blockedReason ?? data?.steeringBlockedReason ?? (data?.terminalActive ? "Session open in Terminal" : "")}
+                    : canFollowUp ? "" : runtimeEngine === "CLI" && isLive
+                      ? "Native CLI is running without live Steering or SDK controls. You can edit a draft and send Follow Up after the Run finishes."
+                      : data?.blockedReason ?? data?.steeringBlockedReason ?? (data?.terminalActive ? "Session open in Terminal" : "")}
               </p>
               <button type="submit" disabled={sending || (!draft.trim() && !attachments.files.length) ||
                 (steeringUncertain !== null && steeringUncertain.text !== draft.trim()) ||
                 (steeringRequestState !== null && steeringRequestState.text !== draft.trim()) ||
-                (!frozenDraft && !steeringRequestState && !data?.canFollowUp && !data?.canSteer) || readError !== null} className="ui-primary-button">
+                (!frozenDraft && !steeringRequestState && !canFollowUp && !canSteer) || readError !== null} className="ui-primary-button">
                 {sending ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
-                {steeringRequestState ? "Retry / repair Steering" : frozenDraft ? "Retry Follow Up" : data?.canSteer ? "Steer now" : "Send Follow Up"}
+                {steeringRequestState ? "Retry / repair Steering" : frozenDraft ? "Retry Follow Up" : canSteer ? "Steer now" : "Send Follow Up"}
               </button>
             </div>
             {sendError && <p role="alert" className="mt-2 text-sm text-red-400">{sendError}</p>}

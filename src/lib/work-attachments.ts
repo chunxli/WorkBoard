@@ -237,6 +237,25 @@ export function parseWorkAttachments(value?: string | null): WorkAttachment[] {
   return parsed.data;
 }
 
+export async function readInitialWorkAttachmentMetadata(work: AttachmentWork): Promise<WorkAttachment[]> {
+  if (!z.string().uuid().safeParse(work.id).success) return [];
+  let directory: string;
+  try {
+    directory = await batchDirectory(work, work.id);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  }
+  const manifest = await readManifest(work, work.id, directory);
+  if (!manifest.sealed) throw new WorkAttachmentError("Finish saving the initial Prompt attachments before starting this Work.", 409);
+  return manifest.files;
+}
+
+export async function readInitialWorkAttachments(work: AttachmentWork): Promise<WorkAttachment[]> {
+  const files = await readInitialWorkAttachmentMetadata(work);
+  return files.length ? resolveWorkAttachments(work, work.id, files.map((file) => file.id)) : files;
+}
+
 export async function runtimeWorkAttachments(work: AttachmentWork, files: WorkAttachment[]) {
   if (!files.length) return [];
   const requestId = files[0].requestId;

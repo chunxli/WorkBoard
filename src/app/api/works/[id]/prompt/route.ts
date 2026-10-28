@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import { updateWorkPromptSchema } from "@/lib/validation";
+import { attachmentPrompt } from "@/lib/work-attachment-types";
+import { resolveWorkAttachments, WorkAttachmentError } from "@/lib/work-attachments";
+import { RunStartInProgressError, withRunStartLock } from "@/lib/run-start-lock";
 import {
   readWorkPrompt,
   WorkPromptConflictError,
@@ -47,19 +50,41 @@ export async function PUT(
   }
 
   try {
-    const prompt = await writeWorkPrompt(
-      work,
-      parsed.data.content,
-      parsed.data.expectedHash,
-      async (updatedPrompt) => {
+    const save = async () => {
+      let content = parsed.data.content;
+      let expectedHash = parsed.data.expectedHash;
+      if (parsed.data.initialAttachmentIds !== undefined) {
+        if (work.status === "ARCHIVED" || await prisma.run.count({ where: { workId: id } }) > 0) {
+          throw new WorkAttachmentError("Initial attachments must be saved before the first Run.", 409);
+        }
+        const files = await resolveWorkAttachments(work, work.id, parsed.data.initialAttachmentIds);
+        content = attachmentPrompt(content, work.id, files);
+        if (content.length > 100000) throw new WorkAttachmentError("Prompt with attachment references exceeds 100,000 characters.");
+        const current = await readWorkPrompt(work);
+        if (current.content === content) expectedHash = current.hash;
+        if (current.hash !== expectedHash) throw new WorkPromptConflictError(current.content, current.hash);
+      }
+      const prompt = await writeWorkPrompt(work, content, expectedHash, async (updatedPrompt) => {
         await prisma.work.update({
           where: { id },
           data: { promptCache: updatedPrompt.content, promptHash: updatedPrompt.hash },
         });
+      });
+      if (parsed.data.initialAttachmentIds !== undefined) {
+        await resolveWorkAttachments(work, work.id, parsed.data.initialAttachmentIds, true);
       }
-    );
+      return prompt;
+    };
+    const prompt = parsed.data.initialAttachmentIds === undefined
+      ? await save() : await withRunStartLock([`work:${id}`], save);
     return NextResponse.json(prompt);
   } catch (error) {
+    if (error instanceof WorkAttachmentError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof RunStartInProgressError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     if (error instanceof WorkPromptConflictError) {
       return NextResponse.json(
         {

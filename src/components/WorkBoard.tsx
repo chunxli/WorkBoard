@@ -43,6 +43,7 @@ import {
 import FolderBrowserModal from "@/components/FolderBrowserModal";
 import ConfirmFolderCopyModal from "@/components/ConfirmFolderCopyModal";
 import PromptTemplatePicker from "@/components/PromptTemplatePicker";
+import { AttachmentDraft, useMessageAttachments } from "@/components/WorkMessageAttachments";
 import PromptFileStrip, {
   promptDirectoryResponseSchema,
   type PromptDirectoryState,
@@ -56,11 +57,12 @@ import WorkExecutionFields, {
 } from "@/components/WorkExecutionFields";
 import {
   type ExecutionDefaultsValue,
-  workExecutionSettingsValue,
+  newWorkExecutionSettingsValue,
 } from "@/lib/execution-defaults";
 import { formatTokenCount } from "@/lib/format";
 import { TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
 import { insertPromptName, type PromptSelection } from "@/lib/prompt-insertion";
+import { prepareNewWork, type CreatedWorkDraft } from "@/lib/new-work-submission";
 
 type Initialization = "USE_PATH" | "COPY_REPO";
 
@@ -142,8 +144,6 @@ export default function WorkBoard({
   ];
   const draggingWork = useRef(false);
   const [directoryPath, setDirectoryPath] = useState("");
-  const [name, setName] = useState("");
-  const [nameTouched, setNameTouched] = useState(false);
   const [prompt, setPrompt] = useState("");
   const promptValue = useRef("");
   const promptTextarea = useRef<HTMLTextAreaElement>(null);
@@ -166,7 +166,7 @@ export default function WorkBoard({
   const [initialization, setInitialization] = useState<Initialization>("USE_PATH");
   const [sourceRepoId, setSourceRepoId] = useState(resources[0]?.id ?? "");
   const [executionSettings, setExecutionSettings] = useState(
-    workExecutionSettingsValue(executionDefaults)
+    newWorkExecutionSettingsValue(executionDefaults)
   );
   const [browsingDirectory, setBrowsingDirectory] = useState(false);
   const [copyConfirmationPath, setCopyConfirmationPath] = useState<string | null>(null);
@@ -174,6 +174,11 @@ export default function WorkBoard({
   const [copiedFolderPath, setCopiedFolderPath] = useState<string | null>(null);
   const [openingCopiedFolder, setOpeningCopiedFolder] = useState(false);
   const [submitting, setSubmitting] = useState<"create" | "run" | "terminal" | null>(null);
+  const attachments = useMessageAttachments();
+  const createdWork = useRef<CreatedWorkDraft | null>(null);
+  const [createdWorkId, setCreatedWorkId] = useState<string | null>(null);
+  const submissionBusy = useRef(false);
+  const draftDisabled = submitting !== null || createdWorkId !== null;
   const [error, setError] = useState<string | null>(null);
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [openingWorkPath, setOpeningWorkPath] = useState<string | null>(null);
@@ -260,7 +265,6 @@ export default function WorkBoard({
     setLoadedFolderPrompt(null);
     setFolderPromptError(null);
     setLoadingFolderPrompt(false);
-    if (!nameTouched) setName(inferName(value));
   }
 
   function selectDirectoryPath(value: string) {
@@ -449,6 +453,8 @@ export default function WorkBoard({
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (submissionBusy.current) return;
+    submissionBusy.current = true;
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const action = submitter?.value === "create" || submitter?.value === "terminal"
       ? submitter.value
@@ -456,22 +462,23 @@ export default function WorkBoard({
     setSubmitting(action);
     setError(null);
     try {
-      const response = await fetch("/api/works", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name.trim() || inferName(directoryPath) || "Untitled work",
+      const body = await prepareNewWork({
+        previous: createdWork.current,
+        hasAttachments: attachments.files.length > 0,
+        rememberCreated: (work) => {
+          createdWork.current = work;
+          setCreatedWorkId(work.id);
+        },
+        upload: attachments.upload,
+        payload: {
+          name: inferName(directoryPath) || "Untitled work",
           directoryPath,
-          prompt,
+          prompt: prompt.trim() || (attachments.files.length ? "Please review the attached files." : ""),
           initialization,
           sourceRepoId: initialization === "COPY_REPO" ? sourceRepoId : null,
           ...workExecutionSettingsPayload(executionSettings),
-        }),
+        },
       });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(typeof body.error === "string" ? body.error : "Failed to create Work");
-      }
       if (action === "run") {
         const runResponse = await fetch(`/api/works/${body.id}/run`, {
           method: "POST",
@@ -509,6 +516,7 @@ export default function WorkBoard({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
+      submissionBusy.current = false;
       setSubmitting(null);
     }
   }
@@ -670,6 +678,7 @@ export default function WorkBoard({
         onSubmit={onSubmit}
         className="ui-panel ui-panel-elevated work-composer-panel overflow-hidden"
       >
+        <fieldset disabled={draftDisabled} className="min-w-0 border-0 p-0">
         <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3.5 sm:px-5">
           <div className="flex items-center gap-3">
             <span className="grid size-8 place-items-center rounded-md bg-emerald-950 text-emerald-300">
@@ -683,7 +692,7 @@ export default function WorkBoard({
         </div>
 
         <div className="grid gap-6 p-4 sm:p-5 lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.35fr)]">
-          <fieldset disabled={copyingFolder} className="min-w-0 space-y-4 border-0 p-0">
+          <fieldset disabled={copyingFolder} className="flex min-h-0 min-w-0 flex-col gap-4 border-0 p-0">
             <label className="flex items-center gap-2 text-xs font-bold uppercase text-neutral-400" htmlFor="work-directory">
               <FolderOpen size={14} aria-hidden="true" />
               Directory
@@ -856,7 +865,15 @@ export default function WorkBoard({
             {folderPromptError && (
               <p role="alert" className="text-xs text-red-400">{folderPromptError}</p>
             )}
-            <div className="min-w-0 space-y-1.5">
+            <div className="min-w-0 space-y-1.5"
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+              }}
+              onDrop={(event) => {
+                if (!event.dataTransfer.files.length) return;
+                event.preventDefault();
+                if (!draftDisabled) attachments.add([...event.dataTransfer.files]);
+              }}>
               <textarea
                 ref={promptTextarea}
                 id="work-prompt"
@@ -869,11 +886,38 @@ export default function WorkBoard({
                 onBlur={(event) => rememberPromptSelection(event.currentTarget)}
                 onCompositionStart={() => setPromptComposing(true)}
                 onCompositionEnd={() => setPromptComposing(false)}
+                onPaste={(event) => {
+                  const files = [...event.clipboardData.files];
+                  if (!files.length) return;
+                  event.preventDefault();
+                  if (draftDisabled) return;
+                  attachments.add(files);
+                  const pastedText = event.clipboardData.getData("text/plain");
+                  if (pastedText) {
+                    const { selectionStart, selectionEnd } = event.currentTarget;
+                    const next = prompt.slice(0, selectionStart) + pastedText + prompt.slice(selectionEnd);
+                    if (next.length > 100000) {
+                      setPromptInsertionError("Prompt must be 100,000 characters or fewer.");
+                      return;
+                    }
+                    pendingPromptSelection.current = {
+                      start: selectionStart + pastedText.length, end: selectionStart + pastedText.length,
+                    };
+                    updatePrompt(next);
+                  }
+                }}
                 placeholder="Describe the result you want..."
-                required
+                required={attachments.files.length === 0}
+                maxLength={100000}
                 rows={7}
                 className="min-h-52 w-full resize-y rounded-md border border-neutral-700 bg-neutral-950/80 px-4 py-3 font-mono text-sm leading-6 text-neutral-200 shadow-inner shadow-black/20 placeholder:font-sans placeholder:text-neutral-600 focus:border-emerald-700"
               />
+              <AttachmentDraft {...attachments} disabled={draftDisabled} />
+              <p className="text-xs text-neutral-500">
+                Paste images, drop files, or Add files. Up to 10 files, 25 MiB each, 100 MiB total.
+                Files are saved with the Work before it starts. Interactive Terminal receives file paths;
+                use Create &amp; Run for native CLI/SDK attachments.
+              </p>
               <PromptFileStrip directory={directoryContents} error={promptInsertionError}
                 disabled={submitting !== null || copyingFolder || loadingFolderPrompt || promptComposing}
                 onInsert={insertDirectoryName} onRefresh={() => refreshDirectoryContents()} />
@@ -887,21 +931,15 @@ export default function WorkBoard({
             Advanced settings
           </summary>
           <div className="space-y-4 border-t border-neutral-800 bg-neutral-950/30 px-4 py-4 sm:px-5">
-            <label className="block max-w-md text-xs text-neutral-400">
-              Name
-              <input
-                value={name}
-                onChange={(event) => {
-                  setNameTouched(true);
-                  setName(event.target.value);
-                }}
-                className="mt-1.5 w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2.5 text-sm text-white"
-              />
-            </label>
             <WorkExecutionFields value={executionSettings} onChange={setExecutionSettings} />
           </div>
         </details>
+        </fieldset>
 
+        {createdWorkId && <p role="status" className="px-5 py-2 text-xs text-neutral-400">
+          Work created. If uploading or saving fails, retry a create action to continue this same draft without creating another Work.{" "}
+          <Link href={`/work/${createdWorkId}`} className="text-emerald-400 underline">Open created Work</Link>
+        </p>}
         {error && <p role="alert" className="border-t border-red-900/50 bg-red-950/20 px-5 py-3 text-sm text-red-300">{error}</p>}
         <div className="flex flex-wrap justify-end gap-2 border-t border-neutral-800 bg-neutral-950/30 px-4 py-4 sm:px-5">
           <button

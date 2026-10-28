@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { MAX_ATTACHMENT_BYTES, attachmentPrompt } from "./work-attachment-types";
-import { readWorkAttachment, resolveWorkAttachments, runtimeWorkAttachments, saveWorkAttachment } from "./work-attachments";
+import { readInitialWorkAttachmentMetadata, readInitialWorkAttachments, readWorkAttachment, resolveWorkAttachments, runtimeWorkAttachments, saveWorkAttachment } from "./work-attachments";
 
 let root: string;
 let work: { id: string; directoryPath: string };
@@ -21,6 +21,36 @@ beforeEach(async () => {
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
 describe("Work attachment storage", () => {
+  it("loads a finalized initial attachment set for future managed and terminal Runs", async () => {
+    work.id = randomUUID();
+    requestId = work.id;
+    expect(await readInitialWorkAttachments(work)).toEqual([]);
+    const file = await upload();
+    await expect(readInitialWorkAttachments(work)).rejects.toThrow("Finish saving");
+    await resolveWorkAttachments(work, requestId, [file.id], true);
+    expect(await readInitialWorkAttachments(work)).toEqual([file]);
+    expect(await runtimeWorkAttachments(work, await readInitialWorkAttachments(work)))
+      .toEqual([{ type: "file", displayName: file.name, path: path.join(root, ".workboard", "attachments", work.id, requestId, file.storedName) }]);
+  });
+
+  it("does not mistake Follow Up attachments or older Work IDs for initial attachments", async () => {
+    expect(await readInitialWorkAttachments(work)).toEqual([]);
+    work.id = randomUUID();
+    const file = await upload();
+    await resolveWorkAttachments(work, requestId, [file.id], true);
+    expect(await readInitialWorkAttachments(work)).toEqual([]);
+  });
+
+  it("rejects initial attachments whose files changed after finalization", async () => {
+    work.id = randomUUID();
+    requestId = work.id;
+    const file = await upload();
+    await resolveWorkAttachments(work, requestId, [file.id], true);
+    await writeFile(path.join(root, ".workboard", "attachments", work.id, requestId, file.storedName), "modified");
+    expect(await readInitialWorkAttachmentMetadata(work)).toEqual([file]);
+    await expect(readInitialWorkAttachments(work)).rejects.toThrow("changed");
+  });
+
   it("keeps Unicode display names while bounding the stored filename on UTF-8 filesystems", async () => {
     const name = "\u4e2d".repeat(80) + ".png";
     const file = await upload(undefined, { name });

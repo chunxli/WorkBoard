@@ -60,6 +60,7 @@ import {
   startCopilotSdkRun,
 } from "./copilot-sdk-runner";
 import { getManagedSessionController } from "./managed-session-controller";
+import { getManagedRuntime } from "./managed-runtime";
 import { getRunEmitter, getRunLogPath, type CopilotRunEvent } from "./copilot-runner";
 
 const generatedPaths: string[] = [];
@@ -91,6 +92,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(generatedPaths.splice(0).map((filePath) => rm(filePath, { recursive: true, force: true })));
 });
 
@@ -101,6 +103,104 @@ describe("controlled Copilot runner lifecycle", () => {
       return "transport-ack";
     });
   }
+
+  it.each(["cli", "sdk"] as const)("configures native Entra authentication on the %s host for creation and resume", async (runtime) => {
+    const clientId = "11111111-2222-3333-4444-555555555555";
+    vi.stubEnv("WORKBOARD_COPILOT_ENTRA_CLIENT_ID", clientId);
+    completeEachSend();
+    for (const resumeSession of [false, true]) {
+      const config = { ...options(`entra-${runtime}-${randomUUID()}`), resumeSession };
+      const result = await (runtime === "cli" ? startCopilotCliControlledRun(config) : startCopilotSdkRun(config));
+      expect(result.exitCode).toBe(0);
+    }
+    expect(CopilotClient).toHaveBeenCalledWith(expect.objectContaining({ entra: { clientId } }));
+    expect(CopilotClient).toHaveBeenCalledTimes(2);
+    expect(harness.client.createSession).toHaveBeenCalledOnce();
+    expect(harness.client.resumeSession).toHaveBeenCalledOnce();
+    expect(harness.client.createSession).not.toHaveBeenCalledWith(expect.objectContaining({ entra: expect.anything() }));
+    expect(harness.client.resumeSession).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ entra: expect.anything() }));
+  });
+
+  it("fails malformed host configuration before opening or registering a runtime", async () => {
+    vi.stubEnv("WORKBOARD_COPILOT_ENTRA_CLIENT_ID", "invalid-host-id");
+    const config = options(`invalid-entra-${randomUUID()}`);
+    await expect(startCopilotCliControlledRun(config)).rejects.toThrow("WORKBOARD_COPILOT_ENTRA_CLIENT_ID must be");
+    expect(CopilotClient).not.toHaveBeenCalled();
+    expect(harness.send).not.toHaveBeenCalled();
+    expect(getManagedRuntime(config.runId)).toBeUndefined();
+    expect(getManagedSessionController(config.runId)).toBeNull();
+  });
+
+  it.each([false, true])("applies the configured native MCP sign-in capability (%s) before the first runtime snapshot", async (configured) => {
+    vi.stubEnv("WORKBOARD_COPILOT_ENTRA_CLIENT_ID", configured ? "11111111-2222-3333-4444-555555555555" : "");
+    const config = options(`mcp-capability-${randomUUID()}`);
+    const runner = startCopilotSdkRun(config);
+    await vi.waitFor(() => expect(harness.send).toHaveBeenCalledOnce());
+    try {
+      const runtime = getManagedRuntime(config.runId);
+      if (!runtime) throw new Error("Managed runtime was not registered");
+      const login = vi.fn(async () => ({}));
+      runtime.bind({ rpc: { mcp: {
+        list: async () => ({ servers: [{ name: "requires-auth", status: "needs-auth", source: "user" }] }),
+        reload: async () => {},
+        listTools: async () => ({ tools: [] }),
+        oauth: { login },
+      } } });
+      expect((await runtime.snapshot()).mcp).toEqual([{
+        name: "requires-auth", status: "needs-auth", authentication: configured ? "oauth" : "terminal",
+      }]);
+      if (configured) {
+        expect(await runtime.mcpAction("mcp-login", "requires-auth")).toEqual({ authorizationUrl: null });
+        expect(login).toHaveBeenCalledOnce();
+      } else {
+        await expect(runtime.mcpAction("mcp-login", "requires-auth")).rejects.toThrow("Terminal authentication is required");
+        expect(login).not.toHaveBeenCalled();
+      }
+    } finally {
+      harness.state.handler?.({ type: "session.idle", data: {} });
+      await runner;
+    }
+  });
+
+  it("wires live questions for creation/resume and removes the bridge after completion", async () => {
+    const config = options(`runtime-question-${randomUUID()}`);
+    const runner = startCopilotSdkRun(config);
+    await vi.waitFor(() => expect(harness.send).toHaveBeenCalledOnce());
+    const runtime = getManagedRuntime(config.runId);
+    expect(runtime).toBeDefined();
+    const answer = runtime!.onUserInputRequest({ question: "Choose", choices: ["A"] }, { sessionId: config.sessionId });
+    const [request] = (await runtime!.snapshot()).requests;
+    runtime!.reply({ kind: "question", requestId: request.id, answer: "A" });
+    expect(await answer).toEqual({ answer: "A", wasFreeform: false });
+    harness.state.handler?.({ type: "session.idle", data: {} });
+    expect((await runner).exitCode).toBe(0);
+    expect(getManagedRuntime(config.runId)).toBeUndefined();
+  });
+
+  it("cancels a pending question before aborting the managed Run", async () => {
+    const config = options(`runtime-cancel-${randomUUID()}`);
+    const runner = startCopilotSdkRun(config);
+    await vi.waitFor(() => expect(harness.send).toHaveBeenCalledOnce());
+    const runtime = getManagedRuntime(config.runId)!;
+    const question = runtime.onUserInputRequest({ question: "Still waiting?" }, { sessionId: config.sessionId });
+    const rejected = expect(question).rejects.toThrow("ended");
+    expect(cancelSdkRun(config.runId)).toBe(true);
+    await rejected;
+    expect((await runner).cancelled).toBe(true);
+    expect(getManagedRuntime(config.runId)).toBeUndefined();
+  });
+
+  it("expires pending input at the configured Run timeout and clears the bridge", async () => {
+    const config = options(`runtime-timeout-${randomUUID()}`);
+    harness.send.mockImplementation(async () => {
+      const runtime = getManagedRuntime(config.runId)!;
+      await expect(runtime.onUserInputRequest({ question: "Waiting for input" }, { sessionId: config.sessionId }))
+        .rejects.toThrow("ended");
+      return "transport-ack";
+    });
+    expect(await startCopilotSdkRun({ ...config, timeoutSeconds: 0.01 })).toMatchObject({ timedOut: true, exitCode: null });
+    expect(getManagedRuntime(config.runId)).toBeUndefined();
+  });
 
   it.each(["send", "session.error"] as const)(
     "retries an unavailable CLI model once on the same session after %s with the configured fallback",

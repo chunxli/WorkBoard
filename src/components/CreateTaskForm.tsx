@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { CopilotModelOptions, CopilotModelStatus, useCopilotModelCatalog } from "@/components/CopilotModelOptions";
 import { useRouter } from "next/navigation";
 import { Boxes, ChevronDown, MessageSquareText, Plus, SlidersHorizontal, Zap } from "lucide-react";
 import type { Repo } from "@/generated/prisma/client";
@@ -67,14 +68,7 @@ export default function CreateTaskForm({
   );
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-
-  useEffect(() => {
-    fetch("/api/copilot/models")
-      .then((res) => (res.ok ? res.json() : { models: [] }))
-      .then((data: { models?: string[] }) => setAvailableModels(data.models ?? []))
-      .catch(() => {});
-  }, []);
+  const modelCatalog = useCopilotModelCatalog();
 
   function onPromptChange(next: string) {
     setPrompt(next);
@@ -250,9 +244,7 @@ export default function CreateTaskForm({
                 }}
               >
                 <option value="">Auto</option>
-                {availableModels.map((availableModel) => (
-                  <option key={availableModel} value={availableModel}>{availableModel}</option>
-                ))}
+                <CopilotModelOptions catalog={modelCatalog.catalog} value={model} />
               </select>
             </label>
             <label className="text-xs font-medium text-neutral-400 sm:col-span-2">
@@ -264,13 +256,10 @@ export default function CreateTaskForm({
                 disabled={!model}
               >
                 <option value="">{model ? "None" : "Select a primary model first"}</option>
-                {availableModels.map((availableModel) => (
-                  <option key={availableModel} value={availableModel} disabled={availableModel === model}>
-                    {availableModel}
-                  </option>
-                ))}
+                <CopilotModelOptions catalog={modelCatalog.catalog} value={fallbackModel} exclude={model} />
               </select>
             </label>
+            <CopilotModelStatus {...modelCatalog} selected={[model, fallbackModel]} />
             <label className="text-xs font-medium text-neutral-400">
               Context size
               <select

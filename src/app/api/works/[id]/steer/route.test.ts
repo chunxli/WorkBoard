@@ -57,7 +57,7 @@ const run = {
   id: "run-1",
   status: "RUNNING",
   trigger: "WORK",
-  engine: "CLI",
+  engine: "SDK",
   hostname: hostname(),
   copilotSessionId: "session-1",
   createdAt: new Date(),
@@ -164,6 +164,7 @@ describe("Work Steering API", () => {
       promptSynced: true,
       artifactSynced: true,
     });
+
     const retry = await post(request);
     expect(retry.status).toBe(200);
     expect(send).toHaveBeenCalledOnce();
@@ -172,6 +173,35 @@ describe("Work Steering API", () => {
     expect(mocks.workFindFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: "work-1", userId: "owner-1" },
     }));
+  });
+
+  it("rejects native CLI Steering before creating a message, resolving files or sending", async () => {
+    mocks.runFindFirst.mockResolvedValue({ ...run, engine: "CLI" });
+    const response = await post({ prompt: "Do not send this", requestId: randomUUID(), runId: run.id, sessionId: run.copilotSessionId });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining("Native CLI Runs do not support Steering") });
+    expect(mocks.messageCreate).not.toHaveBeenCalled();
+    expect(mocks.resolveAttachments).not.toHaveBeenCalled();
+    expect(mocks.appendArtifact).not.toHaveBeenCalled();
+    expect(mocks.ensurePrompt).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("repairs an already accepted legacy CLI record without replaying its transport", async () => {
+    const requestId = randomUUID();
+    mocks.runFindFirst.mockResolvedValue({ ...run, engine: "CLI", status: "SUCCESS" });
+    stored = {
+      id: "legacy", workId: work.id, runId: run.id, sessionId: run.copilotSessionId, requestId,
+      content: "Accepted before the runtime split", deliveryState: "ACCEPTED", transportMessageId: "legacy-ack",
+      promptSynced: false, promptError: null, artifactSynced: false, artifactError: null,
+      createdAt: new Date(), acceptedAt: new Date(), observedAt: null,
+    };
+    const response = await post({ prompt: stored.content, requestId, runId: run.id, sessionId: run.copilotSessionId });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ promptSynced: true, artifactSynced: true });
+    expect(mocks.messageCreate).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(mocks.ensurePrompt).toHaveBeenCalledOnce();
   });
 
   it("leaves an accepted message visible when Prompt repair fails, then repairs by the same key", async () => {

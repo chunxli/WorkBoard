@@ -67,7 +67,6 @@ export class JobQueue {
 const globalForQueue = globalThis as unknown as { copilotJobQueue?: JobQueue };
 
 export const jobQueue =
-  globalForQueue.copilotJobQueue ?? new JobQueue(Number(process.env.RUN_CONCURRENCY ?? 2));
+  globalForQueue.copilotJobQueue ?? new JobQueue(Number(process.env.RUN_CONCURRENCY ?? 5));
 
 globalForQueue.copilotJobQueue = jobQueue;
-

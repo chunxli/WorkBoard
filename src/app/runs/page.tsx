@@ -7,6 +7,7 @@ import StatusBadge from "@/components/StatusBadge";
 import RunStatusFilter from "@/components/RunStatusFilter";
 import CancelRunButton from "@/components/CancelRunButton";
 import { formatDuration } from "@/lib/format";
+import RunDuration from "@/components/RunDuration";
 import { ownedRunWhere } from "@/lib/run-access";
 import PageHeader from "@/components/PageHeader";
 
@@ -86,7 +87,9 @@ export default async function RunsPage({
                     {run.startedAt ? new Date(run.startedAt).toLocaleString() : "-"}
                   </td>
                   <td className="px-4 py-2 text-neutral-400">
-                    {formatDuration(run.startedAt, run.finishedAt)}
+                    <RunDuration startedAt={run.startedAt?.toISOString() ?? null}
+                      finishedAt={run.finishedAt?.toISOString() ?? null} status={run.status}
+                      initialLabel={formatDuration(run.startedAt, run.finishedAt)} />
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-neutral-400">{run.pid ?? "-"}</td>
                   <td className="px-4 py-2 text-right">{isLive && <CancelRunButton runId={run.id} />}</td>

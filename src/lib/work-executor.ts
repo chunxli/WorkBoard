@@ -3,16 +3,13 @@ import { hostname } from "node:os";
 import { readFile } from "node:fs/promises";
 import { prisma } from "@/lib/prisma";
 import { attachmentPrompt, type WorkAttachment } from "@/lib/work-attachment-types";
-import { parseWorkAttachments, runtimeWorkAttachments } from "@/lib/work-attachments";
+import { parseWorkAttachments, readInitialWorkAttachments, runtimeWorkAttachments } from "@/lib/work-attachments";
 import {
   extractFinalCopilotOutput,
   startCopilotRun,
   type RunOutputFormat,
 } from "@/lib/copilot-runner";
-import {
-  startCopilotCliControlledRun,
-  startCopilotSdkRun,
-} from "@/lib/copilot-sdk-runner";
+import { startCopilotSdkRun } from "@/lib/copilot-sdk-runner";
 import {
   getHeadCommit,
 } from "@/lib/git-safety";
@@ -50,6 +47,7 @@ export async function createPendingWorkRun(options: {
   const runId = randomUUID();
   const sessionId = randomUUID();
   const work = await prisma.work.findUniqueOrThrow({ where: { id: options.workId } });
+  const attachments = await readInitialWorkAttachments(work);
   const outputDir = getWorkRunArtifactPaths(work.directoryPath, runId).outputDirectory;
   return prisma.run.create({
     data: {
@@ -60,6 +58,7 @@ export async function createPendingWorkRun(options: {
       engine: options.engine,
       executionPath: options.executionPath,
       promptSnapshot: options.prompt,
+      attachmentsJson: attachments.length ? JSON.stringify(attachments) : null,
       outputFormat: work.outputFormat,
       timeoutSeconds: work.timeoutSeconds,
       agent: work.agent,
@@ -347,9 +346,8 @@ export async function executeWorkRun(runId: string): Promise<void> {
       return;
     }
 
-    const controlledCliRun = engine === "CLI" && !run.experimentVariantId;
     const messageAttachments = await runtimeWorkAttachments(work, attachments);
-    const sdkUsageBaseline = engine === "SDK" || controlledCliRun
+    const sdkUsageBaseline = engine === "SDK"
       ? await readCopilotSessionInsights(sessionId).catch(() => null)
       : null;
 
@@ -370,31 +368,12 @@ export async function executeWorkRun(runId: string): Promise<void> {
             stderrLogPath: artifactPaths.stderr,
             onSpawn,
           })
-        : controlledCliRun
-          ? await startCopilotCliControlledRun({
-              runId: run.id,
-              sessionId,
-              workPath: executionPath,
-              prompt,
-              attachments: messageAttachments,
-              resumeSession: Boolean(run.resumedFromRunId),
-              agent: run.agent,
-              model: run.model,
-              fallbackModel: run.fallbackModel,
-              contextTier: run.contextTier,
-              reasoningEffort: run.reasoningEffort,
-              permissionMode: run.permissionMode === "full" ? "full" : "default",
-              outputFormat,
-              timeoutSeconds,
-              stdoutLogPath: artifactPaths.stdout,
-              stderrLogPath: artifactPaths.stderr,
-              onSpawn,
-            })
-          : await startCopilotRun({
+        : await startCopilotRun({
             runId: run.id,
             sessionId,
             repoPath: executionPath,
             prompt,
+            attachmentPaths: messageAttachments.map((attachment) => attachment.path),
             resumeSession: Boolean(run.resumedFromRunId),
             agent: run.agent,
             model: run.model,

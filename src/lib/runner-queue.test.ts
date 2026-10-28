@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCopilotEnvironment,
   extractFinalCopilotOutput,
@@ -378,6 +378,41 @@ describe("Copilot process boundary", () => {
 });
 
 describe("JobQueue", () => {
+  it.each([
+    { configured: undefined, expected: 5 },
+    { configured: "2", expected: 2 },
+  ])("uses $expected singleton slots with RUN_CONCURRENCY=$configured", async ({ configured, expected }) => {
+    const queueGlobal = globalThis as typeof globalThis & { copilotJobQueue?: JobQueue };
+    const originalQueue = queueGlobal.copilotJobQueue;
+    const gate = deferred();
+
+    try {
+      vi.stubEnv("RUN_CONCURRENCY", configured);
+      delete queueGlobal.copilotJobQueue;
+      vi.resetModules();
+      const { jobQueue } = await import("./job-queue");
+      let started = 0;
+
+      for (let index = 0; index <= expected; index++) {
+        jobQueue.enqueue(`run-${index}`, async () => {
+          started++;
+          await gate.promise;
+        });
+      }
+
+      expect(started).toBe(expected);
+      gate.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(started).toBe(expected + 1);
+    } finally {
+      gate.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+      queueGlobal.copilotJobQueue = originalQueue;
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("serializes the same key while allowing different keys to use available slots", async () => {
     const queue = new JobQueue(2);
     const first = deferred();

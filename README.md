@@ -8,10 +8,52 @@ The existing scheduled task system remains available as **Automations**. The app
 
 Once Work Board is running, open the bilingual [in-app Docs](http://localhost:3100/docs) at `/docs` for the complete feature guide, operational boundaries, and Release Notes.
 
+## Quick Start
+
+**Prerequisites:** Git, **Node.js 24 LTS** with npm (recommended), and the [GitHub Copilot CLI](https://github.com/github/copilot-cli) installed on `PATH`. Sign in to Copilot once with `copilot login` before running Work tasks. Work Board's local website does not require an Entra application or client secret.
+
+### Windows PowerShell
+
+For a fresh local checkout, copy and run:
+
+```powershell
+git clone https://github.com/chunxli/WorkBoard.git
+Set-Location .\WorkBoard
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+npm ci
+npm run background:start
+Start-Process "http://127.0.0.1:3100"
+```
+
+### macOS / Linux
+
+```sh
+git clone https://github.com/chunxli/WorkBoard.git
+cd WorkBoard
+test -f .env || cp .env.example .env
+npm ci
+npm run background:start
+```
+
+Open **[http://127.0.0.1:3100](http://127.0.0.1:3100)** after startup reports success.
+
+- Keep both website Entra credential values empty in `.env` for login-free, loopback-only local mode. The copy commands above do not overwrite an existing `.env`.
+- `background:start` generates Prisma Client, creates/applies the local SQLite migrations, builds the Release, and starts the server in the background. No separate Prisma or build commands are needed for this path.
+- After successful startup, browser tabs and the starting terminal can be closed. Runs and system notifications continue while the server and desktop session remain running; notifications must be enabled in Settings and allowed by the OS.
+- Current-user login autostart is enabled by default. To opt out, set `WORKBOARD_AUTOSTART="false"` before starting. Copilot-account and protected MCP authentication remain separate from starting the website.
+- Check status with `npm run background:status`; inspect diagnostics with `npm run background:logs`. `npm run background:stop` stops the server **and removes its owned login-startup entry**. See [background commands](#run-the-release-in-the-background) for updates and restart behavior.
+
 ## Recent updates
 
+- **Better New work browsing:** the folder list fills the available directory-column height without growing the form to fit every folder. New Work names come from the selected directory; the redundant Advanced Name field is removed. This does not rename folders or rewrite existing Work names.
+- **Account-aware model selection:** primary and fallback choices use the installed CLI's support list plus the current Copilot account's model catalog/policy. Unavailable entries remain visible but disabled. Availability failures are explicitly marked Unverified with Retry, not silently treated as an empty successful list. Metadata checks create no inference session or paid test Prompt; quota, transient failures and parameter compatibility can still affect a request.
+- **Two real Work runtimes:** Runtime offers **Copilot CLI** and **Copilot SDK** in creation/settings and Execute. CLI is the built-in default; an explicitly saved SDK default is respected. CLI directly runs the installed `copilot -p` command, never an SDK-controlled CLI session. SDK retains its current conversation controls and MCP limitations. Existing Work/Run history is not migrated; an Execute override affects that Run, and Follow Up inherits its parent Run's engine.
+- **Startup is not a host error:** queued Runs without an assigned hostname show a waiting state, not "another machine." Live controls remain unavailable until the local host and session are confirmed. Missing history during a pending/running Run is shown as waiting for recorded messages and recovers through normal polling; finished Runs still report genuinely unavailable history. Known foreign hosts remain blocked.
 - **Selected-folder references:** the New work name strip shows the selected folder's immediate contents, not its siblings. Click a name to insert it at the Prompt caret or replace selected text. [Selection and refresh behavior](#features).
-- **Images and files in messages:** Follow Up and Steer now accept paste, drop and file-picker input, including attachment-only messages, with upload progress and retry-safe receipts. [Limits, storage and backup](#work-directory-layout).
+- **Images and files in Prompts:** New work, Follow Up and Steer now accept paste, drop and file-picker input, including attachment-only messages, with upload progress and retry-safe receipts. [Limits, storage and backup](#work-directory-layout).
+- **User Skills by runtime:** native CLI discovers Skills through its own local configuration. SDK creation/resume explicitly load `skillDirectories` from the current user's Copilot settings, including a custom `COPILOT_HOME`; malformed SDK settings report an error.
+- **SDK live controls:** SDK Work conversations retain approvals, agent questions, MCP forms and sanitized connection/authentication states. Native CLI Runs do not mount or call this SDK panel. Without approved SDK Entra host configuration, protected MCPs retain their Terminal-authentication blocker rather than a misleading Sign in button. Configured SDK hosts retain supported native OAuth; built-in GitHub uses the Copilot account. All actions remain owner/host/Run/session scoped. This does not resolve independent authentication failures or HTTP 504s.
+- **CLI draft-only during execution:** native CLI keeps the same Work details layout and live history, but offers no Steer or SDK approvals/questions/MCP controls. Drafts and attachments can be prepared while it runs; Send is disabled until the Run ends, then manual Follow Up resumes the same native session. Unsupported non-interactive requests remain explicit errors, without automatic Full access or SDK fallback.
 - **A focused conversation workspace:** wider details, separate side tabs, a pinned toolbar, bottom-docked composer, expandable Work files and denser messages with folded tool activity. [Work details](#work-details).
 - **Safer session continuation:** minute Terminal-history synchronization, explicit IN TERMINAL / SYNCING / TERMINAL states, and checked Resume, Follow Up and immediate Steering paths. [Session behavior](#features).
 - **Work Board notifications:** Windows branding and compact metrics, with clicks opening the corresponding Work, standalone Run or test Settings page. OS permissions and native themes still apply. [Notification behavior](#features).
@@ -50,7 +92,8 @@ Work cards show the latest Run's actual model usage and total input + output tok
 
 ## Features
 
-- **Fast Work creation** — enter or browse to a directory, create and automatically select a child folder when needed, write a prompt, then create and run in one action. Missing directories are created automatically.
+- **Fast Work creation** — enter or browse to a directory, create and automatically select a child folder when needed, write a prompt, then create and run in one action. Missing directories are created automatically. The Prompt supports pasted screenshots, dropped files and **Add files**, including an attachment-only Prompt, with the same **25 MiB per file, 10 files / 100 MiB total** limits as messages. All three create actions save files and Prompt references before continuing. An upload/save failure freezes the draft; Retry reuses the created Work rather than making a duplicate. Create only shows saved attachments in the Work's Prompt tab. Unsent browser files do not survive a full reload.
+- **Initial Prompt attachments** — initial uploads reserve `.workboard/attachments/<work-id>/<work-id>/`; finalization seals their metadata without a database migration. Managed CLI/SDK Runs receive verified native file attachments. Interactive Terminal receives saved relative file references instead: its CLI does not support native attachment flags in interactive mode. Files are retained on disk, including failed-attempt uploads; back up them with the Work, database and sessions.
 - **First Run in Terminal** — create a Work and open a new interactive Copilot session in Windows Terminal with the saved Prompt and CLI settings. Work Board reads session history every minute, including while Terminal is running.
 - **Draggable Work cards** — scan Current Work as a responsive card grid and drag cards into a persistent custom order with pointer, touch, or keyboard controls.
 - **Conversation-first Work details** — a pinned compact toolbar, sidebar sections, docked composer, and read-only file pane keep messages in focus. See [Work details](#work-details).
@@ -63,16 +106,20 @@ Work cards show the latest Run's actual model usage and total input + output tok
 - **Numbered folder copies** — confirm and copy the selected directory to the next monotonic sibling (`work-2`, `work-3`, and so on), open the copy in Explorer for edits, then return to write the Prompt and run it. Copies include hidden files, `.git`, dependencies, and build output.
 - **Resource initialization** — start from the selected local path or copy a registered Resource into a new Work directory.
 - **Dual engines** — use the existing Copilot CLI runner or the official `@github/copilot-sdk`. CLI is the default.
+- **Verified model choices** — Work creation/settings and Automation creation/edit share account-aware model availability. Disabled, not-enabled and account-unlisted models cannot be newly selected; stored values remain visible with a warning instead of being cleared. Auto remains available. Account metadata is cached briefly, with **Refresh models** to recheck; failed verification preserves unverified choices. This does not probe every model with a billable request.
 - **Explicit Work execution settings** — configure engine, agent, primary and fallback models, context size, reasoning effort, permissions, and readable or raw JSON output per Work. Every Run freezes those settings for later inspection.
+- **Runtime-specific permissions** — native CLI uses `--allow-all-tools` for Standard tools and `--allow-all` only when Full access was explicitly selected. It has no SDK permission callback or live approval UI; unsupported non-interactive requests fail visibly instead of escalating. SDK retains its existing approval/question/policy handling. Organization restrictions and MCP authentication are not bypassed.
 - **Execution defaults** — set shared Work and Automation defaults in Settings; new items inherit them while existing saved settings remain unchanged.
 - **Optional Work timeout** — Work runs default to no timeout, but each Work can set a 30–86400 second limit. Automation timeouts remain independently configurable.
 - **Skill comparisons (opt-in UI)** — set `WORKBOARD_SHOW_SKILL_COMPARISON="true"` and restart to show the creation panel. It is hidden by default; existing results and experiment APIs remain available. Discover project Skills or add a local directory, freeze one resource snapshot, then run isolated copies with explicit `/skill-name` or automatic invocation.
 - **Live and resumable runs** — stream output, cancel managed Runs, and resume the exact Copilot session in Windows Terminal from a Work card, Work details, or Run details. External Terminal Runs must be stopped in Terminal, not with Work Board's Cancel action. Detail-page status checks run independently of conversation and raw-output loading, including the first response, periodic polling, and tab focus. Activity-check failures stay visible and do not enable an unverified Resume.
+- **Live elapsed time** — started `RUNNING` Runs update their duration every second in Work details, Run details, the Runs list and Automation history without fetching or refreshing the page just to advance the clock. Returning to the tab catches up to wall-clock time; finished Runs keep their recorded duration and queued Runs without a start time keep `-`.
+- **MCP limitations remain explicit** — native CLI uses its own authentication, not Work Board's SDK Entra configuration. Real testing observed a successful protected MCP call in a new native session and an authentication failure on same-session resume; this split does not claim that limitation is fixed. Native errors remain in history/logs even if the CLI exits 0. SDK keeps its existing **Authenticate in Terminal** blocker, Reload/Verify controls and optional approved-host OAuth. See [MCP company-account authentication](#mcp-company-account-authentication).
 - **Terminal history and settlement** — a server-side minute timer checkpoints history while Terminal runs and catches up on startup. Once Terminal stops, **SYNCING** separates physical inactivity from unfinished settlement without changing the persisted Run outcome. After a minute of stable stopped history, the Run settles using its saved exit code or complete response evidence; closing a window alone does not mean success. Incomplete histories remain light-green **TERMINAL** (`UNKNOWN`) and can recover later; callback and manual Sync are no longer used. Resume and inline Follow Up may first settle a stopped parent, then recheck session locks, history, source state, and conflicting Runs; failed checks remain explicit rather than force-starting another session. Token/model totals appear when Copilot persists usage events, typically at session shutdown.
-- **In-app Follow Up and live Steering** — while a managed Work Run is active, “Steer now” sends an immediate instruction to that exact live CLI or SDK session; transport acceptance is shown separately from model application. Accepted instructions are recorded against the Run, retained in its `steering.jsonl` audit artifact and appended once to Prompt with a per-message marker. If Prompt or audit repair fails, retrying the same request ID repairs local records without resending to Copilot. Ambiguous delivery is never replayed automatically. Steering does not undo edits or guarantee stopping a running tool. Steering is unavailable for external Terminal sessions and legacy Runs without a live controller. When no managed Run is active, Follow Up creates a separate linked Run and attempts its idempotent Prompt append before enqueueing; a deferred append is retried during execution. Rejected submissions retain the conversation draft, and a same-request retry returns the existing Run rather than creating another.
+- **In-app Follow Up and SDK Steering** — only an active SDK Run accepts Steer. Native CLI Runs allow editing an unsent draft, not new live messages; after completion, Follow Up creates a linked Run using the parent's engine and session, without replaying the original Prompt. Existing SDK acceptance/audit/Prompt repair and ambiguous-delivery safeguards remain intact, including repair of previously accepted historical CLI-wrapper records without transport replay. External Terminal ownership, concurrent Runs and session locks still block new submissions. Same-request retries remain idempotent.
 - **Quiet Windows background execution** — background CLI lookup and managed runtime startup keep their console windows hidden. Live Steering sends over the existing runtime connection. Explicit Open Terminal/Resume and Open VS Code actions still open their requested visible windows.
 - **Default-on login autostart** — successful background start/restart registers current-user login startup on Windows, macOS, or Linux with systemd user services. Explicit background stop removes registration; `WORKBOARD_AUTOSTART=false` disables it. See [login startup and recovery](#start-automatically-after-login).
-- **Controlled CLI runtime** — new CLI-engine Work Runs use the installed Copilot CLI’s headless stdio/RPC channel, with the SDK as transport only; the Work engine remains `CLI`. This enables same-session Steering without terminal keystrokes, remote-control export, or a second session. CLI custom-agent discovery is enabled. Permission scope remains `--allow-all-tools` by default and `--allow-all` only for the full permission setting. Existing `copilot -p` Runs are not converted and cannot be attached. The public SDK does not expose the spawned CLI PID, so PID/CPU/memory fields are unavailable for these controlled CLI Runs; raw output is the headless JSON event stream rather than the former `-p` text rendering. Session usage accounting continues to use Copilot’s persisted session usage events. Completion waits for runtime shutdown; a session-disconnect or runtime-stop failure fails the Run rather than reporting success.
+- **Native CLI runtime** — CLI Work Runs spawn the installed executable with `-p`, native attachment arguments and `--session-id` / `--resume`; they do not create an SDK client, controller or RPC connection. Text and streamed JSON output, native process metrics, session history, model fallback and completion checks are retained. Cancellation/timeout stop the owned process tree, not unrelated sessions. SDK Runs continue through the existing SDK runner. A CLI process exit code is not proof that every MCP tool succeeded.
 - **Session compatibility repair** — read legacy Copilot permission events during history synchronization and safely upgrade them before Resume, with an atomic backup and active-process protection. Periodic reads never rewrite Copilot history.
 - **Portable results** — every Work, Experiment, terminal-resume, and Automation run writes `result.md`, `transcript.jsonl`, `diff.patch`, `run.json`, `stdout.log`, and `stderr.log`.
 - **Background system notifications** — receive host OS notifications for successful, failed, or timed-out Work and Automation Runs even when every browser tab is closed. Windows toasts use the Work Board name and green icon, with a compact status/name/metrics layout. Select one to open its Work; standalone Automations open their Run. Experiments notify once and link to their Work. Configure or test notifications in Settings.
@@ -119,7 +166,7 @@ Conversation attachment links are authenticated and Work-owner scoped. Sniffed P
 
 ### Prerequisites
 
-- Node.js and npm
+- Node.js and npm (Node.js 24 LTS recommended)
 - The [GitHub Copilot CLI](https://github.com/github/copilot-cli) (`copilot`) installed and authenticated (interactive `/login`, or a `GH_TOKEN`/`GITHUB_TOKEN` env var with the "Copilot Requests" permission)
 - `git` on your `PATH`
 - Optional: a Microsoft Entra ID (Azure AD) app registration when sign-in is required — see [Authentication setup](#authentication-setup) below
@@ -228,7 +275,7 @@ Native definitions contain absolute executable/checkout paths and a non-secret e
 
 If Node or the checkout was removed and application commands cannot run, use the native entry location/ID printed by `autostart:status` to disable/remove **only that checkout's entry**. On Windows inspect the helper's `bootstrap.log`; on macOS inspect its bootstrap log/LaunchAgent; on Linux inspect the user journal/unit. Do not remove other login items or system-wide services.
 
-System notifications are emitted by this background process, not by the browser. They appear on the machine running Work Board and require an interactive desktop session plus OS notification permission. Delivery is at-most-once: a claimed notification is never repeated after restart.
+System notifications are emitted by this background process, not by the browser. Closing every browser tab does not stop Run execution or notification dispatch, but does not answer pending SDK approvals/questions either; reopen the page when a Run needs human input. Notifications appear on the machine running Work Board and require notifications enabled in Settings, an interactive desktop session and OS notification permission; Do Not Disturb/Focus settings may hide the toast. Successful, failed and timed-out Runs are eligible; cancelled Runs do not send a completion notification. Stopping the server or suspending/shutting down the machine prevents live dispatch. Delivery is at-most-once: a claimed notification is never repeated after restart.
 
 On Windows, the first notification prepares a current-user, installation-specific Work Board identity and Start menu notification shortcut. It needs no administrator rights and does not create a login/startup entry. Keep `scripts/workboard-notify.ps1`, `scripts/notification-shortcut.cs`, and the two `public/workboard-notification` icon assets with the installed application. Identity metadata lives under `%LOCALAPPDATA%\WorkBoard\Notifications\WorkBoard.Desktop.<id>`; only matching owned metadata/shortcuts can be updated or removed. If setup is denied or these artifacts were changed externally, the failure is reported rather than falling back to SnoreToast branding.
 
@@ -270,6 +317,38 @@ To configure Microsoft Entra mode:
 
 No `AUTH_MICROSOFT_ENTRA_ID_ISSUER` is set intentionally — omitting it makes Auth.js default to the `common` endpoint, which is required for personal Microsoft accounts (not just organizational ones) to be able to sign in.
 
+### MCP company-account authentication
+
+**Known authentication limitations:** the runtime split is not an MCP authentication fix. Native `copilot -p` uses CLI-owned authentication; real testing observed a successful protected MCP call in a new session and `requires authentication` during `--resume`. SDK still needs an approved host registration for built-in Entra sign-in/renewal, and Terminal-cache reuse is not guaranteed. Native tool errors remain visible even when the process exits 0. Configuration lists, loaded tool names and process exit codes do not prove protected MCP access.
+
+#### SDK without approved host registration: Terminal diagnostic fallback
+
+The following panel and fallback steps apply only to SDK Runs. Native CLI Runs have no SDK MCP panel; inspect their native history/logs and use Terminal when an interactive CLI flow is required. No App registration or SDK-specific Client ID is injected into native CLI execution.
+
+1. Open a local Terminal in the same Work directory and run `copilot`. Do not replay or resume a task solely to authenticate.
+2. Use `/mcp`, select the affected server and complete Microsoft sign-in with the company account. Confirm the connection in Terminal.
+3. Return to the active SDK Work's runtime panel and select **Reload native MCP**.
+4. If the server becomes **connected**, use **Verify tools** to check actual App access. Terminal credentials may not be reusable by the App host. If it still needs authentication, continue using that MCP in Terminal; do not assume login succeeded in the App.
+
+Without an approved host registration, the SDK panel uses Terminal-only authentication for every third-party `needs-auth` server from the first response. It does not first display Sign in or require a failed OAuth attempt. The backend rejects unsupported login requests before OAuth; connected tools retain Verify tools. Native CLI Run requests are rejected by the SDK-control API rather than attaching a hidden bridge. This does not bypass tenant policy, consent, user permissions or network restrictions.
+
+#### Optional SDK configuration: an approved native host registration
+
+This is separate from signing in to the Work Board website above. Local loopback mode can remain enabled while MCP servers authenticate the user's company account. An account identifies the user; an Entra Application (client) ID identifies Work Board, the application requesting access. Do not copy Copilot's, Azure CLI's, VS Code's or another application's client ID.
+
+1. Obtain an approved **Work Board public-client application registration** in the appropriate company tenant. Register it as a mobile/desktop application, not a confidential web client. Do not create a client secret for this flow or grant broad permissions as a shortcut. Tenant policy may require an administrator to approve registration or the specific resource consent.
+2. Configure the registration for the native authentication flow. Windows WAM requires `ms-appx-web://microsoft.aad.brokerplugin/{client_id}` in the application registration; see [Microsoft's WAM registration guidance](https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/desktop-mobile/wam#redirect-uri). If using a browser-based native fallback, configure its required loopback redirect as documented for that flow rather than the website's Auth.js callback.
+3. Set the **public** Application (client) ID in the server's `.env`, or its environment:
+   ```dotenv
+   WORKBOARD_COPILOT_ENTRA_CLIENT_ID="<your-work-board-public-client-application-id>"
+   ```
+   The environment takes precedence over `.env`. Whitespace is trimmed; malformed IDs fail before an SDK runtime opens, not native CLI execution. Leaving the setting empty does not enable SDK Entra host authentication or change website login mode.
+4. Build updated code and restart Work Board. Later ID changes require restarting the server and opening a new managed runtime; reloading MCP alone cannot change an already-connected host's registration.
+5. In an active managed Work's runtime panel, select **Sign in** for the MCP server requiring authentication, then complete the native Microsoft sign-in/consent using the company account. Work Board does not collect the account password, client secret or tokens. The native runtime chooses the requested resource from the MCP service, not from this application ID.
+6. Confirm the MCP becomes **connected**, then use **Verify tools** to perform a real `tools/list`. A completed login RPC, accepted configuration handshake or cached browser session alone is not proof of authenticated MCP access. Tenant policy, missing consent or a cancelled/busy Microsoft sign-in may still prevent access.
+
+This uses the supported [`CopilotClientOptions.entra` contract in SDK 1.0.27](https://github.com/github/copilot-sdk/blob/v1.0.27/nodejs/src/types.ts), which sends the registration in the runtime connection handshake. No private RPC methods or modifications to the SDK/runtime are required. Registration creation and tenant/admin consent are never automatic.
+
 ## Scheduling notes
 
 Scheduled tasks are driven entirely by the Node.js server process (`instrumentation.ts` → `node-cron`), not by the browser — a task will still fire on schedule even if no browser tab is open. What _does_ matter is keeping the server process itself alive continuously:
@@ -278,12 +357,26 @@ Scheduled tasks are driven entirely by the Node.js server process (`instrumentat
 - Use the background commands for terminal-independent operation and default current-user login startup. This is not a crash-restart supervisor or a system service: it does not start before login (except existing Linux linger behavior), and explicit background stop removes login registration.
 - There's currently no "catch up on missed runs" — if the process was down when a scheduled time passed, that run is simply skipped.
 
+### Run concurrency
+
+`RUN_CONCURRENCY="5"` in `.env` allows at most **five queued Runs to execute simultaneously in one Work Board server process**; additional Runs wait. Work and Automation execution share this queue. Same-key jobs stay serialized, and an exclusive "wait for previous Runs" job can reduce actual concurrency.
+
+There is currently **no hard-coded upper limit or strict input validation**. Use a positive integer only: zero, negative or non-numeric values can prevent the queue from starting jobs. A value such as `8` raises the cap to eight; it does not guarantee that the host or Copilot/MCP services can sustain that load. The default is `5`; adjust it according to CPU, memory, token usage and service throttling. This setting does not cap subagents/tool requests within a Run or Copilot sessions opened manually in Terminal.
+
+Restart Work Board after editing the value:
+
+```powershell
+npm run background:restart
+```
+
 ## Configuration
 
 | Env var                           | Purpose                                                                                       |
 | --------------------------------- | --------------------------------------------------------------------------------------------- |
+| `RUN_CONCURRENCY`                 | Maximum concurrent queued Runs per server process; default `5`. Use a positive integer and restart after changing it. |
 | `DATABASE_URL`                    | SQLite connection string, defaults to `file:./dev.db` (see `.env`)                            |
 | `GH_TOKEN` / `GITHUB_TOKEN`       | Optional PAT for headless Copilot CLI auth (needs "Copilot Requests" permission)              |
+| `WORKBOARD_COPILOT_ENTRA_CLIENT_ID` | Work Board's own Entra public-client Application ID for native MCP company-account sign-in and renewal. No secret required; separate from website login. Restart to apply. |
 | `AUTH_MICROSOFT_ENTRA_ID_ID`      | Optional client ID; leave this and the client secret empty for loopback-only local mode       |
 | `AUTH_MICROSOFT_ENTRA_ID_SECRET`  | Optional client secret; must be set together with the client ID                               |
 | `AUTH_SECRET`                     | Random Auth.js session secret; required when Microsoft Entra mode is enabled                  |

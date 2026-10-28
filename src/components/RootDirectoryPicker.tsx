@@ -247,8 +247,8 @@ export default function RootDirectoryPicker({
   }
 
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-800 bg-neutral-950/35">
-      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800 p-2">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-neutral-800 bg-neutral-950/35">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-800 p-2">
         <FolderRoot size={15} className="ml-1 text-emerald-400" aria-hidden="true" />
         <select
           aria-label="Common root directory"
@@ -334,7 +334,7 @@ export default function RootDirectoryPicker({
         />
       )}
 
-      <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-neutral-500">
+      <div className="flex shrink-0 items-center gap-2 px-3 py-2 text-[11px] text-neutral-500">
         {parentPath && browsePath !== rootPath && (
           <button
             type="button"
@@ -361,7 +361,8 @@ export default function RootDirectoryPicker({
         )}
       </div>
 
-      <div className="max-h-44 overflow-y-auto border-t border-neutral-800">
+      <div className="relative min-h-44 flex-1">
+        <div role="group" aria-label="Root directory folders" className="absolute inset-0 overflow-y-auto border-t border-neutral-800">
         {loading && (
           <div className="flex items-center gap-2 px-3 py-4 text-xs text-neutral-500">
             <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> Loading folders...
@@ -406,7 +407,8 @@ export default function RootDirectoryPicker({
           <p className="px-3 py-4 text-xs text-neutral-500">No child directories.</p>
         )}
       </div>
-      {error && <p role="alert" className="border-t border-red-900/50 px-3 py-2 text-xs text-red-400">{error}</p>}
+      </div>
+      {error && <p role="alert" className="shrink-0 border-t border-red-900/50 px-3 py-2 text-xs text-red-400">{error}</p>}
       {preferenceError && <p role="alert" className="border-t border-red-900/50 px-3 py-2 text-xs text-red-400">{preferenceError}</p>}
     </div>
   );

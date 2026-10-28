@@ -13,6 +13,7 @@ import StatusBadge from "@/components/StatusBadge";
 import CancelRunButton from "@/components/CancelRunButton";
 import RunStatusRefresher from "@/components/RunStatusRefresher";
 import { formatDuration } from "@/lib/format";
+import RunDuration from "@/components/RunDuration";
 import { discoverProjectSkills } from "@/lib/skill-discovery";
 import ExperimentBuilder from "@/components/ExperimentBuilder";
 import ExperimentRefresher from "@/components/ExperimentRefresher";
@@ -33,6 +34,8 @@ import { readRunLogTail } from "@/lib/run-artifacts";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { canCancelRun, getRunStatusMessage, TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
 import { getRunStatusSnapshot } from "@/lib/run-status";
+import { readInitialWorkAttachmentMetadata } from "@/lib/work-attachments";
+import { MessageAttachments } from "@/components/WorkMessageAttachments";
 
 export default async function WorkDetailPage({
   params,
@@ -85,6 +88,12 @@ export default async function WorkDetailPage({
     hash: work.promptHash ?? hashWorkContent(work.promptCache),
     modifiedAt: work.updatedAt.toISOString(),
   }));
+  const initialAttachments = await readInitialWorkAttachmentMetadata(work)
+    .then((files) => ({ files, error: null }))
+    .catch((error: unknown) => ({
+      files: [],
+      error: error instanceof Error ? error.message : "Could not load initial Prompt attachments.",
+    }));
   const latestRun = work.runs[0];
   const latestRunState = latestRun ? await getRunStatusSnapshot(latestRun) : null;
   const settlingRun = latestRunState?.displayStatus === "SYNCING" ? latestRun : null;
@@ -150,6 +159,7 @@ export default async function WorkDetailPage({
         key={work.id}
         workId={work.id}
         runId={latestRun?.id ?? null}
+        runtimeEngine={latestRun?.engine ?? null}
         initialLog={latestLog}
         isLive={latestRun?.status === "PENDING" || latestRun?.status === "RUNNING"}
         historySync={Boolean(latestRun && isTerminalRunTrigger(latestRun.trigger) && (latestRun.status === "RUNNING" || latestRun.status === "UNKNOWN"))}
@@ -217,9 +227,10 @@ export default async function WorkDetailPage({
           runActions={latestRun && (
             <div className="flex shrink-0 items-center gap-1">
               <StatusBadge status={latestRunState?.displayStatus ?? latestRun.status} />
-              <span className="whitespace-nowrap text-[10px] text-neutral-400">
-                {formatDuration(latestRun.startedAt, latestRun.finishedAt)}
-              </span>
+              <RunDuration key={latestRun.id} startedAt={latestRun.startedAt?.toISOString() ?? null}
+                finishedAt={latestRun.finishedAt?.toISOString() ?? null} status={latestRun.status}
+                initialLabel={formatDuration(latestRun.startedAt, latestRun.finishedAt)}
+                className="whitespace-nowrap text-[10px] text-neutral-400" />
               {canCancelRun(latestRun) && (
                 <CancelRunButton runId={latestRun.id} />
               )}
@@ -259,7 +270,10 @@ export default async function WorkDetailPage({
           timeoutSeconds: work.timeoutSeconds,
         }}
       /> },
-        { id: "prompt", label: "Prompt", content: <PromptEditor
+        { id: "prompt", label: "Prompt", content: <div className="space-y-3">
+      {initialAttachments.error && <p role="alert" className="text-sm text-red-400">{initialAttachments.error}</p>}
+      <MessageAttachments workId={work.id} files={initialAttachments.files} />
+      <PromptEditor
         embedded
         key={`prompt:${work.id}`}
         workId={work.id}
@@ -269,7 +283,7 @@ export default async function WorkDetailPage({
         defaultEngine={work.defaultEngine}
         hasActiveConflict={activeConflicts.length > 0}
         archived={work.status === "ARCHIVED"}
-      /> },
+      /></div> },
         ...((showSkillComparison || work.experiments.length > 0) ? [{ id: "comparisons", label: "Comparisons", content: <>
       {showSkillComparison && (
         <ExperimentBuilder

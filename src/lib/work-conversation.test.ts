@@ -7,6 +7,7 @@ const services = vi.hoisted(() => ({
   steering: { findMany: vi.fn(), updateMany: vi.fn() },
   conflicts: vi.fn(), activity: vi.fn(), reconcile: vi.fn(), exists: vi.fn(), repair: vi.fn(),
   history: vi.fn(), create: vi.fn(), append: vi.fn(), execute: vi.fn(), enqueue: vi.fn(),
+  nativeActive: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: { work: services.work, run: services.run, workSteeringMessage: services.steering },
@@ -27,6 +28,7 @@ vi.mock("@/lib/work-executor", () => ({
   executeWorkRun: services.execute, getWorkRunQueueKey: () => "session:test",
 }));
 vi.mock("@/lib/job-queue", () => ({ jobQueue: { enqueue: services.enqueue } }));
+vi.mock("@/lib/copilot-runner", () => ({ isNativeCopilotRunActive: services.nativeActive }));
 
 import { GET } from "../app/api/works/[id]/conversation/route";
 import { POST } from "../app/api/works/[id]/follow-up/route";
@@ -38,6 +40,7 @@ let parent: {
   id: string; workId: string; status: string; trigger: string; hostname: string;
   copilotSessionId: string; executionPath: string; createdAt: Date; startedAt: Date;
   finishedAt: Date; terminalLaunches: { id: string }[];
+  engine: "CLI" | "SDK";
 };
 const context = { params: Promise.resolve({ id: "work-1" }) };
 const request = (query = "") => new NextRequest(`http://localhost/api/works/work-1/conversation${query}`);
@@ -48,7 +51,8 @@ const followUp = (body: unknown) => POST(new NextRequest("http://localhost/api/w
 beforeEach(() => {
   vi.resetAllMocks();
   parent = { id: "run-1", workId: "work-1", status: "SUCCESS", trigger: "WORK", hostname: hostname(),
-    copilotSessionId: sessionId, executionPath: "C:/example", createdAt: new Date(), startedAt: new Date(), finishedAt: new Date(), terminalLaunches: [] };
+    copilotSessionId: sessionId, executionPath: "C:/example", createdAt: new Date(), startedAt: new Date(), finishedAt: new Date(), terminalLaunches: [], engine: "CLI" };
+  services.nativeActive.mockReturnValue(false);
   services.user.mockResolvedValue("owner");
   services.work.findFirst.mockResolvedValue({ id: "work-1", hostname: hostname(), status: "ACTIVE", directoryPath: "C:/example", promptFileName: "PROMPT.md", promptHash: "hash" });
   services.run.findFirst.mockImplementation(async ({ where }) => {
@@ -71,6 +75,22 @@ beforeEach(() => {
 });
 
 describe("owned session conversation API", () => {
+  it.each(["PENDING", "RUNNING"])("waits for missing history during %s and recovers when the file appears", async (status) => {
+    parent.status = status;
+    services.history.mockRejectedValueOnce(Object.assign(new Error("Not created yet"), { code: "ENOENT" }));
+    const waiting = await GET(request(), context);
+    expect(waiting.status).toBe(200);
+    const body = await waiting.json();
+    expect(body.historyAvailable).toBe(false);
+    expect(body.historyUnavailableReason).toContain("Waiting for this Run to record");
+    expect(body.historyUnavailableReason).not.toContain("unavailable");
+    expect(body.blockedReason).not.toContain("Start a new Work Run");
+    expect(body.canFollowUp).toBe(false);
+    const ready = await (await GET(request(), context)).json();
+    expect(ready.historyAvailable).toBe(true);
+    expect(ready.historyUnavailableReason).toBeNull();
+  });
+
   it("authorizes the Work before reading local history", async () => {
     services.work.findFirst.mockResolvedValue(null);
     expect((await GET(request(), context)).status).toBe(404);
@@ -116,6 +136,23 @@ describe("owned session conversation API", () => {
     expect(body.historyAvailable).toBe(true);
     expect(body.canFollowUp).toBe(false);
     expect(body.blockedReason).toContain("Terminal");
+  });
+
+  it("keeps an App-owned native CLI session read-only without mislabeling its lock as external Terminal", async () => {
+    parent.status = "RUNNING";
+    services.nativeActive.mockReturnValue(true);
+    services.activity.mockResolvedValue({ active: true, starting: false });
+    services.conflicts.mockResolvedValue([{ id: parent.id }]);
+    const body = await (await GET(request(), context)).json();
+    expect(body).toMatchObject({ historyAvailable: true, terminalActive: false, canSteer: false, canFollowUp: false });
+    expect(body.steeringBlockedReason).toContain("Native CLI Runs do not support Steering");
+    expect(body.blockedReason).toContain("Wait");
+    expect(services.activity).not.toHaveBeenCalled();
+  });
+
+  it("enables native Follow up again after its Run and owned process end", async () => {
+    const body = await (await GET(request(), context)).json();
+    expect(body).toMatchObject({ canFollowUp: true, canSteer: false, terminalActive: false, continuationParentRunId: parent.id });
   });
 
   it("keeps missing history and source resets explicit", async () => {

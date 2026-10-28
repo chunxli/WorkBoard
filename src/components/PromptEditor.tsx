@@ -247,10 +247,12 @@ export default function PromptEditor({
         <div className="flex flex-col justify-between gap-3 border-t border-neutral-800 pt-4 sm:flex-row sm:items-end">
           <div className="flex flex-wrap gap-3">
             <label className="text-xs text-neutral-500">
-              Engine this run
+              Runtime
               <select
+                aria-label="Runtime for this run"
                 value={engine}
                 onChange={(event) => setEngineOverride(event.target.value as "CLI" | "SDK")}
+                disabled={starting}
                 className="ui-input mt-1.5 block px-3 py-2 text-sm"
               >
                 <option value="CLI">Copilot CLI</option>

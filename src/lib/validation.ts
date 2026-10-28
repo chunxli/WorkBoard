@@ -122,6 +122,7 @@ export const updateWorkSchema = z
 export const updateWorkPromptSchema = z.object({
   content: z.string().max(100000),
   expectedHash: z.string().length(64),
+  initialAttachmentIds: attachmentIdsSchema.optional(),
 });
 
 export const runWorkSchema = z

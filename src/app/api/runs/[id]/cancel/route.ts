@@ -7,9 +7,21 @@ import { ownedRunWhere } from "@/lib/run-access";
 import { finalizeCancelledWorkRun } from "@/lib/work-executor";
 import { finalizeAutomationRun } from "@/lib/task-executor";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { CopilotProcessStopError } from "@/lib/copilot-process";
 
 export async function POST(
   _req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  try { return await cancelRequest(context); }
+  catch (error) {
+    if (!(error instanceof CopilotProcessStopError)) throw error;
+    console.error("[Work Board] Native CLI cancellation failed.", error);
+    return NextResponse.json({ error: "Could not stop the native CLI process. It may still be running; retry cancellation or inspect local diagnostics." }, { status: 500 });
+  }
+}
+
+async function cancelRequest(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const userId = await getSessionUserId();
@@ -26,7 +38,7 @@ export async function POST(
     );
   }
   if (run.status === "RUNNING") {
-    const killed = cancelActiveRun(run);
+    const killed = await cancelActiveRun(run);
     if (!killed) {
       await prisma.run.update({ where: { id }, data: { status: "CANCELLED" } });
       if (run.taskId) await finalizeAutomationRun(id, "CANCELLED", "Run was cancelled.");
@@ -43,7 +55,7 @@ export async function POST(
     if (cancelled.count === 0) {
       run = await prisma.run.findFirst({ where: ownedRunWhere(userId, id) });
       if (run?.status === "RUNNING") {
-        const killed = cancelActiveRun(run);
+        const killed = await cancelActiveRun(run);
         if (!killed) {
           await prisma.run.update({ where: { id }, data: { status: "CANCELLED" } });
           if (run.taskId) await finalizeAutomationRun(id, "CANCELLED", "Run was cancelled.");
@@ -64,9 +76,7 @@ export async function POST(
   return NextResponse.json({ error: "Run is not cancellable" }, { status: 400 });
 }
 
-function cancelActiveRun(run: NonNullable<Awaited<ReturnType<typeof prisma.run.findFirst>>>) {
-  if (run.engine === "SDK" || run.workId && !run.experimentVariantId) {
-    return cancelSdkRun(run.id) || (run.engine === "CLI" ? cancelRun(run.id) : false);
-  }
+async function cancelActiveRun(run: NonNullable<Awaited<ReturnType<typeof prisma.run.findFirst>>>) {
+  if (run.engine === "SDK") return cancelSdkRun(run.id);
   return cancelRun(run.id);
 }

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { CopilotModelOptions, CopilotModelStatus, useCopilotModelCatalog } from "@/components/CopilotModelOptions";
 import { useRouter } from "next/navigation";
 import { Boxes, ChevronDown, MessageSquareText, Save, SlidersHorizontal, Zap } from "lucide-react";
 import type { Repo, Task } from "@/generated/prisma/client";
@@ -50,14 +51,7 @@ export default function EditTaskForm({ task, repos }: { task: Task; repos: Repo[
   const [timeoutSeconds, setTimeoutSeconds] = useState(task.timeoutSeconds);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-
-  useEffect(() => {
-    fetch("/api/copilot/models")
-      .then((res) => (res.ok ? res.json() : { models: [] }))
-      .then((data: { models?: string[] }) => setAvailableModels(data.models ?? []))
-      .catch(() => {});
-  }, []);
+  const modelCatalog = useCopilotModelCatalog();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -220,8 +214,7 @@ export default function EditTaskForm({ task, repos }: { task: Task; repos: Repo[
                 }}
               >
                 <option value="">Auto</option>
-                {model && !availableModels.includes(model) && <option value={model}>{model} (current)</option>}
-                {availableModels.map((availableModel) => <option key={availableModel} value={availableModel}>{availableModel}</option>)}
+                <CopilotModelOptions catalog={modelCatalog.catalog} value={model} />
               </select>
             </label>
             <label className="text-xs font-medium text-neutral-400 sm:col-span-2">
@@ -233,12 +226,10 @@ export default function EditTaskForm({ task, repos }: { task: Task; repos: Repo[
                 disabled={!model}
               >
                 <option value="">{model ? "None" : "Select a primary model first"}</option>
-                {fallbackModel && !availableModels.includes(fallbackModel) && <option value={fallbackModel}>{fallbackModel} (current)</option>}
-                {availableModels.map((availableModel) => (
-                  <option key={availableModel} value={availableModel} disabled={availableModel === model}>{availableModel}</option>
-                ))}
+                <CopilotModelOptions catalog={modelCatalog.catalog} value={fallbackModel} exclude={model} />
               </select>
             </label>
+            <CopilotModelStatus {...modelCatalog} selected={[model, fallbackModel]} />
             <label className="text-xs font-medium text-neutral-400">
               Context size
               <select className="ui-input mt-1.5 w-full px-3 py-2 text-sm" value={contextTier} onChange={(event) => setContextTier(event.target.value as typeof contextTier)}>

@@ -85,7 +85,7 @@ export async function POST(
       );
     }
   } else {
-    const controller = getManagedSessionController(run.id);
+    const controller = run.engine === "SDK" ? getManagedSessionController(run.id) : null;
     const reason = getSteeringAvailabilityReason({
       workStatus: work.status,
       workHostname: work.hostname,
@@ -142,7 +142,7 @@ export async function POST(
 
   try {
     const record = message as WorkSteeringMessageRecord;
-    const controller = newlyCreated ? getManagedSessionController(run.id) : null;
+    const controller = newlyCreated && run.engine === "SDK" ? getManagedSessionController(run.id) : null;
     const result = await processWorkSteeringMessage({
       message: record,
       newlyCreated,

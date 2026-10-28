@@ -88,7 +88,10 @@ export function getSteeringAvailabilityReason(input: {
   ) return "This Run belongs to another machine.";
   if (isTerminalRunTrigger(input.run.trigger)) return "External Terminal sessions are read-only.";
   if (input.run.status !== "RUNNING") return "The selected Run is no longer active.";
-  if (input.run.engine !== "CLI" && input.run.engine !== "SDK") {
+  if (input.run.engine === "CLI") {
+    return "Native CLI Runs do not support Steering. Wait for the Run to finish, then send Follow Up.";
+  }
+  if (input.run.engine !== "SDK") {
     return "This Run has no supported live session transport.";
   }
   if (!input.controller) return "The managed live controller is unavailable or no longer accepting Steering.";

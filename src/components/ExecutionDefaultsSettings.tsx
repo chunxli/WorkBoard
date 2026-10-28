@@ -15,7 +15,7 @@ export default function ExecutionDefaultsSettings({
 }: {
   initialValue: ExecutionDefaultsValue;
 }) {
-  const [value, setValue] = useState(initialValue);
+  const [value, setValue] = useState<ExecutionDefaultsValue>({ ...initialValue });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);

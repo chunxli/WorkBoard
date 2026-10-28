@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { CopilotModelOptions, CopilotModelStatus, useCopilotModelCatalog } from "@/components/CopilotModelOptions";
 import {
   BUILT_IN_EXECUTION_DEFAULTS,
   type ExecutionContextTier,
@@ -35,17 +35,8 @@ export default function WorkExecutionFields({
   onChange: (value: WorkExecutionSettingsValue) => void;
   keepCliFieldsEnabled?: boolean;
 }) {
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const modelCatalog = useCopilotModelCatalog();
   const cli = value.defaultEngine === "CLI" || keepCliFieldsEnabled;
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch("/api/copilot/models", { signal: controller.signal })
-      .then((response) => (response.ok ? response.json() : { models: [] }))
-      .then((data: { models?: string[] }) => setAvailableModels(data.models ?? []))
-      .catch(() => {});
-    return () => controller.abort();
-  }, []);
 
   function update<Key extends keyof WorkExecutionSettingsValue>(
     key: Key,
@@ -57,10 +48,11 @@ export default function WorkExecutionFields({
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <label className="text-xs text-neutral-400">
-        Engine
+        Runtime
         <select
+          aria-label="Work runtime"
           value={value.defaultEngine}
-          onChange={(event) => update("defaultEngine", event.target.value as "CLI" | "SDK")}
+          onChange={(event) => update("defaultEngine", event.target.value as WorkExecutionSettingsValue["defaultEngine"])}
           className="ui-input mt-1.5 w-full px-3 py-2 text-sm"
         >
           <option value="CLI">Copilot CLI</option>
@@ -83,17 +75,12 @@ export default function WorkExecutionFields({
           className="ui-input mt-1.5 w-full px-3 py-2 text-sm"
         >
           <option value="">Auto</option>
-          {value.model && !availableModels.includes(value.model) && (
-            <option value={value.model}>{value.model} (current)</option>
-          )}
-          {availableModels.map((model) => (
-            <option key={model} value={model}>{model}</option>
-          ))}
+          <CopilotModelOptions catalog={modelCatalog.catalog} value={value.model} />
         </select>
       </label>
 
       <label className={`text-xs ${cli ? "text-neutral-400" : "text-neutral-600"}`}>
-        Fallback model (CLI)
+        Fallback model{value.defaultEngine === "SDK" ? " (CLI only)" : ""}
         <select
           value={value.fallbackModel}
           onChange={(event) => update("fallbackModel", event.target.value)}
@@ -101,17 +88,12 @@ export default function WorkExecutionFields({
           className="ui-input mt-1.5 w-full px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">None</option>
-          {value.fallbackModel && !availableModels.includes(value.fallbackModel) && (
-            <option value={value.fallbackModel}>{value.fallbackModel} (current)</option>
-          )}
-          {availableModels.map((model) => (
-            <option key={model} value={model} disabled={model === value.model}>{model}</option>
-          ))}
+          <CopilotModelOptions catalog={modelCatalog.catalog} value={value.fallbackModel} exclude={value.model} />
         </select>
       </label>
 
       <label className={`text-xs ${cli ? "text-neutral-400" : "text-neutral-600"}`}>
-        Agent (CLI)
+        Agent{value.defaultEngine === "SDK" ? " (CLI only)" : ""}
         <input
           value={value.agent}
           onChange={(event) => update("agent", event.target.value)}
@@ -150,7 +132,7 @@ export default function WorkExecutionFields({
       </label>
 
       <label className={`text-xs ${cli ? "text-neutral-400" : "text-neutral-600"}`}>
-        Permissions (CLI)
+        Permissions{value.defaultEngine === "SDK" ? " (CLI only)" : ""}
         <select
           value={value.permissionMode}
           onChange={(event) => update("permissionMode", event.target.value as "default" | "full")}
@@ -206,6 +188,7 @@ export default function WorkExecutionFields({
           />
         </div>
       </label>
+      <CopilotModelStatus {...modelCatalog} selected={[value.model, value.fallbackModel]} />
     </div>
   );
 }

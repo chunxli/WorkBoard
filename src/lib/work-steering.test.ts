@@ -54,7 +54,7 @@ describe("getSteeringAvailabilityReason", () => {
     run: {
       status: "RUNNING",
       trigger: "WORK",
-      engine: "CLI",
+      engine: "SDK",
       hostname: "host-a",
       sessionId: "session-1",
     },
@@ -84,6 +84,11 @@ describe("getSteeringAvailabilityReason", () => {
       ...eligible,
       controller: null,
     })).toContain("controller");
+  });
+
+  it("rejects a native CLI Run even if a stale managed controller exists", () => {
+    expect(getSteeringAvailabilityReason({ ...eligible, run: { ...eligible.run, engine: "CLI" } }))
+      .toContain("Native CLI Runs do not support Steering");
   });
 });
 

@@ -1,5 +1,4 @@
 import { appendFile, mkdir } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
   approveAll,
@@ -27,6 +26,11 @@ import {
   unregisterManagedSessionController,
 } from "@/lib/managed-session-controller";
 import { readCopilotSessionInsights } from "@/lib/copilot-session-insights";
+import { readCopilotSkillDirectories } from "@/lib/copilot-skill-directories";
+import { resolveCopilotEntraConfig } from "@/lib/copilot-entra";
+import { resolveCopilotCliExecutable } from "@/lib/copilot-cli-executable";
+export { resolveCopilotCliExecutable } from "@/lib/copilot-cli-executable";
+import { getManagedRuntime, ManagedRuntime, registerManagedRuntime, unregisterManagedRuntime } from "@/lib/managed-runtime";
 
 interface ManagedRunOptions {
   runId: string;
@@ -83,24 +87,6 @@ globalForSdk.copilotSdkSessions = activeSessions;
 globalForSdk.copilotSdkCancelledRuns = cancelledRuns;
 globalForSdk.copilotSdkManagedRuns = managedRuns;
 
-export function resolveCopilotCliExecutable(): string {
-  const resolver = process.platform === "win32" ? "where.exe" : "which";
-  const result = execFileSync(resolver, ["copilot"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    windowsHide: true,
-  });
-  const candidates = result.split(/\r?\n/).map((candidate) => candidate.trim()).filter(Boolean);
-  const executable = process.platform === "win32"
-    ? candidates.find((candidate) => /\.(exe|com|js)$/i.test(candidate)) ??
-      candidates.find((candidate) => !/\.(cmd|bat|ps1|lnk)$/i.test(candidate))
-    : candidates[0];
-  if (!executable) {
-    throw new Error("Copilot CLI has no directly spawnable executable on PATH; install the CLI executable rather than a shell wrapper.");
-  }
-  return executable;
-}
-
 export function getCopilotCliPermissionArgs(permissionMode: RunPermissionMode = "default"): string[] {
   return [permissionMode === "full" ? "--allow-all" : "--allow-all-tools"];
 }
@@ -120,16 +106,18 @@ export function createManagedRuntimeConnection(
 
 export function buildManagedSessionConfig(
   runtime: ManagedRunOptions["runtime"],
-  options: Pick<ManagedRunOptions, "workPath" | "model" | "agent" | "contextTier" | "reasoningEffort">
+  options: Pick<ManagedRunOptions, "workPath" | "model" | "agent" | "contextTier" | "reasoningEffort" | "permissionMode">,
+  skillDirectories?: string[],
 ): ResumeSessionConfig {
   return {
     workingDirectory: options.workPath,
     model: options.model ?? undefined,
+    ...(skillDirectories !== undefined ? { skillDirectories } : {}),
     ...(runtime === "cli" ? { agent: options.agent ?? undefined, enableConfigDiscovery: true } : {}),
     contextTier: options.contextTier === "long_context" ? "long_context" : "default",
     reasoningEffort: options.reasoningEffort as SessionConfig["reasoningEffort"],
     streaming: true,
-    ...(runtime === "sdk" ? { onPermissionRequest: approveAll } : {}),
+    ...(runtime === "sdk" || options.permissionMode === "full" ? { onPermissionRequest: approveAll } : {}),
   } satisfies ResumeSessionConfig;
 }
 
@@ -152,6 +140,7 @@ export function cancelSdkRun(runId: string): boolean {
   const controller = getController(runId);
   if (!managedRuns.has(runId) && !session && !controller) return false;
   if (managedRuns.has(runId)) cancelledRuns.add(runId);
+  getManagedRuntime(runId)?.cancelPending();
   if (controller) void controller.abort().catch(() => {});
   else if (session) void session.abort().catch(() => {});
   return true;
@@ -174,6 +163,7 @@ export function startCopilotSdkRun(
 }
 
 async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunResult> {
+  const entra = resolveCopilotEntraConfig();
   managedRuns.add(options.runId);
   const logPath = getRunLogPath(options.runId);
   try {
@@ -215,13 +205,16 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
   }
 
   const emitter = createRunEmitter(options.runId);
+  const environment = buildCopilotEnvironment();
+  let skillDirectories: string[] | undefined;
   const client = new CopilotClient({
+    ...(entra ? { entra } : {}),
     ...(options.runtime === "cli"
       ? { connection: createManagedRuntimeConnection(options.runtime, options.permissionMode) }
       : {}),
     mode: "copilot-cli",
     workingDirectory: options.workPath,
-    env: buildCopilotEnvironment(),
+    env: environment,
     logLevel: "warning",
   });
   let session: CopilotSession | null = null;
@@ -235,6 +228,10 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
   let sessionEventCursor = 0;
   let pendingWrites = Promise.resolve();
   let completedResult: ManagedRunResult | null = null;
+  const runtime = new ManagedRuntime(
+    options.sessionId, options.runtime === "sdk" || options.permissionMode === "full", Boolean(entra),
+  );
+  registerManagedRuntime(options.runId, runtime);
 
   const appendEvent = (event: unknown) => {
     const line = JSON.stringify(event);
@@ -245,8 +242,12 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
     emitter.emit("event", { type: "line", data: line } satisfies CopilotRunEvent);
   };
 
-  const makeSessionConfig = (model: string | null) =>
-    buildManagedSessionConfig(options.runtime, { ...options, model });
+  const makeSessionConfig = (model: string | null): ResumeSessionConfig => ({
+    ...buildManagedSessionConfig(options.runtime, { ...options, model }, skillDirectories),
+    onPermissionRequest: runtime.onPermissionRequest,
+    onUserInputRequest: runtime.onUserInputRequest,
+    onElicitationRequest: runtime.onElicitationRequest,
+  });
 
   const listenToSession = (activeSession: CopilotSession): ManagedSessionController => {
     const currentController = new ManagedSessionController(activeSession);
@@ -272,11 +273,13 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
       resume
     );
     activeSessions.set(options.runId, session);
+    runtime.bind(session);
     controller = listenToSession(session);
     options.onSpawn?.({ pid: null, command, model });
   };
 
   const closeSessionBinding = async () => {
+    runtime.unbind();
     unsubscribe?.();
     unsubscribe = null;
     const activeController = getManagedSessionController(options.runId);
@@ -299,6 +302,7 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
   let timeout: NodeJS.Timeout | undefined;
 
   try {
+    skillDirectories = await readCopilotSkillDirectories(environment);
     await client.start();
     options.onSpawn?.({ pid: null, command, model: currentModel });
     await connectSession(options.resumeSession === true, currentModel);
@@ -307,6 +311,7 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
     if (timeoutMs !== null) {
       timeout = setTimeout(() => {
         timedOut = true;
+        runtime.cancelPending();
         const activeController = getManagedSessionController(options.runId);
         void activeController?.abort().catch((error) => {
           activeController.observeError(error instanceof Error ? error : new Error(String(error)));
@@ -433,6 +438,7 @@ async function startManagedRun(options: ManagedRunOptions): Promise<ManagedRunRe
     await closeSessionBinding().catch((error: unknown) => { shutdownErrors.push(error); });
     cancelledRuns.delete(options.runId);
     managedRuns.delete(options.runId);
+    unregisterManagedRuntime(options.runId, runtime);
     const stopErrors = await client.stop().catch((errors: unknown) => [errors]);
     if (Array.isArray(stopErrors)) shutdownErrors.push(...stopErrors);
     activeSessions.delete(options.runId);

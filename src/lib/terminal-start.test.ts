@@ -43,4 +43,12 @@ describe("new terminal Work session", () => {
     expect(args).toContain("--allow-all-tools");
     expect(args).not.toContain("--allow-all");
   });
+
+  it("keeps saved initial file references without unsupported interactive attachment flags", () => {
+    const prompt = "Review the evidence\n\nAttachments:\n- .workboard/attachments/work-id/work-id/evidence.png";
+    const args = buildNewTerminalSessionArgs({ ...options, prompt });
+    expect(args[args.indexOf("-i") + 1]).toBe(prompt);
+    expect(args).not.toContain("--attachment");
+    expect(args).not.toContain("--attachments");
+  });
 });

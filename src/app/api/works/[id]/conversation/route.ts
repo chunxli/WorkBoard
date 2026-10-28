@@ -8,6 +8,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import { getManagedSessionController } from "@/lib/managed-session-controller";
+import { isNativeCopilotRunActive } from "@/lib/copilot-runner";
 import { getSteeringAvailabilityReason, isWorkSteeringRequestInFlight } from "@/lib/work-steering";
 import { authMode } from "@/lib/auth-mode";
 import { getCopilotSessionEventsPath } from "@/lib/copilot-session-compat";
@@ -84,11 +85,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     const current = runs[0];
     const managedRun = runs.find((run) => run.status === "RUNNING");
-    const managedController = managedRun?.engine && managedRun.hostname === hostname()
+    const managedController = managedRun?.engine === "SDK" && managedRun.hostname === hostname()
       ? getManagedSessionController(managedRun.id)
       : null;
+    const ownedNativeRun = managedRun?.engine === "CLI" && managedRun.hostname === hostname()
+      && isNativeCopilotRunActive(managedRun.id);
     const currentActive = current && ["PENDING", "RUNNING"].includes(current.status);
-    const activity = managedController
+    const activity = managedController || ownedNativeRun
       ? { active: false, starting: false }
       : await getTerminalSessionActivity(sessionId, current?.terminalLaunches[0]?.id ?? null,
           currentActive && isTerminalRunTrigger(current.trigger) ? current.createdAt : undefined);
@@ -220,8 +223,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     } catch (error) {
       if (error instanceof ConversationReadError) throw error;
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      base.historyUnavailableReason = "Stored session history is unavailable. The original Run logs and artifacts are still accessible.";
-      base.blockedReason ??= "Session history is unavailable. Start a new Work Run explicitly.";
+      const active = anchor.status === "PENDING" || anchor.status === "RUNNING";
+      base.historyUnavailableReason = active
+        ? "Waiting for this Run to record session history. It will appear automatically when available."
+        : "Stored session history is unavailable. The original Run logs and artifacts are still accessible.";
+      base.blockedReason ??= active
+        ? "Wait for the active Run to record its session history."
+        : "Session history is unavailable. Start a new Work Run explicitly.";
     }
     base.canFollowUp = base.historyAvailable && base.blockedReason === null;
     return NextResponse.json(base, { headers });

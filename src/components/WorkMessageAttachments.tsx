@@ -23,7 +23,7 @@ export function MessageAttachments({ workId, files }: { workId: string; files: W
   </div>;
 }
 
-export function useMessageAttachments(workId: string) {
+export function useMessageAttachments(workId?: string) {
   const [files, setFiles] = useState<DraftFile[]>([]);
   const current = useRef<DraftFile[]>([]);
   const active = useRef<XMLHttpRequest | null>(null);
@@ -64,7 +64,8 @@ export function useMessageAttachments(workId: string) {
     current.current.forEach((file) => { if (file.thumbnail) URL.revokeObjectURL(file.thumbnail); });
     replace([]); setError(null);
   }
-  async function upload(requestId: string): Promise<WorkAttachment[]> {
+  async function upload(requestId: string, targetWorkId = workId): Promise<WorkAttachment[]> {
+    if (!targetWorkId) throw new Error("Create the Work before uploading attachments.");
     const selected = [...current.current];
     const receipts: WorkAttachment[] = [];
     for (const entry of selected) {
@@ -77,7 +78,7 @@ export function useMessageAttachments(workId: string) {
         const receipt = await new Promise<WorkAttachment>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           active.current = xhr;
-          xhr.open("POST", `/api/works/${encodeURIComponent(workId)}/attachments?${query}`);
+          xhr.open("POST", `/api/works/${encodeURIComponent(targetWorkId)}/attachments?${query}`);
           xhr.setRequestHeader("Content-Type", "application/octet-stream");
           xhr.timeout = 120_000;
           xhr.upload.onprogress = (event) => {
@@ -107,7 +108,7 @@ export function useMessageAttachments(workId: string) {
         throw reason;
       } finally { active.current = null; }
     }
-    if (receipts.length) window.dispatchEvent(new CustomEvent("workboard:files-updated", { detail: { workId } }));
+    if (receipts.length) window.dispatchEvent(new CustomEvent("workboard:files-updated", { detail: { workId: targetWorkId } }));
     return receipts;
   }
   return { files, add, remove, clear, upload, error };

@@ -237,13 +237,23 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Execution Settings",
-        zh: "执行设置与 Prompt 位于独立侧边选项卡，切换时保留草稿。每个 Work 可独立设置引擎、模型、权限、输出与 timeout；每个 Run 冻结当次设置。",
-        en: "Execution settings and Prompt have separate sidebar tabs that preserve drafts when switching. Each Work configures its engine, models, permissions, output, and timeout; every Run freezes its settings.",
+        zh: "执行设置、Settings 和 Execute 恢复 Copilot CLI / Copilot SDK 选择。内置默认 CLI，但尊重用户显式保存的 SDK 默认值。CLI 直接执行本机 copilot -p，不经过 SDK 或 headless RPC；SDK 保留当前会话能力及 MCP blocker。Execute 的覆盖仅作用于当次 Run，每个 Run 冻结真实引擎与设置，不批量改写已有 Work 或历史。Follow Up 继承父 Run 的引擎和 session，而不是下一次 Execute 的选择。布局与切换选项卡时的草稿保持不变。",
+        en: "Execution settings, Settings and Execute offer Copilot CLI / Copilot SDK. CLI is the built-in default, while explicitly saved SDK defaults are respected. CLI directly runs the installed copilot -p command without SDK/headless RPC; SDK retains its current controls and MCP blocker. An Execute override affects that Run only; each Run freezes its actual engine/settings without migrating existing Works or history. Follow Up inherits the parent's engine and session, not the next Execute selection. Layout and tab-switch draft preservation remain unchanged.",
       },
       {
         title: "Compact Work Details",
         zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；左右栏维持原宽，额外空间留给对话，其他页面仍居中。Work 信息、会话视图、Run 状态与快捷操作合并为一条顶部工具栏，吸附在全局导航下。桌面控件高 32px，触控目标至少 44px。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。长名称可悬停或展开 Work details 查看；历史数量仅表示当前已加载的较早 Run。右侧文件区可展开目录并在新标签页打开文件，窄屏提供 Files 选项卡。",
         en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters. Side columns keep their widths, giving extra space to the conversation; other pages stay centered. Work identity, session views, Run state and shortcuts share a compact toolbar pinned below global navigation. Desktop controls are 32px with at least 44px touch targets. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up returns to the conversation and focuses its draft; the composer stays at the panel bottom while messages scroll independently. Full titles remain in Work details; history counts only loaded earlier Runs. The right file pane expands folders and opens files in new tabs, with a Files tab on narrow screens.",
+      },
+      {
+        title: "Folder List and Work Name",
+        zh: "New work 左侧目录列表随可用列高扩展，列表内部滚动，不会为了显示所有文件夹而无限拉高表单。手机布局保留合理的列表基础高度。Advanced settings 中的 Name 原本只是 Work 显示名，不会重命名磁盘文件夹；该重复输入已移除，新 Work 名称直接由所选目录推导。现有 Work 名称、目录、Prompt 与历史不变。",
+        en: "The New work folder list grows with the available directory-column height and scrolls internally instead of stretching the form to fit every folder. Mobile retains a bounded base list height. Advanced Name was only a Work display label, not a disk-folder rename operation; that redundant input is removed and new Work names derive from the selected directory. Existing names, directories, prompts and history are unchanged.",
+      },
+      {
+        title: "Model Availability",
+        zh: "主模型与 Fallback 列表使用本机 CLI 支持名单及当前 Copilot 账户的模型目录和 policy。账户未提供、禁用或尚未启用的模型显示 Unavailable，灰色且不可选择；已保存的值仍保留并提示，不自动清空或改成 Auto。读取失败时明确标为 Unverified，保留候选项并可 Retry。目录信息短时缓存，Refresh models 可重新验证。仅查询元数据，不创建推理 Session、不发送收费测试 Prompt；不保证实时配额、网络或上下文/推理参数组合始终可用。Work 与 Automation 的模型选择行为保持一致。",
+        en: "Primary and fallback choices combine native CLI support IDs with the current Copilot account catalog and policy. Unlisted, disabled or not-enabled models remain visible as disabled Unavailable options. Saved values are retained with a warning, not cleared or silently changed to Auto. Failed verification explicitly marks choices Unverified with Retry. Metadata is cached briefly; Refresh models rechecks it. No inference session or paid test Prompt is created. Live quota, network and context/reasoning-parameter compatibility are not guaranteed. Work and Automation selectors use the same behavior.",
       },
       {
         title: "Session Conversation",
@@ -252,18 +262,48 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "In-App Follow Up",
-        zh: "在对话区继续发送，停留在 Work 页面；创建独立关联 Run 后，在入队前尝试按 Run 标记幂等追加 Prompt，延后的追加在执行时修复。同请求重试返回原 Run，不重复创建。Terminal 占用期间只读；草稿与外部修改冲突时不静默覆盖。",
-        en: "Send inline and stay on Work details. A separate linked Run attempts its idempotent Prompt append before enqueueing; execution repairs deferred appends. A same-request retry returns the existing Run. Terminal-owned sessions stay read-only and Prompt conflicts are not silently overwritten.",
+        zh: "CLI Run 运行中允许编辑草稿和准备附件，但不能发送、Steer 或自动排队；结束后无需手动刷新即可手动 Follow Up。新关联 Run 使用父 Run 的引擎及同一原生 session，只发送新内容和新附件，不重放初始 Prompt。SDK 保留实时 Steer。Prompt 追加和同请求重试保持幂等；外部 Terminal 占用、并发 Run 和外部修改冲突仍明确阻止发送。",
+        en: "While a CLI Run is active, edit a draft or prepare files but do not send, Steer or auto-queue. Completion enables manual Follow Up without a manual refresh. The linked Run inherits the parent's engine and native session and sends only new content/files, not the initial Prompt again. SDK retains live Steering. Prompt append and same-request retry remain idempotent; external Terminal ownership, concurrent Runs and external-edit conflicts still block sending explicitly.",
       },
       {
         title: "Message Attachments",
-        zh: "Follow Up 与 Steer now 支持粘贴图片、拖放和选择文件，也可只发送附件。单文件最多 25 MiB，每条消息最多 10 个、合计 100 MiB。选择时仅在页面本地预览，点击发送才写入所属 Work 的 .workboard/attachments/<work-id>/<message-id>/，上传完成后向 CLI/SDK 传递真实文件。失败保留草稿与已成功上传的引用，同请求重试不会重复发送已确认或不确定的 Steering。切换选项卡保留草稿，整页刷新或离开页面不会恢复未发送的 File 对象。文件长期保留，备份时需包含附件目录、数据库与 Session；不自动执行、解压、安装或作为 Skill 导入，也不随 Work/实验复制。历史附件可通过所属 Work 的授权链接查看或下载；25 MiB 附件使用专用下载，普通文件预览仍限 16 MiB。浏览器剪贴板文件支持和模型图片/文档能力存在差异，传输确认不代表模型已理解。",
-        en: "Follow Up and Steer now accept pasted images, dropped or selected files, including attachment-only messages: 25 MiB per file, 10 files and 100 MiB per message. Selection creates a page-local preview; Send saves files under the owning Work's .workboard/attachments/<work-id>/<message-id>/ before passing real file attachments to CLI/SDK. Failure retains drafts and successful receipts; same-request repair never replays accepted or uncertain Steering. Tabs preserve drafts, but full reload/navigation does not restore unsent File objects. Files are retained without automatic deletion: back up the attachment directory, database and sessions together. Files are not executed, unpacked, installed, imported as skills, or included in Work/experiment copies. Owned history links allow safe viewing/download; the dedicated download supports 25 MiB while ordinary file preview stays at 16 MiB. Clipboard file support and model image/document capabilities vary; transport acceptance is not evidence of comprehension.",
+        zh: "New work 的 Prompt、Follow Up 与 Steer now 均支持粘贴图片、拖放和选择文件，也可只发送附件。单文件最多 25 MiB，每条最多 10 个、合计 100 MiB。选择时仅在页面本地预览；New work 的三种创建入口均先创建 Work、上传文件并保存 Prompt 引用，再运行或打开 Terminal。失败后冻结草稿，重试复用同一 Work 与上传回执，不重复创建；Create only 后可在 Prompt 选项卡查看附件。初始附件使用 .workboard/attachments/<work-id>/<work-id>/，其余消息使用 <message-id>；无需新增数据库迁移。托管 CLI/SDK 收到真实附件，交互 Terminal 仅收到已保存的相对文件路径，不使用不受支持的交互附件参数。Follow Up/Steer 的同请求重试不重复发送已确认或不确定的 Steering。切换选项卡保留草稿，整页刷新或离开页面不会恢复未发送的 File 对象。文件长期保留，包括失败尝试；备份需包含附件目录、数据库与 Session。不自动执行、解压、安装、作为 Skill 导入或随 Work/实验复制。授权链接支持查看与下载；专用下载支持 25 MiB，普通文件预览仍限 16 MiB。剪贴板支持和模型图片/文档能力因环境而异，传输确认不代表模型已理解。",
+        en: "New work Prompts, Follow Up and Steer now accept pasted images, dropped or selected files, including attachment-only input: 25 MiB per file, 10 files and 100 MiB total. Selection creates a page-local preview. All three New work actions create the Work, upload files and save Prompt references before running or opening Terminal. Failure freezes the draft; retry reuses the same Work and receipts instead of creating duplicates. Create only exposes saved attachments in the Prompt tab. Initial files use .workboard/attachments/<work-id>/<work-id>/; later messages use <message-id>. No new database migration is needed. Managed CLI/SDK receive native file attachments; interactive Terminal receives saved relative paths, not unsupported interactive attachment flags. Follow Up/Steer same-request repair never replays accepted or uncertain Steering. Tabs preserve drafts, but full reload/navigation does not restore unsent File objects. Files, including failed attempts, are retained: back up the attachment directory, database and sessions. Files are not executed, unpacked, installed, imported as skills, or included in Work/experiment copies. Owned links allow viewing/download; dedicated downloads support 25 MiB while ordinary preview stays at 16 MiB. Clipboard and model image/document capabilities vary; transport acceptance is not evidence of comprehension.",
       },
       {
         title: "Live Steering",
-        zh: "托管 Work Run 活跃时，Steer now 将指令即时发送到同一 CLI/SDK Session，并在传输确认后按消息标记追加 Prompt 与 Run 审计。确认不代表模型已应用；不保证停止正在运行的工具，也不会回滚修改。交付状态不确定时不会自动重发；Terminal 与没有实时控制器的旧 Run 只读。新 CLI Run 使用本地 headless stdio/RPC（SDK 仅作传输），默认权限仍为 --allow-all-tools；full 才使用 --allow-all。CLI 原始输出改为 headless JSON 事件，且公开 SDK 不提供 PID/CPU/内存指标。",
-        en: "While a managed Work Run is active, Steer now sends an immediate instruction to that same CLI/SDK session. After transport acceptance, Work Board records a per-message Run audit and appends the instruction to Prompt once. Acceptance does not prove model application, stop an in-progress tool, or roll back edits. Ambiguous delivery is never replayed automatically; Terminal and legacy Runs without a live controller remain read-only. New CLI Runs use the local headless stdio/RPC channel (SDK transport only), preserving --allow-all-tools by default and --allow-all only for full permissions. CLI raw output is now the headless JSON event stream; the public SDK does not expose PID/CPU/memory metrics.",
+        zh: "仅活跃 SDK Run 支持 Steer now，即时发送到准确的 Run/session 并保留原有 Prompt、审计和幂等修复。确认不代表模型已应用，不保证停止工具或回滚修改，不确定交付不会自动重发。CLI 使用原生非交互命令，运行中只能编辑待发送草稿，不提供 Steer 或 SDK 控制；后端同样拒绝新增指令。历史已接受指令仍可修复记录但不会重发。CLI 显示原生命令输出和实际进程指标；SDK 保留其原有指标边界。",
+        en: "Only an active SDK Run supports Steer now, targeting the exact Run/session with existing Prompt, audit and idempotent-repair safeguards. Acceptance does not prove application, stop tools or roll back edits; uncertain delivery is not replayed. Native CLI is non-interactive: edit an unsent draft during execution, without Steer or SDK controls. The backend rejects new live instructions too. Previously accepted historical records remain repairable without transport replay. CLI shows native command output and process metrics; SDK retains its existing metric limitations.",
+      },
+      {
+        title: "Live Runtime & MCP",
+        zh: "此面板仅属于 SDK Run，保留页面内权限审批、Agent 问答、MCP 表单与脱敏连接状态，按钮仍校验用户、主机、Run/session 和策略。SDK 缺少获批 Entra 宿主时保留 Authenticate in Terminal blocker；只有已配置且受支持的认证流程可提供 Sign in。内置 GitHub MCP 沿用 Copilot 账户，已连接服务可 Verify tools。CLI 不显示或调用 SDK 面板，不挂载隐藏的 SDK 会话；原生命令的错误保留在 Conversation 和日志中，不支持的非交互请求明确失败，不自动扩大权限或回退 SDK。两种引擎都不导入其他仓库配置或收集 Token。独立认证失败、MCP 504 及原生 Terminal 专属能力不会因此自动解决。",
+        en: "This panel belongs only to SDK Runs, retaining in-page permissions, agent questions, MCP forms and sanitized states. Actions still enforce owner, host, exact Run/session and policy. SDK without approved Entra host configuration retains Authenticate in Terminal; Sign in is offered only for configured, supported flows. Built-in GitHub uses the Copilot account and connected servers retain Verify tools. CLI neither mounts nor invokes the SDK panel or a hidden SDK session. Native errors remain in Conversation/logs; unsupported non-interactive requests fail explicitly without permission escalation or SDK fallback. Neither engine imports foreign repository configuration or collects tokens. Independent authentication failures, MCP 504s and native-Terminal-only capabilities are not automatically solved.",
+      },
+      {
+        title: "Run Startup States",
+        zh: "Run 入队后、分配执行主机和 Session 前显示排队或启动中，不将空主机名误报为其他机器。只有已确认的本机活跃 Session 才提供实时操作，明确属于其他主机时仍拒绝访问。PENDING/RUNNING 阶段尚未生成会话历史时显示等待记录，由正常轮询自动恢复，不提示重复启动任务；已结束 Run 缺失历史时仍明确提示原始日志与产物可用。",
+        en: "Queued Runs show waiting/starting until their execution host and session are assigned; an empty hostname is not a foreign-machine error. Live actions still require a confirmed local active session, and known foreign hosts remain blocked. Missing recorded history during PENDING/RUNNING is shown as waiting and recovers through normal polling, without suggesting a duplicate Run. Missing history after a Run finishes still reports the original logs and artifacts as available.",
+      },
+      {
+        title: "Live Run Duration",
+        zh: "Work 详情、Run 详情、Runs 列表与 Automation 历史中的 RUNNING 时长每秒在页面内更新，不为计时发送网络请求或整页刷新。返回标签页时按实际时间补齐；已结束 Run 保留已记录时长，尚未开始的排队 Run 显示 -。",
+        en: "Started RUNNING durations tick every second in Work details, Run details, the Runs list and Automation history, without network requests or page refreshes just to advance time. Returning to the tab catches up to actual elapsed time. Finished Runs retain recorded durations; queued Runs without a start timestamp show -.",
+      },
+      {
+        title: "MCP Microsoft Entra Sign-in",
+        zh: "本次分流不是 MCP 认证修复。真实原生 copilot -p 测试中，新 session 的受保护 MCP 调用成功，但同 session --resume 返回 requires authentication；即使命令退出 0，也不能视为该工具成功。此限制如实保留。CLI 使用自己的认证，不读取 WORKBOARD_COPILOT_ENTRA_CLIENT_ID。SDK 缺少获批宿主注册时，needs-auth 服务从首次响应起显示 Authenticate in Terminal，后端也拒绝无效 App 登录；Reload 后保持 blocker，已连接服务保留 Verify tools。在相同目录运行 copilot /mcp 可做 Terminal 诊断，但缓存不保证可复用，不能将 Terminal 成功等同于 App 已认证。SDK 1.0.27+ 可选获批公共客户端注册能力继续保留，不自动注册应用、收集 Token、借用其他应用身份或绕过租户策略。",
+        en: "This split is not an MCP authentication fix. Real native copilot -p testing succeeded for a protected MCP in a new session, but same-session --resume returned requires authentication; CLI exit 0 does not prove tool success. That limitation remains explicit. CLI uses its own authentication, not WORKBOARD_COPILOT_ENTRA_CLIENT_ID. SDK without approved host registration shows Authenticate in Terminal from the first needs-auth response and rejects unsupported App login; reload preserves the blocker and connected services retain Verify tools. Local copilot /mcp in the same directory is a Terminal diagnostic, not guaranteed credential sharing or App authentication. Optional approved public-client registration support in SDK 1.0.27+ remains available, without automatic registration, token collection, borrowed identities or tenant-policy bypass.",
+      },
+      {
+        title: "Managed CLI Permissions",
+        zh: "原生 CLI 的 Standard tools 使用 --allow-all-tools，仅用户明确选择 Full access 时使用 --allow-all。CLI 不注册 SDK 权限回调，也没有 SDK 审批或问答 UI；非交互模式无法完成的请求明确失败，不偷偷扩大权限。原生命令自行提供的系统登录窗口按 CLI 正常流程工作。SDK 保留现有审批、问答及组织策略处理。更换引擎不会修改已启动 Run 的权限快照，也不代表 MCP 已认证。",
+        en: "Native CLI Standard tools uses --allow-all-tools; only an explicit Full access selection uses --allow-all. CLI has no SDK permission callback or SDK approval/question UI. Unsupported non-interactive requests fail explicitly, without hidden escalation. System sign-in windows provided by the native CLI follow its normal flow. SDK retains its existing approval, question and organization-policy handling. Engine selection does not rewrite a started Run's permissions or prove MCP authentication.",
+      },
+      {
+        title: "User Skill Directories",
+        zh: "原生 CLI 按本机版本的默认行为自行发现当前用户与 Work 的 Skills，不通过 SDK 注入配置。SDK 创建、恢复和模型回退继续显式读取 Copilot settings.json 的 skillDirectories，优先使用 COPILOT_HOME，否则使用用户 .copilot；格式错误明确报错。两种方式都不修改权限、自动启用 Skill、导入其他仓库配置或修复独立 MCP 超时。",
+        en: "Native CLI discovers user/Work Skills using its installed version's normal behavior, without SDK configuration injection. SDK creation, resume and model fallback still read skillDirectories explicitly from Copilot settings.json under COPILOT_HOME or the user's .copilot home; malformed settings report an error. Neither path changes permissions, automatically enables Skills, imports foreign repository configuration or repairs independent MCP timeouts.",
       },
       {
         title: "Archive & Restore",
@@ -548,8 +588,8 @@ export const docsSections: DocsSection[] = [
 
 export const operationalLimits: BilingualText[] = [
   {
-    zh: "New work 名称栏仅引用已选目录的直接子项名称，不递归读取或上传；Follow Up / Steer now 的 Add files 才保存并传递真实附件。",
-    en: "The New work strip inserts only immediate names from the selected directory, without recursively reading or uploading files. Add files in Follow Up / Steer now saves and delivers actual attachments.",
+    zh: "New work 名称栏仅引用已选目录的直接子项名称，不递归读取或上传；Prompt、Follow Up / Steer now 的 Add files、粘贴和拖放才保存真实附件。",
+    en: "The New work strip inserts only immediate names from the selected directory, without recursively reading or uploading files. Add files, paste and drop in Prompt, Follow Up / Steer now save actual attachments.",
   },
   {
     zh: "消息附件单文件 25 MiB、每条最多 10 个/100 MiB；专用附件下载支持完整 25 MiB，普通文件预览仍限 16 MiB。传输确认不代表所选模型已理解内容；整页刷新不恢复未发送的浏览器文件草稿。",

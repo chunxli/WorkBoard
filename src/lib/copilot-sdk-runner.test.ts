@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { CopilotSession } from "@github/copilot-sdk";
+import { approveAll, type CopilotSession, type PermissionRequest } from "@github/copilot-sdk";
 import {
   buildManagedSessionConfig,
   cancelSdkRun,
@@ -35,6 +35,46 @@ describe("openCopilotSdkSession", () => {
 });
 
 describe("managed runtime configuration", () => {
+  it.each(["default", "full", undefined] as const)("preserves the explicit %s CLI permission scope for creation and resume", async (permissionMode) => {
+    const config = buildManagedSessionConfig("cli", { workPath: "C:\\work", permissionMode });
+    expect(config.onPermissionRequest).toBe(permissionMode === "full" ? approveAll : undefined);
+    const client = { createSession: vi.fn(), resumeSession: vi.fn() };
+    await openCopilotSdkSession(client, "permission-session", config, false);
+    await openCopilotSdkSession(client, "permission-session", config, true);
+    for (const received of [client.createSession.mock.calls[0][0], client.resumeSession.mock.calls[0][1]]) {
+      expect(received.onPermissionRequest).toBe(config.onPermissionRequest);
+    }
+  });
+
+  it.each<PermissionRequest>([
+    { kind: "read", path: "C:\\synthetic\\outside-work\\evidence.txt", intention: "Read synthetic evidence" },
+    { kind: "url", url: "https://example.com/", intention: "Fetch public example" },
+    { kind: "mcp", serverName: "synthetic-search", toolName: "search", toolTitle: "Synthetic search", readOnly: true },
+  ])("answers full-access $kind requests without an interactive Terminal", async (request) => {
+    const handler = buildManagedSessionConfig("cli", { workPath: "C:\\work", permissionMode: "full" }).onPermissionRequest;
+    if (!handler) throw new Error("Full-access CLI permission handler missing");
+    expect(await handler(request, { sessionId: "synthetic-session" })).toEqual({ kind: "approve-once" });
+  });
+
+  it("does not bypass organization-managed approvals", async () => {
+    const handler = buildManagedSessionConfig("cli", { workPath: "C:\\work", permissionMode: "full" }).onPermissionRequest;
+    if (!handler) throw new Error("Full-access CLI permission handler missing");
+    const request: PermissionRequest = { kind: "read", path: "C:\\synthetic\\evidence.txt", intention: "Read evidence" };
+    expect(await handler({ ...request, managedApprovalRequired: true }, { sessionId: "synthetic-session" })).toEqual({ kind: "no-result" });
+    expect(() => handler(request, { sessionId: "synthetic-session", managedSettingsEnabled: true }))
+      .toThrow("managed settings");
+  });
+
+  it.each(["cli", "sdk"] as const)("passes configured user skill directories to %s sessions and resumes", async (runtime) => {
+    const directories = ["C:\\synthetic\\SkillsCenter\\skills"];
+    const config = buildManagedSessionConfig(runtime, { workPath: "C:\\work" }, directories);
+    const client = { createSession: vi.fn(), resumeSession: vi.fn() };
+    await openCopilotSdkSession(client, "skill-session", config, false);
+    await openCopilotSdkSession(client, "skill-session", config, true);
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ skillDirectories: directories }));
+    expect(client.resumeSession).toHaveBeenCalledWith("skill-session", expect.objectContaining({ skillDirectories: directories }));
+  });
+
   it("keeps CLI permission scopes distinct and launches the installed CLI over stdio", () => {
     expect(getCopilotCliPermissionArgs("default")).toEqual(["--allow-all-tools"]);
     expect(getCopilotCliPermissionArgs("full")).toEqual(["--allow-all"]);

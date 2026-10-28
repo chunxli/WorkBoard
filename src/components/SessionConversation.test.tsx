@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import SessionConversation, { ConversationActivityGroup, ConversationMessage } from "./SessionConversation";
+import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage } from "./SessionConversation";
 import { normalizeConversationEvent } from "@/lib/session-conversation";
 import { conversationTimeline } from "@/lib/conversation-activity";
 
@@ -11,7 +11,7 @@ vi.mock("next/navigation", () => ({
 describe("session conversation toolbar", () => {
   it("renders one labelled heading with its view switch and supplied Run actions above the unchanged log", () => {
     const markup = renderToStaticMarkup(<SessionConversation
-      workId="layout-work" runId="layout-run" initialLog="" isLive={false}
+      workId="layout-work" runId="layout-run" runtimeEngine="SDK" initialLog="" isLive={false}
       historySync={false} outputFormat="text"
       runActions={<Link href="/runs/layout-run">Full details</Link>}
     />);
@@ -27,7 +27,7 @@ describe("session conversation toolbar", () => {
 
   it("keeps the heading, view switch and composer available before the first Run", () => {
     const markup = renderToStaticMarkup(<SessionConversation
-      workId="layout-work" runId={null} initialLog="" isLive={false}
+      workId="layout-work" runId={null} runtimeEngine={null} initialLog="" isLive={false}
       historySync={false} outputFormat="text"
     />);
     expect(markup).toContain("Session conversation");
@@ -39,7 +39,7 @@ describe("session conversation toolbar", () => {
 
   it("provides a unified workspace with mounted hidden panels and no removed record summaries", () => {
     const markup = renderToStaticMarkup(<SessionConversation
-      workId="workspace" runId="run" initialLog="" isLive={false} historySync={false} outputFormat="text"
+      workId="workspace" runId="run" runtimeEngine="SDK" initialLog="" isLive={false} historySync={false} outputFormat="text"
       workHeader={<h1>Workspace title</h1>}
       panels={[{ id: "settings", label: "Execution settings", content: <input defaultValue="Retained setting draft" /> }]}
       fileBrowser={<p>Read-only Work files</p>}
@@ -51,6 +51,34 @@ describe("session conversation toolbar", () => {
     expect(markup).toContain('value="Retained setting draft"');
     expect(markup).not.toContain("Runs in this session");
     expect(markup).not.toContain("Steering delivery audit");
+  });
+});
+
+describe("engine-specific conversation controls", () => {
+  const data = { anchorRunId: "run", steeringRunId: "run", canSteer: true, canFollowUp: false };
+  it("allows live Steering only for the matching actual SDK Run", () => {
+    expect(conversationControlCapabilities(data, "SDK", "run", true)).toEqual({ canSteer: true, canFollowUp: false });
+    expect(conversationControlCapabilities(data, "CLI", "run", true)).toEqual({ canSteer: false, canFollowUp: false });
+    expect(conversationControlCapabilities(data, null, "run", true).canSteer).toBe(false);
+    expect(conversationControlCapabilities(data, "SDK", "new-run", true)).toEqual({ canSteer: false, canFollowUp: false });
+  });
+  it("allows finished native Follow up as soon as the current server state permits it", () => {
+    const finished = { ...data, canSteer: false, canFollowUp: true };
+    expect(conversationControlCapabilities(finished, "CLI", "run", true)).toEqual({ canSteer: false, canFollowUp: true });
+    expect(conversationControlCapabilities(finished, "CLI", "new-run", false).canFollowUp).toBe(false);
+  });
+  it.each(["CLI", "SDK"] as const)("keeps the %s layout while separating SDK live controls", (runtimeEngine) => {
+    const markup = renderToStaticMarkup(<SessionConversation workId="work" runId="run" runtimeEngine={runtimeEngine}
+      initialLog="" isLive historySync={false} outputFormat="text" />);
+    expect(markup).toContain('role="log"');
+    expect(markup).toContain('id="session-follow-up"');
+    expect(markup.includes('aria-label="Live Copilot controls"')).toBe(runtimeEngine === "SDK");
+    if (runtimeEngine === "CLI") {
+      expect(markup).toContain("Draft a follow-up");
+      expect(markup).toContain("after the Run finishes");
+      expect(markup.match(/<textarea[^>]*id="session-follow-up"[^>]*>/)?.[0]).not.toContain("disabled");
+      expect(markup).not.toContain("Steer now");
+    }
   });
 });
 

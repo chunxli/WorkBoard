@@ -12,6 +12,7 @@ vi.mock("@/lib/work-executor", () => ({ finalizeCancelledWorkRun: services.final
 vi.mock("@/lib/task-executor", () => ({ finalizeAutomationRun: services.finalize }));
 
 import { POST } from "./route";
+import { CopilotProcessStopError } from "@/lib/copilot-process";
 
 const request = new NextRequest("http://localhost/api/runs/status-run/cancel", { method: "POST" });
 const context = { params: Promise.resolve({ id: "status-run" }) };
@@ -36,8 +37,25 @@ describe("Terminal versus managed cancellation", () => {
   it.each(["CLI", "SDK"])("retains managed %s cancellation", async (engine) => {
     services.query.mockResolvedValue({ id: "status-run", status: "RUNNING", trigger: "WORK", engine, workId: "status-work" });
     services.cancelSdk.mockReturnValue(true);
+    services.cancel.mockResolvedValue(true);
     const response = await POST(request, context);
     expect(response.status).toBe(200);
-    expect(services.cancelSdk).toHaveBeenCalledWith("status-run");
+    expect(engine === "SDK" ? services.cancelSdk : services.cancel).toHaveBeenCalledWith("status-run");
+    expect(engine === "SDK" ? services.cancel : services.cancelSdk).not.toHaveBeenCalled();
+  });
+
+  it("reports failed native process termination without falsely cancelling the Run", async () => {
+    services.query.mockResolvedValue({ id: "status-run", status: "RUNNING", trigger: "WORK", engine: "CLI", workId: "status-work" });
+    services.cancel.mockRejectedValue(new CopilotProcessStopError(new Error("synthetic termination failure")));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(request, context);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining("may still be running") });
+      expect(services.update).not.toHaveBeenCalled();
+      expect(services.finalize).not.toHaveBeenCalled();
+      expect(services.cancelSdk).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
   });
 });

@@ -33,6 +33,7 @@ import {
 } from "@/lib/run-source-snapshot";
 import { getRepoWorkdirPath } from "@/lib/repo-workdir";
 import { hashWorkContent, readWorkPrompt } from "@/lib/work-files";
+import { readInitialWorkAttachments } from "@/lib/work-attachments";
 import { RunStartInProgressError, withRunStartLock } from "@/lib/run-start-lock";
 import {
   analyzeCopilotSessionEvents,
@@ -744,6 +745,7 @@ export async function launchNewWorkTerminal(
       }
 
       const savedPrompt = await readWorkPrompt(work);
+      const attachments = await readInitialWorkAttachments(work);
       const runId = randomUUID();
       const launchId = randomUUID();
       const sessionId = randomUUID();
@@ -775,6 +777,7 @@ export async function launchNewWorkTerminal(
         promptFileName: work.promptFileName,
         prompt: savedPrompt.content,
         promptHash: savedPrompt.hash,
+        attachments,
         engine: "CLI",
         sessionId,
         executionPath: work.directoryPath,
@@ -809,6 +812,7 @@ export async function launchNewWorkTerminal(
             engine: "CLI",
             executionPath: work.directoryPath,
             promptSnapshot: savedPrompt.content,
+            attachmentsJson: attachments.length ? JSON.stringify(attachments) : null,
             outputFormat: "text",
             agent: work.agent,
             model: work.model,
