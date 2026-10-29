@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   docsNavigation,
@@ -38,7 +39,49 @@ describe("in-app documentation content", () => {
       "Windows PowerShell Compatibility",
       "Optional Skill Comparison UI",
       "Source Upgrade & Data Retention",
+      "Quick Start & Initial Setup",
+      "Refresh-Stable Input Order",
+      "Run Concurrency",
     ]));
+  });
+
+  it("keeps Quick Start discoverable and its commands aligned with the standalone guide", () => {
+    expect(docsNavigation[1].id).toBe("quick-start");
+    const quickStart = docsSections[0];
+    expect(quickStart.id).toBe("quick-start");
+    expect(quickStart.features.map((feature) => feature.title)).toEqual([
+      "Prerequisites", "Windows PowerShell", "macOS / Linux", "Prompt Templates",
+      "Preferred Working Directory", "Recommended Execution Defaults", "Your First Work",
+    ]);
+    const readme = readFileSync(new URL("../../README.quickstart.md", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    for (const feature of quickStart.features.filter((feature) => feature.code)) {
+      expect(readme).toContain(feature.code);
+      expect(feature.code).toContain("npm ci\nnpm run background:start");
+    }
+    expect(quickStart.features.find((feature) => feature.title === "Windows PowerShell")?.code)
+      .toContain("if (-not (Test-Path .env))");
+    expect(quickStart.features.find((feature) => feature.title === "macOS / Linux")?.code)
+      .toContain("test -f .env || cp .env.example .env");
+  });
+
+  it("documents the real initial setup entry points and persistence boundaries", () => {
+    const features = docsSections[0].features;
+    expect(features.find((feature) => feature.title === "Prompt Templates")).toMatchObject({
+      href: "/settings#prompt-templates",
+      en: expect.stringContaining("Append or Replace"),
+    });
+    expect(features.find((feature) => feature.title === "Preferred Working Directory")).toMatchObject({
+      href: "/settings",
+      en: expect.stringContaining("same browser/user"),
+    });
+    const defaults = features.find((feature) => feature.title === "Recommended Execution Defaults");
+    expect(defaults?.href).toBe("/settings#execution-defaults");
+    for (const label of ["Copilot CLI", "Auto", "Standard tools", "Save defaults", "not existing items"]) {
+      expect(defaults?.en).toContain(label);
+    }
+    expect(features.find((feature) => feature.title === "Your First Work")?.en).toContain("back up");
+    expect(docsSections.find((section) => section.id === "operations")?.features
+      .find((feature) => feature.title === "Run Concurrency")?.en).toContain("defaults to 5");
   });
 
   it("retains bilingual release content and historical released milestones", () => {

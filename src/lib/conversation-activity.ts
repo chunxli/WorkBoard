@@ -17,6 +17,35 @@ export interface ActivityRecord {
   events: ConversationEvent[];
 }
 
+export interface PendingFollowUp {
+  runId: string;
+  text: string;
+  timestamp: string | null;
+  afterOffset?: number;
+  attachments?: ConversationEvent["attachments"];
+}
+
+export function withPendingFollowUp(events: ConversationEvent[], pending: PendingFollowUp | null): ConversationEvent[] {
+  if (!pending) return events;
+  const submittedAt = pending.timestamp === null ? null : Date.parse(pending.timestamp);
+  const afterSubmission = (event: ConversationEvent) => submittedAt === null
+    ? pending.afterOffset !== undefined && event.offset > pending.afterOffset
+    : event.timestamp !== null && Date.parse(event.timestamp) >= submittedAt;
+  const observed = events.some((event) => event.role === "user" && event.agentId === null && afterSubmission(event) &&
+    (pending.text ? event.text.includes(pending.text) : Boolean(pending.attachments?.length)) &&
+    (pending.attachments ?? []).every((file) => event.attachments?.some((attachment) => attachment.id === file.id)));
+  if (observed) return events;
+
+  const message: ConversationEvent = {
+    id: `follow-up:${pending.runId}`, sourceId: null, offset: -1, type: "work.follow_up",
+    role: "user", messageId: null, title: "You", text: pending.text, timestamp: pending.timestamp,
+    agentId: null, toolCallId: null, status: "info", attachments: pending.attachments,
+  };
+  const next = events.findIndex(afterSubmission);
+  const index = next < 0 ? events.length : next;
+  return [...events.slice(0, index), message, ...events.slice(index)];
+}
+
 export function isAuxiliaryEvent(event: ConversationEvent): boolean {
   return event.role === "tool" || event.role === "system" || event.agentId !== null;
 }

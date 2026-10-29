@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage } from "./SessionConversation";
 import { normalizeConversationEvent } from "@/lib/session-conversation";
-import { conversationTimeline } from "@/lib/conversation-activity";
+import { conversationTimeline, withPendingFollowUp } from "@/lib/conversation-activity";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -83,6 +83,18 @@ describe("engine-specific conversation controls", () => {
 });
 
 describe("session conversation messages", () => {
+  it("renders a restored input as a normal dated user bubble while retaining its Run status link", () => {
+    const timestamp = "2026-10-28T08:17:46.837Z";
+    const [input] = withPendingFollowUp([], { runId: "pending-run", text: "Update the report", timestamp });
+    const markup = renderToStaticMarkup(<ConversationMessage event={input} pendingRun={{ id: "pending-run", status: "RUNNING" }} />);
+    expect(markup).toContain('aria-label="You message"');
+    expect(markup).toContain("w-fit");
+    expect(markup).toContain(`dateTime="${timestamp}"`);
+    expect(markup).toContain('href="/runs/pending-run"');
+    expect(markup).toContain("RUNNING");
+    expect(markup).not.toContain('aria-label="Pending follow up"');
+  });
+
   it.each(["", " \n\t "])("does not render an empty assistant bubble for %j", (text) => {
     const assistant = normalizeConversationEvent({ type: "assistant.message", data: { content: text } }, "source", 0)!;
     expect(renderToStaticMarkup(<ConversationMessage event={assistant} />)).toBe("");

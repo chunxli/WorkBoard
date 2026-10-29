@@ -9,7 +9,7 @@ import LiveRunLog from "@/components/LiveRunLog";
 import ManagedRuntimePanel from "@/components/ManagedRuntimePanel";
 import { AttachmentDraft, MessageAttachments, useMessageAttachments } from "@/components/WorkMessageAttachments";
 import type { WorkAttachment } from "@/lib/work-attachment-types";
-import { activityRecords, conversationTimeline, isAuxiliaryEvent, type ConversationActivity } from "@/lib/conversation-activity";
+import { activityRecords, conversationTimeline, isAuxiliaryEvent, withPendingFollowUp, type ConversationActivity } from "@/lib/conversation-activity";
 import type { ConversationEvent, SessionConversationData } from "@/lib/session-conversation";
 
 function eventTime(value: string | null, timeOnly = false): string {
@@ -18,7 +18,10 @@ function eventTime(value: string | null, timeOnly = false): string {
   return timeOnly ? date.toLocaleTimeString() : date.toLocaleString();
 }
 
-export function ConversationMessage({ event, relatedEvents = [event], workId }: { event: ConversationEvent; relatedEvents?: ConversationEvent[]; workId?: string }) {
+export function ConversationMessage({ event, relatedEvents = [event], workId, pendingRun }: {
+  event: ConversationEvent; relatedEvents?: ConversationEvent[]; workId?: string;
+  pendingRun?: { id: string; status: string };
+}) {
   const [expanded, setExpanded] = useState(false);
   const auxiliary = isAuxiliaryEvent(event);
   if (auxiliary) {
@@ -49,6 +52,7 @@ export function ConversationMessage({ event, relatedEvents = [event], workId }: 
         {event.role === "user" ? <User size={14} aria-hidden="true" /> : <Bot size={14} className="text-emerald-400" aria-hidden="true" />}
         <span className="font-semibold text-neutral-300">{event.title}</span>
         <time className="ml-auto text-[10px] text-neutral-600" dateTime={event.timestamp ?? undefined}>{eventTime(event.timestamp)}</time>
+        {pendingRun && <Link href={`/runs/${pendingRun.id}`} className="font-mono text-[10px]">{pendingRun.status} / {pendingRun.id.slice(0, 8)}</Link>}
       </div>
       <MarkdownResult content={event.text} />
       {workId && event.attachments?.length ? <MessageAttachments workId={workId} files={event.attachments} /> : null}
@@ -416,15 +420,15 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     finally { setSending(false); }
   }
 
-  const acceptedStatus = pending ? data?.runs.find((run) => run.id === pending.runId)?.status : null;
-  const isObserved = (event: ConversationEvent, message: { text: string; attachments?: WorkAttachment[] }) =>
-    event.role === "user" && (message.text ? event.text.includes(message.text) : Boolean(message.attachments?.length)) &&
-    (message.attachments ?? []).every((file) => event.attachments?.some((observed) => observed.id === file.id));
-  const pendingMessage = pending && acceptedStatus !== "SUCCESS" && !events.some((event) => event.offset > pending.afterOffset && isObserved(event, pending))
-    ? pending : data?.pendingPrompt && !events.some((event) => isObserved(event, data.pendingPrompt!))
-      ? { ...data.pendingPrompt, afterOffset: -1 } : null;
-  const pendingStatus = pendingMessage ? data?.runs.find((run) => run.id === pendingMessage.runId)?.status : null;
-  const timeline = conversationTimeline(events);
+  const acceptedRun = pending ? data?.runs.find((run) => run.id === pending.runId) : null;
+  const pendingMessage = pending && !acceptedRun ? pending
+    : data?.pendingPrompt ?? (pending && acceptedRun?.status !== "SUCCESS" && data?.runs[0]?.id === pending.runId ? pending : null);
+  const pendingRun = pendingMessage ? data?.runs.find((run) => run.id === pendingMessage.runId) : null;
+  const timeline = conversationTimeline(withPendingFollowUp(events, pendingMessage ? {
+    ...pendingMessage,
+    timestamp: pendingRun?.createdAt ?? null,
+    afterOffset: "afterOffset" in pendingMessage ? pendingMessage.afterOffset : undefined,
+  } : null));
   const latestActivity = timeline.findLast((item) => item.kind === "activity");
   const Toolbar = workHeader ? "header" : "div";
   const tabs = [
@@ -498,13 +502,9 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
             {!loading && timeline.length === 0 && <p className="py-6 text-sm text-neutral-500">{data?.historyUnavailableReason ?? "Waiting for recorded messages..."}</p>}
             {timeline.map((item) => item.kind === "activity"
               ? <ConversationActivityGroup key={item.id} activity={item} live={isLive && item.id === latestActivity?.id} />
-              : <ConversationMessage key={item.event.id} event={item.event} workId={workId} />)}
-            {pendingMessage && <article className="ml-auto max-w-[95%] space-y-2 rounded-md bg-neutral-800/45 p-4" aria-label="Pending follow up">
-              <div className="flex items-center gap-2 text-xs text-neutral-500"><User size={14} aria-hidden="true" />You<Link href={`/runs/${pendingMessage.runId}`} className="ml-auto font-mono text-[10px]">{pendingStatus ?? "PENDING"} / {pendingMessage.runId.slice(0, 8)}</Link></div>
-              <MarkdownResult content={pendingMessage.text} />
-              {"attachments" in pendingMessage && pendingMessage.attachments?.length
-                ? <MessageAttachments workId={workId} files={pendingMessage.attachments} /> : null}
-            </article>}
+              : <ConversationMessage key={item.event.id} event={item.event} workId={workId}
+                pendingRun={item.event.type === "work.follow_up" && pendingMessage
+                  ? { id: pendingMessage.runId, status: pendingRun?.status ?? "PENDING" } : undefined} />)}
           </div>}
           {data?.incompleteTail && <p role="status" className="text-xs text-neutral-500">Waiting for the current event to finish writing.</p>}
           {runError}

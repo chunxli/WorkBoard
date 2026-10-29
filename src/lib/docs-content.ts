@@ -7,6 +7,7 @@ export interface DocsFeature extends BilingualText {
   title: string;
   href?: string;
   label?: string;
+  code?: string;
 }
 
 export interface DocsSection {
@@ -30,6 +31,7 @@ export interface ReleaseEntry {
 
 export const docsNavigation = [
   { id: "release-notes", label: "Release Notes", zh: "版本说明" },
+  { id: "quick-start", label: "Quick Start", zh: "快速入门与初始配置" },
   { id: "work-lifecycle", label: "Work Lifecycle", zh: "Work 生命周期" },
   { id: "prompts-files", label: "Prompts & Files", zh: "Prompt 与文件" },
   { id: "runs-sessions", label: "Runs & Sessions", zh: "运行与会话" },
@@ -41,14 +43,29 @@ export const docsNavigation = [
 
 export const releaseNotes: ReleaseEntry[] = [
   {
-    date: "2026-10-26",
+    date: "2026-10-29",
     version: "Latest changes",
     status: "latest",
     title: {
-      zh: "近期源码更新：目录引用、附件与工作区",
-      en: "Recent source updates: directory references, attachments and workspace",
+      zh: "近期源码更新：快速入门、初始配置与会话体验",
+      en: "Recent source updates: Quick Start, initial setup and conversation",
     },
     notes: [
+      {
+        title: "Quick Start & Initial Setup",
+        zh: "新增中英对照快速入门：Windows/macOS/Linux 后台启动命令，以及 Prompt 模板、常用根目录、Execution defaults 和首个任务的推荐流程。",
+        en: "Adds a bilingual Quick Start with Windows/macOS/Linux background startup commands, recommended Prompt templates, saved root directories, execution defaults, and the first-Work workflow.",
+      },
+      {
+        title: "Refresh-Stable Input Order",
+        zh: "刷新分页未包含当前 Follow Up 的原始输入时，按保存的提交时间在后续回复之前显示，不追加到时间线底部；加载 Earlier 后以原始消息替换并去重。",
+        en: "When a refreshed history page omits the current Follow Up input, its saved prompt appears before later replies by submission time instead of at the bottom. Earlier history replaces the placeholder without duplication.",
+      },
+      {
+        title: "Run Concurrency",
+        zh: "默认 RUN_CONCURRENCY 调整为 5；单个服务进程最多同时执行五个队列 Run。环境配置修改后需重启，不改变同 key 串行或独占等待规则。",
+        en: "RUN_CONCURRENCY now defaults to 5 queued Runs per server process. Restart after changing the environment setting; same-key serialization and exclusive waiting rules remain unchanged.",
+      },
       {
         title: "Selected Directory References",
         zh: "New work 名称栏显示单击选中文件夹内部的直接内容，不显示兄弟目录。支持光标插入、选区替换和独立刷新；只引用名称，不递归或上传。",
@@ -202,6 +219,74 @@ export const releaseNotes: ReleaseEntry[] = [
 
 export const docsSections: DocsSection[] = [
   {
+    id: "quick-start",
+    title: "Quick Start",
+    subtitle: {
+      zh: "首次使用建议：启动网站后，先配置模板、常用目录和执行默认值，再创建第一个 Work。",
+      en: "Start the website, configure reusable templates, a preferred working directory and execution defaults, then create your first Work.",
+    },
+    features: [
+      {
+        title: "Prerequisites",
+        zh: "安装 Git、Node.js（推荐 24 LTS，包含 npm）和 GitHub Copilot CLI，确保终端可运行 copilot，并用有 Copilot 权限的账号执行 copilot login。本地网站的两个 Entra 凭据保持为空即可免登录、仅 loopback 访问；Copilot 登录和 MCP 服务授权是独立的。",
+        en: "Install Git, Node.js (24 LTS with npm recommended), and GitHub Copilot CLI on PATH. Run copilot login with an account that has Copilot access. Leave both website Entra credentials empty for login-free loopback access; Copilot sign-in and MCP authorization are separate.",
+      },
+      {
+        title: "Windows PowerShell",
+        zh: "在终端依次执行；已有 checkout 时跳过 clone 并进入项目目录。复制不会覆盖已有 .env。首次 background:start 自动生成 Prisma Client、应用数据库迁移并构建应用，等待成功提示后访问本机 3100 端口。",
+        en: "Run these commands in order; skip clone and enter the project folder if a checkout already exists. The copy preserves an existing .env. First background startup generates Prisma Client, applies migrations and builds the app. Wait for success, then open the local site on port 3100.",
+        code: [
+          "git clone https://github.com/chunxli/WorkBoard.git",
+          "Set-Location .\\WorkBoard",
+          "if (-not (Test-Path .env)) { Copy-Item .env.example .env }",
+          "npm ci",
+          "npm run background:start",
+          'Start-Process "http://127.0.0.1:3100"',
+        ].join("\n"),
+      },
+      {
+        title: "macOS / Linux",
+        zh: "首次启动完成后打开 http://127.0.0.1:3100。默认登记当前用户登录自启动；不需要时在启动前将 .env 中 WORKBOARD_AUTOSTART 改为 false。Linux 自启动要求可用的 systemd 用户服务，否则先关闭该选项。",
+        en: "After startup succeeds, open http://127.0.0.1:3100. Current-user login autostart is enabled by default; set WORKBOARD_AUTOSTART=false in .env before starting to opt out. Linux autostart requires working systemd user services; disable it first if unavailable.",
+        code: [
+          "git clone https://github.com/chunxli/WorkBoard.git",
+          "cd WorkBoard",
+          "test -f .env || cp .env.example .env",
+          "npm ci",
+          "npm run background:start",
+        ].join("\n"),
+      },
+      {
+        title: "Prompt Templates",
+        zh: "进入 Settings → Prompt templates，填写名称与 Prompt 后点击 Add template；或用 Import file 导入 Markdown/文本后保存。建议先准备问题分析、报告生成等 1–2 个模板，明确目标、输入、输出与限制。在 New work 的 Quick templates 选择模板，用 Append 追加或 Replace 替换；模板不会自动应用到所有任务。",
+        en: "In Settings → Prompt templates, enter a name and prompt, then choose Add template; alternatively, Import file loads Markdown/text for saving. Start with one or two templates such as issue analysis or report generation, specifying goals, inputs, outputs and constraints. Use Quick templates in New work with Append or Replace; templates are not automatically applied to every task.",
+        href: "/settings#prompt-templates",
+        label: "Configure Prompt templates",
+      },
+      {
+        title: "Preferred Working Directory",
+        zh: "在 Settings → Work directories 输入标签和绝对路径（如 Projects、C:\\work），点击 Add 保存根目录快捷方式。路径属于运行 Work Board 的电脑。回到 Work → New work，在左侧选择已保存根目录；同一浏览器、同一用户会记住上次选择，刷新或服务重启后恢复。每个 Work 的实际 Work Directory 仍需单独选择。",
+        en: "In Settings → Work directories, enter a label and absolute path, such as Projects and C:\\work, then choose Add to save a root shortcut on the machine hosting Work Board. Select that saved root on the left of Work → New work. The same browser/user remembers it across refresh and server restarts; select each Work's actual Work Directory separately.",
+        href: "/settings",
+        label: "Configure Work directories",
+      },
+      {
+        title: "Recommended Execution Defaults",
+        zh: "在 Settings → Execution defaults，建议从 Runtime: Copilot CLI、Model: Auto、Permissions: Standard tools 开始，Context 与 Think effort 保持 Default。按任务时长设置 Timeout；Automation 有独立超时。点击 Save defaults，仅影响之后新建的 Work/Automation，不覆盖现有配置。Full access 仅在明确需要且信任目录时选择。",
+        en: "In Settings → Execution defaults, start with Runtime: Copilot CLI, Model: Auto and Permissions: Standard tools; leave Context and Think effort at Default. Set task-appropriate timeouts; Automation has its own timeout. Save defaults applies to newly created Works/Automations, not existing items. Select Full access only when explicitly needed and the folder is trusted.",
+        href: "/settings#execution-defaults",
+        label: "Configure Execution defaults",
+      },
+      {
+        title: "Your First Work",
+        zh: "在 Work → New work 选择目录，填写目标和期望输出，可添加图片或文件，然后 Create & Run。Create only 只保存，稍后可用 Execute。Conversation 查看回复和工具，文件区查看产出；Raw output 与 Run history 提供细节。CLI 结束后用 Send Follow Up 沿用会话继续，运行中只能起草。任务会操作真实文件，重要内容先备份或使用 Git。",
+        en: "In Work → New work, choose a folder, describe the goal and expected output, optionally add images/files, then Create & Run. Create only saves for a later Execute. Review Conversation, the file pane, Raw output and Run history. After a CLI Run finishes, Send Follow Up continues the same session; while running, only draft. Runs operate on real files: back up important content or use Git first.",
+        href: "/work",
+        label: "Create your first Work",
+      },
+    ],
+  },
+  {
     id: "work-lifecycle",
     title: "Work Lifecycle",
     subtitle: {
@@ -257,8 +342,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Session Conversation",
-        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。工具与运行元数据按活动归组，执行中展示进度，完成后折叠；失败在摘要可见，技术事件可展开检查。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
-        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Tool/runtime activity opens for progress and folds after completion; failures stay visible and technical events remain inspectable. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
+        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。工具与运行元数据按活动归组，执行中展示进度，完成后折叠；失败在摘要可见，技术事件可展开检查。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。刷新按分页恢复最近历史；若当前 Follow Up 的原始输入位于更早分页，已保存的输入按提交时间显示在后续回复之前，加载原始消息后自动去重，不再追加到时间线底部。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
+        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Tool/runtime activity opens for progress and folds after completion; failures stay visible and technical events remain inspectable. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Refresh restores recent history in pages. If the current Follow Up input is in an earlier page, its saved prompt is placed by submission time before later replies and deduplicated when the source message loads, never appended to the timeline bottom. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
       },
       {
         title: "In-App Follow Up",
@@ -541,6 +626,11 @@ export const docsSections: DocsSection[] = [
         title: "Background Commands",
         zh: "使用 `background:start`、`restart`、`status`、`logs` 和 `stop` 管理后台 Release；代码、依赖或 migration 变化后使用完整 restart。start/restart 成功后按配置登记登录自启；显式 stop 即使服务已停止也移除自启项。",
         en: "Use `background:start`, `restart`, `status`, `logs`, and `stop` for the background Release; use a full restart after code, dependencies, or migrations change. Successful start/restart reconciles login startup; explicit stop removes it even when already stopped.",
+      },
+      {
+        title: "Run Concurrency",
+        zh: "RUN_CONCURRENCY 默认 5，限制单个服务进程同时执行的队列 Run 数，其余排队；同 key 串行和独占等待可能降低实际并发。只使用正整数，目前没有硬性上限或严格校验；按 CPU、内存、费用和服务限流调整。修改 .env 后重启，不限制单个 Run 内的工具/子代理或手动 Terminal 会话。",
+        en: "RUN_CONCURRENCY defaults to 5 queued Runs at once per server process; others wait. Same-key serialization and exclusive waiting can reduce actual concurrency. Use positive integers only: there is no hard cap or strict validation. Adjust to CPU, memory, cost and service limits, then restart after editing .env. It does not cap tools/subagents inside a Run or manual Terminal sessions.",
       },
       {
         title: "Login Autostart",

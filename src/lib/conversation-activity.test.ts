@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityRecords, conversationTimeline } from "./conversation-activity";
+import { activityRecords, conversationTimeline, withPendingFollowUp, type PendingFollowUp } from "./conversation-activity";
 import { normalizeConversationEvent, type ConversationEvent } from "./session-conversation";
 
 function event(type: string, offset: number, data: Record<string, unknown> = {}, agentId: string | null = null): ConversationEvent {
@@ -131,6 +131,104 @@ describe("conversation activity timeline", () => {
     const retained = conversationTimeline(events).flatMap((item) => item.kind === "activity" ? item.events : [item.event]);
     expect(retained.map((entry) => entry.id).sort()).toEqual(events.map((entry) => entry.id).sort());
     expect(JSON.stringify(events)).toBe(before);
+  });
+});
+
+describe("pending Follow Up chronology", () => {
+  const pending: PendingFollowUp = {
+    runId: "follow-up-run", text: "Update the report", timestamp: "2026-10-28T08:17:46.837Z",
+  };
+  const at = (type: string, offset: number, timestamp: string | null, data: Record<string, unknown> = {}) =>
+    ({ ...event(type, offset, data), timestamp });
+  const prose = (events: ConversationEvent[]) => conversationTimeline(events)
+    .filter((item) => item.kind === "message").map((item) => item.event.text);
+
+  it("keeps the input before its response when refresh loads a tail without the original user event", () => {
+    const source = at("user.message", 100, "2026-10-28T08:17:55Z", { content: pending.text });
+    const tail = [
+      at("tool.execution_start", 200, "2026-10-28T08:18:00Z"),
+      at("assistant.message", 300, "2026-10-28T08:18:17Z", { content: "Updating the report" }),
+      at("assistant.turn_start", 400, "2026-10-28T08:20:41Z"),
+    ];
+    const live = withPendingFollowUp([source, ...tail], pending);
+    const refreshed = withPendingFollowUp(tail, pending);
+    expect(prose(refreshed)).toEqual(prose(live));
+    expect(refreshed[0]).toMatchObject({
+      id: "follow-up:follow-up-run", type: "work.follow_up", timestamp: pending.timestamp, text: pending.text,
+    });
+    expect(refreshed.slice(1)).toEqual(tail);
+  });
+
+  it("uses the saved submission time rather than appending after newer messages", () => {
+    const before = at("assistant.message", 10, "2026-10-28T08:14:37Z", { content: "Previous answer" });
+    const after = at("assistant.message", 30, "2026-10-28T08:18:17Z", { content: "New answer" });
+    expect(prose(withPendingFollowUp([before, after], pending))).toEqual(["Previous answer", pending.text, "New answer"]);
+  });
+
+  it("removes the placeholder when Earlier loads the real input, without changing source events", () => {
+    const source = at("user.message", 100, "2026-10-28T08:17:55Z", { content: pending.text });
+    const answer = at("assistant.message", 200, "2026-10-28T08:18:17Z", { content: "Answer" });
+    expect(withPendingFollowUp([answer], pending).filter((entry) => entry.role === "user")).toHaveLength(1);
+    const loaded = [source, answer];
+    expect(withPendingFollowUp(loaded, pending)).toBe(loaded);
+    expect(prose(withPendingFollowUp(loaded, pending))).toEqual([pending.text, "Answer"]);
+  });
+
+  it("does not mistake an identical instruction from an older Run for the current input", () => {
+    const older = at("user.message", 10, "2026-10-28T08:14:00Z", { content: pending.text });
+    const answer = at("assistant.message", 30, "2026-10-28T08:18:17Z", { content: "New answer" });
+    expect(prose(withPendingFollowUp([older, answer], pending))).toEqual([pending.text, pending.text, "New answer"]);
+  });
+
+  it("uses the last known source offset before Run metadata is received", () => {
+    const unconfirmed = { ...pending, timestamp: null, afterOffset: 20 };
+    const older = at("user.message", 10, null, { content: pending.text });
+    const activity = at("assistant.turn_start", 30, null);
+    const merged = withPendingFollowUp([older, activity], unconfirmed);
+    expect(merged.map((entry) => entry.type)).toEqual(["user.message", "work.follow_up", "assistant.turn_start"]);
+    const source = at("user.message", 40, null, { content: pending.text });
+    const observed = [older, activity, source];
+    expect(withPendingFollowUp(observed, unconfirmed)).toBe(observed);
+  });
+
+  it("keeps a queued input after earlier events and handles empty history", () => {
+    const earlier = at("session.shutdown", 10, "2026-10-28T08:14:38Z");
+    expect(withPendingFollowUp([earlier], pending).map((entry) => entry.type)).toEqual(["session.shutdown", "work.follow_up"]);
+    expect(withPendingFollowUp([], pending)).toHaveLength(1);
+  });
+
+  it("does not sort or mutate source events with absent or out-of-order timestamps", () => {
+    const events = [
+      at("session.usage_info", 10, null),
+      at("assistant.message", 20, "2026-10-28T08:18:17Z", { content: "Answer" }),
+      at("tool.execution_complete", 30, "2026-10-28T08:18:00Z"),
+    ];
+    const saved = JSON.stringify(events);
+    const merged = withPendingFollowUp(events, pending);
+    expect(merged.filter((entry) => entry.type !== "work.follow_up")).toEqual(events);
+    expect(merged[1].type).toBe("work.follow_up");
+    expect(JSON.stringify(events)).toBe(saved);
+  });
+
+  it("requires the registered attachments before considering an attachment-only input observed", () => {
+    const file = { id: "file-id", requestId: "request-id", uploadId: "upload-id", name: "image.png",
+      storedName: "file-image.png", size: 12, mediaType: "image/png", sha256: "0".repeat(64) };
+    const attachmentOnly = { ...pending, text: "", attachments: [file] };
+    const source = at("user.message", 100, "2026-10-28T08:17:55Z", { content: "" });
+    expect(withPendingFollowUp([source], attachmentOnly)).toHaveLength(2);
+    const observed = [{ ...source, attachments: [file] }];
+    expect(withPendingFollowUp(observed, attachmentOnly)).toBe(observed);
+    expect(withPendingFollowUp([], attachmentOnly)[0].attachments).toEqual([file]);
+  });
+
+  it("does not treat a subagent user message as the submitted root input", () => {
+    const source = { ...at("user.message", 100, "2026-10-28T08:17:55Z", { content: pending.text }), agentId: "child" };
+    expect(withPendingFollowUp([source], pending)).toHaveLength(2);
+  });
+
+  it("leaves history untouched when no input is pending", () => {
+    const events = [event("assistant.turn_start", 10)];
+    expect(withPendingFollowUp(events, null)).toBe(events);
   });
 });
 

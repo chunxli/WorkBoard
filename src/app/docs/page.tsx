@@ -144,6 +144,10 @@ export default async function DocsPage() {
         <p lang="en" className="text-sm leading-6 text-neutral-500">
           The feature guide and release history for Work Board. UI names stay in English, with Chinese guidance and concise English reference text.
         </p>
+        <Link href="#quick-start" className="inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-400 hover:text-emerald-300">
+          快速入门与初始配置 / Quick Start & Initial Setup
+          <ArrowUpRight size={14} aria-hidden="true" />
+        </Link>
       </div>
 
       <SectionNavigation mobile />
@@ -185,6 +189,11 @@ export default async function DocsPage() {
                       <p lang="en" className="mt-1 text-xs leading-5 text-neutral-500">
                         {feature.en}
                       </p>
+                      {feature.code && (
+                        <pre className="mt-3 max-w-full overflow-x-auto rounded-md border border-neutral-800 bg-neutral-950/60 p-3 text-xs leading-6 text-neutral-300">
+                          <code>{feature.code}</code>
+                        </pre>
+                      )}
                       {feature.href && feature.label && (
                         <Link
                           href={feature.href}
