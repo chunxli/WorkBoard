@@ -15,6 +15,13 @@ export async function register() {
     startTerminalHistorySync();
 
     const {
+      reconcileMissingWorkDirectories,
+      startWorkDirectoryReconciliation,
+    } = await import("@/lib/work-directory-reconciler");
+    await reconcileMissingWorkDirectories();
+    startWorkDirectoryReconciliation();
+
+    const {
       dispatchPendingSystemNotifications,
       startSystemNotificationDispatcher,
     } = await import("@/lib/notification-dispatcher");

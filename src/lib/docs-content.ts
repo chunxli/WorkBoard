@@ -43,14 +43,24 @@ export const docsNavigation = [
 
 export const releaseNotes: ReleaseEntry[] = [
   {
-    date: "2026-10-29",
+    date: "2026-10-30",
     version: "Latest changes",
     status: "latest",
     title: {
-      zh: "近期源码更新：快速入门、初始配置与会话体验",
-      en: "Recent source updates: Quick Start, initial setup and conversation",
+      zh: "近期源码更新：输入快捷键、自动归档与快速入门",
+      en: "Recent source updates: composer shortcuts, auto-archive and Quick Start",
     },
     notes: [
+      {
+        title: "Composer Keyboard Shortcuts",
+        zh: "Follow Up / Steer now 输入框按 Enter 发送、Shift+Enter 换行，发送按钮旁显示小字提示。输入法确认候选词与长按回车不重复发送；按钮禁用时快捷键同样不能发送。",
+        en: "Follow Up / Steer now uses Enter to send and Shift+Enter for a new line, with a small hint beside Send. IME confirmation does not send, held Enter does not repeat-submit, and keyboard submission respects the disabled button.",
+      },
+      {
+        title: "Missing Directory Auto-archive",
+        zh: "本机 Work 根目录确认不存在时自动归档，保留数据库中的历史，不重建目录。启动、列表加载及后台每 30 秒检查；活跃 Run、Terminal 占用、访问错误和非本机 Work 不会被误归档。",
+        en: "Confirmed missing local Work roots are automatically archived without recreating folders or deleting database history. Checks run at startup, on listing and every 30 seconds; active Runs, Terminal ownership, access errors and foreign-host Works are protected.",
+      },
       {
         title: "Quick Start & Initial Setup",
         zh: "新增中英对照快速入门：Windows/macOS/Linux 后台启动命令，以及 Prompt 模板、常用根目录、Execution defaults 和首个任务的推荐流程。",
@@ -347,8 +357,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "In-App Follow Up",
-        zh: "CLI Run 运行中允许编辑草稿和准备附件，但不能发送、Steer 或自动排队；结束后无需手动刷新即可手动 Follow Up。新关联 Run 使用父 Run 的引擎及同一原生 session，只发送新内容和新附件，不重放初始 Prompt。SDK 保留实时 Steer。Prompt 追加和同请求重试保持幂等；外部 Terminal 占用、并发 Run 和外部修改冲突仍明确阻止发送。",
-        en: "While a CLI Run is active, edit a draft or prepare files but do not send, Steer or auto-queue. Completion enables manual Follow Up without a manual refresh. The linked Run inherits the parent's engine and native session and sends only new content/files, not the initial Prompt again. SDK retains live Steering. Prompt append and same-request retry remain idempotent; external Terminal ownership, concurrent Runs and external-edit conflicts still block sending explicitly.",
+        zh: "CLI Run 运行中允许编辑草稿和准备附件，但不能发送、Steer 或自动排队；结束后无需手动刷新即可手动 Follow Up。输入框按 Enter 发送、Shift+Enter 换行，旁边有快捷键小字提示；输入法确认候选词不会触发发送，按钮不可用时快捷键同样不能发送。新关联 Run 使用父 Run 的引擎及同一原生 session，只发送新内容和新附件，不重放初始 Prompt。SDK 保留实时 Steer。Prompt 追加和同请求重试保持幂等；外部 Terminal 占用、并发 Run 和外部修改冲突仍明确阻止发送。",
+        en: "While a CLI Run is active, edit a draft or prepare files but do not send, Steer or auto-queue. Completion enables manual Follow Up without a manual refresh. The composer uses Enter to send and Shift+Enter for a new line, with a small shortcut hint. IME confirmation does not send, and keyboard submission respects the disabled Send button. The linked Run inherits the parent's engine and native session and sends only new content/files, not the initial Prompt again. SDK retains live Steering. Prompt append and same-request retry remain idempotent; external Terminal ownership, concurrent Runs and external-edit conflicts still block sending explicitly.",
       },
       {
         title: "Message Attachments",
@@ -392,8 +402,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Archive & Restore",
-        zh: "归档不会删除目录、Prompt、Session 或 Run 历史；恢复后可继续运行。",
-        en: "Archiving keeps directories, prompts, sessions, and Run history; restore the Work to continue.",
+        zh: "归档不会删除目录、Prompt、Session 或 Run 历史。启动、打开/刷新 Work 列表及后台每 30 秒检查已确认属于本机、无活跃 Run 的 Work；只有根目录确实不存在且盘符/共享根可访问时才自动移入 Archived，不重建目录或写缺失的 manifest。权限/临时访问错误、子文件缺失、链接目标不可用、Terminal 占用及非本机/主机未知的 Work 均不触发自动归档。目录恢复后可手动 Restore，不自动恢复归档状态。",
+        en: "Archiving keeps directories, prompts, sessions and Run history. Startup, Work-list loading/refresh and a 30-second background scan check idle Works known to belong to this host. A missing root is auto-archived only if its drive/share root remains accessible, without recreating folders or writing a missing manifest. Access errors, missing child files, unavailable symlink targets, Terminal ownership and foreign/unknown hosts do not trigger auto-archive. Restore manually after recovering the folder; returning folders are not automatically unarchived.",
       },
     ],
   },

@@ -12,11 +12,13 @@ import {
 } from "@/lib/work-files";
 import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
 import { workDefaultsPayload } from "@/lib/execution-defaults";
+import { reconcileMissingWorkDirectories } from "@/lib/work-directory-reconciler";
 
 export async function GET(req: NextRequest) {
   const userId = await getSessionUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  await reconcileMissingWorkDirectories(userId);
   const view = req.nextUrl.searchParams.get("view");
   const status = view === "archived" ? "ARCHIVED" : view === "all" ? undefined : { not: "ARCHIVED" as const };
   const works = await prisma.work.findMany({

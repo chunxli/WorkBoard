@@ -92,7 +92,7 @@ Before creating your first Work, set up reusable templates, a preferred working 
 | 3. Runtime | 初次使用保留默认 **Copilot CLI** 即可；有需要再选择模型或调整执行设置。 | Start with the default **Copilot CLI** runtime. Choose a model or adjust execution settings when needed. |
 | 4. Create & Run | 点击 **Create & Run** 创建并执行；**Create only** 只保存，稍后可用 **Execute** 执行。 | Choose **Create & Run** to save and execute, or **Create only** to save and run later with **Execute**. |
 | 5. Review | 在 **Conversation** 查看回复和工具执行情况，在文件区查看产出；**Raw output** 和 **Run history** 提供详细记录。 | Review replies and tool activity in **Conversation**, and inspect outputs in the file pane. Use **Raw output** and **Run history** for details. |
-| 6. Follow Up | 任务结束后，在底部输入新要求并点击 **Send Follow Up**，沿用同一会话继续。暂时不用的 Work 可归档。 | Once the Run finishes, enter another request and choose **Send Follow Up** to continue the same session. Archive a Work when it is no longer needed. |
+| 6. Follow Up | 任务结束后，在底部输入新要求，按 **Enter** 或点击 **Send Follow Up** 发送，**Shift+Enter** 换行，沿用同一会话继续。暂时不用的 Work 可归档。 | Once the Run finishes, enter another request and press **Enter** or choose **Send Follow Up** to continue the same session. Use **Shift+Enter** for a new line. Archive a Work when it is no longer needed. |
 
 示例 Prompt / Example Prompt:
 
@@ -137,6 +137,7 @@ Run these from the Work Board project folder. Wait for active Runs to finish bef
 | 后台启动成功后，可以关闭终端和浏览器标签页；服务仍需运行，电脑不能休眠或关机。 | After background startup succeeds, you can close the terminal and browser tabs. The server must remain running and the computer awake. |
 | 完成通知由服务发送到运行 Work Board 的电脑；需在 App 和操作系统中允许通知，勿扰模式可能隐藏提示。 | Completion notifications appear on the machine hosting Work Board. Enable them in the app and OS; Do Not Disturb may hide them. |
 | 默认 `RUN_CONCURRENCY="5"`，表示单个服务最多同时执行 5 个排队 Run，其余等待。修改后重启生效。 | The default `RUN_CONCURRENCY="5"` allows up to five queued Runs at once per server process. Restart after changing it. |
+| 本机空闲 Work 的根目录确认已删除时，会自动移入 **Archived**，保留历史且不重建目录；列表加载时及后台每 30 秒检查。运行中、Terminal 占用、访问错误或仅子文件缺失时不会误归档。目录恢复后可手动 Restore。 | An idle local Work with a confirmed deleted root moves to **Archived**, retaining history without recreating the folder. Checks run on list loading and every 30 seconds. Active Runs, Terminal ownership, access errors, or missing child files do not trigger archiving. Restore manually after recovering the folder. |
 | CLI 运行中可以起草 Follow Up，但只能结束后发送。SDK 支持运行中 Steer 和审批；等待人工答复时需要打开页面处理。 | With CLI, draft a Follow Up during execution and send it after completion. SDK supports live Steering and approvals; reopen the page to answer pending interactions. |
 | MCP 提示认证时，在 Terminal 运行 `copilot` 并通过 `/mcp` 按提示授权。Terminal 认证不保证能被 SDK 会话复用；持续失败时查看具体工具错误。 | If MCP requests authentication, run `copilot` in Terminal and follow `/mcp` prompts. Terminal authentication is not guaranteed to carry over to SDK sessions; inspect the specific tool error if it still fails. |
 

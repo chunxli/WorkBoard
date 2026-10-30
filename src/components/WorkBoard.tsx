@@ -237,7 +237,7 @@ export default function WorkBoard({
         router.refresh();
       }
     };
-    const timer = hasLiveRuns ? setInterval(refresh, 4000) : undefined;
+    const timer = setInterval(refresh, hasLiveRuns ? 4000 : 30_000);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     refresh();

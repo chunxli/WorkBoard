@@ -12,11 +12,13 @@ import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { getRunStatusSnapshot } from "@/lib/run-status";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { reconcileMissingWorkDirectories } from "@/lib/work-directory-reconciler";
 
 export default async function WorkBoardPage() {
   const userId = await getSessionUserId();
   if (!userId) redirect("/api/auth/signin");
 
+  await reconcileMissingWorkDirectories(userId);
   const [works, resources, savedShortcuts, legacyTaskCount, executionDefaults] = await Promise.all([
     prisma.work.findMany({
       where: { userId },

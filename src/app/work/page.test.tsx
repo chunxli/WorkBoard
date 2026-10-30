@@ -2,10 +2,15 @@ import os from "node:os";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const services = vi.hoisted(() => ({ works: vi.fn(), activity: vi.fn(), board: vi.fn(() => null) }));
-vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
+const services = vi.hoisted(() => ({
+  works: vi.fn(), activity: vi.fn(), board: vi.fn(() => null), user: vi.fn(), reconcile: vi.fn(),
+}));
+vi.mock("next/navigation", () => ({
+  redirect: vi.fn(() => { throw new Error("Redirected to sign-in"); }),
+}));
 vi.mock("next/headers", () => ({ headers: async () => new Headers({ host: "localhost:3100" }) }));
-vi.mock("@/lib/session", () => ({ getSessionUserId: async () => "status-owner" }));
+vi.mock("@/lib/session", () => ({ getSessionUserId: services.user }));
+vi.mock("@/lib/work-directory-reconciler", () => ({ reconcileMissingWorkDirectories: services.reconcile }));
 vi.mock("@/lib/auth-mode", () => ({ authMode: "local" }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
   work: { findMany: services.works }, repo: { findMany: async () => [] },
@@ -31,6 +36,7 @@ const run = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  services.user.mockResolvedValue("status-owner");
   services.works.mockResolvedValue([{
     id: "status-work", name: "Status Work", directoryPath: "C:\\status\\work", promptFileName: "PROMPT.md",
     status: "ACTIVE", defaultEngine: "CLI", updatedAt: now, _count: { tasks: 0 }, runs: [run],
@@ -39,6 +45,20 @@ beforeEach(() => {
 });
 
 describe("Work Card status summary", () => {
+  it("reconciles the owner's missing roots before reading the current and archived card list", async () => {
+    renderToStaticMarkup(await WorkBoardPage());
+    expect(services.reconcile).toHaveBeenCalledWith("status-owner");
+    expect(services.reconcile.mock.invocationCallOrder[0]).toBeLessThan(services.works.mock.invocationCallOrder[0]);
+    expect(services.works).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: "status-owner" } }));
+  });
+
+  it("does not inspect or change Works before authentication", async () => {
+    services.user.mockResolvedValue(null);
+    await expect(WorkBoardPage()).rejects.toThrow("Redirected to sign-in");
+    expect(services.reconcile).not.toHaveBeenCalled();
+    expect(services.works).not.toHaveBeenCalled();
+  });
+
   it.each([
     { active: false, starting: false, status: "SYNCING", action: "ready" },
     { active: true, starting: false, status: "IN_TERMINAL", action: "active" },

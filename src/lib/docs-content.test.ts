@@ -42,6 +42,8 @@ describe("in-app documentation content", () => {
       "Quick Start & Initial Setup",
       "Refresh-Stable Input Order",
       "Run Concurrency",
+      "Composer Keyboard Shortcuts",
+      "Missing Directory Auto-archive",
     ]));
   });
 
@@ -101,6 +103,29 @@ describe("in-app documentation content", () => {
         { date: "2026-09-03", version: "e461da3" },
         { date: "2026-09-01", version: "4315291" },
       ]);
+  });
+
+  it("documents Enter-to-send with newline, IME and disabled-button safeguards", () => {
+    const followUp = docsSections.flatMap((section) => section.features).find((feature) => feature.title === "In-App Follow Up");
+    const note = releaseNotes[0].notes.find((note) => note.title === "Composer Keyboard Shortcuts");
+    for (const text of [followUp?.zh, followUp?.en]) {
+      expect(text).toContain("Enter");
+      expect(text).toContain("Shift+Enter");
+    }
+    expect(followUp?.en).toContain("IME confirmation does not send");
+    expect(followUp?.en).toContain("disabled Send button");
+    expect(note?.en).toContain("Enter to send");
+    expect(note?.en).toContain("Shift+Enter");
+    expect(note?.en).toContain("held Enter does not repeat-submit");
+  });
+
+  it("documents automatic missing-root archiving without treating file errors as directory deletion", () => {
+    const archive = docsSections.flatMap((section) => section.features).find((feature) => feature.title === "Archive & Restore");
+    expect(archive?.en).toContain("30-second background scan");
+    expect(archive?.en).toContain("missing child files");
+    expect(archive?.en).toContain("foreign/unknown hosts");
+    expect(archive?.en).toContain("Restore manually");
+    expect(releaseNotes[0].notes.map((note) => note.title)).toContain("Missing Directory Auto-archive");
   });
 
   it("keeps documented attachment limits aligned with the runtime contract", () => {

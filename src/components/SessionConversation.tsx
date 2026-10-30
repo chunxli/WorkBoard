@@ -103,6 +103,21 @@ export function conversationControlCapabilities(
   };
 }
 
+export function handleConversationComposerKeyDown(
+  event: {
+    key: string;
+    shiftKey: boolean;
+    repeat: boolean;
+    nativeEvent: Pick<KeyboardEvent, "isComposing" | "keyCode">;
+    preventDefault(): void;
+  },
+  submit: () => void,
+) {
+  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+  event.preventDefault();
+  if (!event.repeat) submit();
+}
+
 export default function SessionConversation({ workId, runId, runtimeEngine, initialLog, isLive, historySync, outputFormat, runActions, workHeader, workActions, notices, runError, panels = [], fileBrowser }: {
   workId: string;
   runId: string | null;
@@ -153,6 +168,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   const [pending, setPending] = useState<{ runId: string; text: string; afterOffset: number; attachments?: WorkAttachment[] } | null>(null);
   const container = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const submitButton = useRef<HTMLButtonElement>(null);
   const nearBottom = useRef(true);
   const history = useRef(new Map<string, ConversationEvent>());
   const cursor = useRef<string | null>(null);
@@ -519,6 +535,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
               {steeringRequestState ? "Steering status / repair" : canSteer ? "Steer now" : "Follow Up"}
             </label>
             <textarea id="session-follow-up" ref={textarea} value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} maxLength={100000}
+              aria-describedby={`${panelPrefix}-composer-help`}
               placeholder={canSteer ? "Redirect the active task..." : runtimeEngine === "CLI" && isLive && !canFollowUp
                 ? "Draft a follow-up to send after this Run finishes..." : "Continue this conversation..."} disabled={sending || frozenDraft}
               onPaste={(event) => {
@@ -532,20 +549,23 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
                   setDraft((value) => value.slice(0, selectionStart) + pastedText + value.slice(selectionEnd));
                 }
               }}
-              onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void send(); } }}
+              onKeyDown={(event) => handleConversationComposerKeyDown(event, () => submitButton.current?.click())}
               className="ui-input min-h-14 w-full resize-y px-3 py-2 text-sm leading-5" />
             <AttachmentDraft {...attachments} disabled={sending || frozenDraft} />
             <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-              <p className="min-w-0 flex-1 text-xs text-neutral-500" role="status">
-                {steeringUncertain
-                  ? "Acceptance is uncertain. Retry only with this exact draft and request ID, or explicitly dismiss it after checking session history."
-                  : canSteer
-                    ? "Adds an instruction to this active Run/session; it does not undo work or guarantee that a running tool stops."
-                    : canFollowUp ? "" : runtimeEngine === "CLI" && isLive
-                      ? "Native CLI is running without live Steering or SDK controls. You can edit a draft and send Follow Up after the Run finishes."
-                      : data?.blockedReason ?? data?.steeringBlockedReason ?? (data?.terminalActive ? "Session open in Terminal" : "")}
-              </p>
-              <button type="submit" disabled={sending || (!draft.trim() && !attachments.files.length) ||
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p id={`${panelPrefix}-composer-help`} className="text-[11px] leading-5 text-neutral-500">Enter to send · Shift+Enter for a new line</p>
+                <p className="text-xs text-neutral-500" role="status">
+                  {steeringUncertain
+                    ? "Acceptance is uncertain. Retry only with this exact draft and request ID, or explicitly dismiss it after checking session history."
+                    : canSteer
+                      ? "Adds an instruction to this active Run/session; it does not undo work or guarantee that a running tool stops."
+                      : canFollowUp ? "" : runtimeEngine === "CLI" && isLive
+                        ? "Native CLI is running without live Steering or SDK controls. You can edit a draft and send Follow Up after the Run finishes."
+                        : data?.blockedReason ?? data?.steeringBlockedReason ?? (data?.terminalActive ? "Session open in Terminal" : "")}
+                </p>
+              </div>
+              <button ref={submitButton} type="submit" disabled={sending || (!draft.trim() && !attachments.files.length) ||
                 (steeringUncertain !== null && steeringUncertain.text !== draft.trim()) ||
                 (steeringRequestState !== null && steeringRequestState.text !== draft.trim()) ||
                 (!frozenDraft && !steeringRequestState && !canFollowUp && !canSteer) || readError !== null} className="ui-primary-button">

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage } from "./SessionConversation";
+import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage, handleConversationComposerKeyDown } from "./SessionConversation";
 import { normalizeConversationEvent } from "@/lib/session-conversation";
 import { conversationTimeline, withPendingFollowUp } from "@/lib/conversation-activity";
 
@@ -79,6 +79,69 @@ describe("engine-specific conversation controls", () => {
       expect(markup.match(/<textarea[^>]*id="session-follow-up"[^>]*>/)?.[0]).not.toContain("disabled");
       expect(markup).not.toContain("Steer now");
     }
+  });
+});
+
+describe("conversation composer keyboard shortcuts", () => {
+  function keyEvent(overrides: Partial<Parameters<typeof handleConversationComposerKeyDown>[0]> = {}) {
+    return {
+      key: "Enter", shiftKey: false, repeat: false,
+      nativeEvent: { isComposing: false, keyCode: 13 },
+      preventDefault: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  it("submits on Enter without inserting a newline", () => {
+    const event = keyEvent();
+    const submit = vi.fn();
+    handleConversationComposerKeyDown(event, submit);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it("leaves Shift+Enter available for a newline", () => {
+    const event = keyEvent({ shiftKey: true });
+    const submit = vi.fn();
+    handleConversationComposerKeyDown(event, submit);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { isComposing: true, keyCode: 13 },
+    { isComposing: false, keyCode: 229 },
+  ])("does not submit IME confirmation: %j", (nativeEvent) => {
+    const event = keyEvent({ nativeEvent });
+    const submit = vi.fn();
+    handleConversationComposerKeyDown(event, submit);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("does not repeatedly submit or add newlines when Enter is held down", () => {
+    const event = keyEvent({ repeat: true });
+    const submit = vi.fn();
+    handleConversationComposerKeyDown(event, submit);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("leaves other keys unchanged", () => {
+    const event = keyEvent({ key: "a" });
+    const submit = vi.fn();
+    handleConversationComposerKeyDown(event, submit);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it.each(["CLI", "SDK"] as const)("shows a small accessible keyboard hint for the %s composer", (runtimeEngine) => {
+    const markup = renderToStaticMarkup(<SessionConversation workId="work" runId="run" runtimeEngine={runtimeEngine}
+      initialLog="" isLive historySync={false} outputFormat="text" />);
+    const describedBy = markup.match(/<textarea[^>]*aria-describedby="([^"]+)"/)?.[1];
+    expect(describedBy).toBeTruthy();
+    expect(markup).toContain(`id="${describedBy}" class="text-[11px] leading-5 text-neutral-500"`);
+    expect(markup).toContain("Enter to send · Shift+Enter for a new line");
   });
 });
 
