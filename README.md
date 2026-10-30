@@ -237,6 +237,8 @@ The terminal can be closed after the command reports that Work Board started. Ch
 
 Use the full `background:restart` after pulling code, changing dependencies, or adding migrations. Preparation generates Prisma, applies pending migrations, and builds the Release; the fast commands require those steps to have been completed already.
 
+**After upgrading Node.js:** SQLite's native binary must match the new Node ABI. If startup reports `ERR_DLOPEN_FAILED` or a `NODE_MODULE_VERSION` mismatch, wait for active Runs to finish and stop the managed server, then run `npm rebuild better-sqlite3 --foreground-scripts` and a full `npm run background:restart`. If npm reports that the install script was blocked, review the installed package and run `npm install-scripts approve better-sqlite3` before rebuilding. npm 12 records a version-pinned `allowScripts` entry in `package.json`; approve only the required package, not all scripts. A successful rebuild message does not confirm repair if npm also reports that the package's script was blocked.
+
 Background startup and status require HTTP 200 from `/api/health`. This uncached, public endpoint returns only `{"status":"ok"}` in both login-free local and Entra modes; it checks HTTP serving, not database or external-service availability. Authentication endpoints remain disabled (HTTP 404) in local mode and are not used for readiness.
 
 ### Start automatically after login
