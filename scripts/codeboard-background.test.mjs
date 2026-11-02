@@ -11,6 +11,7 @@ import { resolveAutostartEnabled, withLifecycleLock, writePrivateFile } from "./
 
 const directories = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -117,6 +118,49 @@ describe("background autostart lifecycle", () => {
     expect(f.children[0].args.slice(-2)).toEqual(["-H", "127.0.0.1"]);
     expect(f.children[0].unref).toHaveBeenCalledOnce();
     expect(JSON.parse(readFileSync(f.pidFile, "utf8")).processInstance).toBe("instance-4101");
+  });
+
+  it.each(["start", "login"])("uses the default readiness window for %s", async (action) => {
+    let elapsed = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => elapsed);
+    const f = fixture({
+      startupTimeoutMs: undefined,
+      sleep: async (ms) => { elapsed += ms; },
+      httpReady: async () => elapsed >= 20_000,
+    });
+    f.manager.enabled = action === "login";
+
+    if (action === "login") {
+      await runBackground(action, f.options);
+      expect(elapsed).toBe(20_000);
+      expect(existsSync(f.pidFile)).toBe(true);
+      expect(f.children[0].kill).not.toHaveBeenCalled();
+      expect(f.calls.map((call) => call[0])).toEqual(["spawn"]);
+    } else {
+      await expect(runBackground(action, f.options)).rejects.toThrow("within 15s");
+      expect(existsSync(f.pidFile)).toBe(false);
+      expect(f.children[0].kill).toHaveBeenCalledOnce();
+      expect(f.calls.map((call) => call[0])).toEqual(["spawn"]);
+    }
+  });
+
+  it("bounds login readiness to two minutes and preserves registration on failure", async () => {
+    let elapsed = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => elapsed);
+    const f = fixture({
+      startupTimeoutMs: undefined,
+      sleep: async (ms) => { elapsed += ms; },
+      httpReady: async () => false,
+    });
+    f.manager.enabled = true;
+
+    await expect(runBackground("login", f.options)).rejects.toThrow("within 120s");
+    expect(elapsed).toBeGreaterThanOrEqual(120_000);
+    expect(elapsed).toBeLessThan(121_000);
+    expect(existsSync(f.pidFile)).toBe(false);
+    expect(f.children[0].kill).toHaveBeenCalledOnce();
+    expect(f.manager.enabled).toBe(true);
+    expect(f.calls.map((call) => call[0])).toEqual(["spawn"]);
   });
 
   it("waits for HTTP readiness before persisting PID success or reconciling registration", async () => {

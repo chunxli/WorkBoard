@@ -124,7 +124,7 @@ export async function runBackground(action, options = {}) {
   const ready = options.httpReady ?? (() => httpIsReady(port));
   const output = options.output ?? console;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const startupTimeout = options.startupTimeoutMs ?? 15_000;
+  const startupTimeout = options.startupTimeoutMs ?? (action === "login" ? 120_000 : 15_000);
   const stopTimeout = options.stopTimeoutMs ?? 8_000;
   const inherited = options.environment ?? process.env;
 
@@ -341,7 +341,7 @@ export async function runBackground(action, options = {}) {
         }
         await sleep(100);
       }
-      if (!healthy) throw new Error(`Work Board did not become HTTP-ready. Check ${stderrLog}${spawnError ? ` (${spawnError.code})` : ""}.`);
+      if (!healthy) throw new Error(`Work Board did not become HTTP-ready within ${startupTimeout / 1_000}s. Check ${stderrLog}${spawnError ? ` (${spawnError.code})` : ""}.`);
       state = {
         pid: child.pid, startedAt: new Date().toISOString(), port, root,
         nodePath: current.executable, processInstance: current.created,

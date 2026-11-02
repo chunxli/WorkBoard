@@ -245,6 +245,8 @@ Background startup and status require HTTP 200 from `/api/health`. This uncached
 
 After registration, the current user's next login starts the prepared Release without opening a terminal or browser. Login startup never installs dependencies, rebuilds, migrates the database, or submits a new Copilot instruction.
 
+Login startup allows up to **120 seconds** for HTTP readiness, giving cold module loading and startup recovery time to finish while the machine is busy signing in. Manual start/restart retains its 15-second readiness deadline. Console `Ready` output alone is not sufficient: the server must return HTTP 200 from `/api/health`. A failed login launch is stopped and reported in the bootstrap log; registration remains available for the next login.
+
 Configure the policy in the application-root `.env`:
 
 ```dotenv
