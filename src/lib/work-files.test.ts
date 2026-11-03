@@ -12,6 +12,8 @@ import {
   provisionWorkDirectory,
   readDirectoryPromptFile,
   readWorkPrompt,
+  updateWorkManifestMetadata,
+  type WorkDiskRecord,
   WorkPromptConflictError,
   writeWorkPrompt,
 } from "./work-files";
@@ -30,6 +32,40 @@ afterEach(async () => {
 });
 
 describe("Work directory contract", () => {
+  it("renames only the selected Work metadata without renaming its directory or changing prompts", async () => {
+    const directory = await temporaryDirectory();
+    const record = await provisionWorkDirectory({
+      workId: "rename-work",
+      name: "Original Work",
+      directoryPath: directory,
+      prompt: "Keep the original prompt",
+    });
+    const other = await provisionWorkDirectory({
+      workId: "other-work",
+      name: "Other Work",
+      directoryPath: directory,
+      prompt: "Keep the other prompt",
+    });
+
+    await updateWorkManifestMetadata(record, { name: "Renamed Work" });
+
+    const manifest: WorkDiskRecord = JSON.parse(
+      await readFile(path.join(directory, ".workboard", "works", `${record.id}.json`), "utf8")
+    );
+    expect(manifest).toMatchObject({
+      ...record,
+      name: "Renamed Work",
+      updatedAt: expect.any(String),
+    });
+    const index = JSON.parse(await readFile(path.join(directory, ".workboard", "index.json"), "utf8"));
+    expect(index.works.map((entry: WorkDiskRecord) => ({ id: entry.id, name: entry.name }))).toEqual([
+      { id: record.id, name: "Renamed Work" },
+      { id: other.id, name: "Other Work" },
+    ]);
+    expect((await readWorkPrompt(record)).content).toBe("Keep the original prompt");
+    expect((await readWorkPrompt(other)).content).toBe("Keep the other prompt");
+  });
+
   it("lists and reads extensionless and numbered top-level Prompt files safely", async () => {
     const directory = await temporaryDirectory();
     await writeFile(path.join(directory, "Prompt"), "extensionless", "utf8");

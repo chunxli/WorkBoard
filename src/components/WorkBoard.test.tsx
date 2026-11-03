@@ -1,3 +1,4 @@
+import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILT_IN_EXECUTION_DEFAULTS } from "@/lib/execution-defaults";
@@ -61,5 +62,49 @@ describe("New Work Prompt attachment controls", () => {
     expect(markup).toContain('aria-label="Attachments to send"');
     expect(markup).toContain("evidence.txt");
     expect(markup).toContain('aria-label="Remove evidence.txt"');
+  });
+});
+
+describe("Work Card quick renaming", () => {
+  const work: ComponentProps<typeof WorkBoard>["works"][number] = {
+    id: "synthetic-work",
+    name: "Example Work",
+    directoryPath: "C:\\work\\example",
+    promptFileName: "PROMPT.md",
+    status: "REVIEW",
+    defaultEngine: "CLI",
+    updatedAt: "2026-11-03T00:00:00.000Z",
+    updatedAtLabel: "2026/11/3 08:00:00",
+    automationCount: 0,
+    latestRunStatus: "SUCCESS",
+    latestRunId: null,
+    latestModels: [],
+    latestTokenUsage: null,
+    terminalResumeState: "unavailable",
+  };
+
+  it.each([true, false])("offers an accessible rename control with local actions available=%s", (canOpenExplorer) => {
+    const markup = renderToStaticMarkup(<WorkBoard
+      userId="synthetic-user" works={[work]} resources={[]} shortcuts={[]}
+      executionDefaults={BUILT_IN_EXECUTION_DEFAULTS} canOpenExplorer={canOpenExplorer}
+    />);
+    expect(markup).toContain('aria-label="Rename Example Work"');
+    expect(markup).toContain('title="Rename Work"');
+    expect(markup).toContain('href="/work/synthetic-work"');
+    expect(markup).toContain('aria-label="Open Example Work"');
+    expect(markup).toContain('aria-label="Archive Example Work"');
+    expect(markup).toContain(work.directoryPath);
+    expect(markup).not.toContain('aria-label="Work name"');
+  });
+
+  it("bounds cards and wraps long unbroken names instead of growing the mobile grid", () => {
+    const name = "W".repeat(200);
+    const markup = renderToStaticMarkup(<WorkBoard
+      userId="synthetic-user" works={[{ ...work, name }]} resources={[]} shortcuts={[]}
+      executionDefaults={BUILT_IN_EXECUTION_DEFAULTS} canOpenExplorer
+    />);
+    expect(markup).toContain("group relative flex min-h-56 min-w-0 flex-col");
+    expect(markup).toContain("line-clamp-2 min-w-0 flex-1 break-words");
+    expect(markup).toContain(`aria-label="Rename ${name}"`);
   });
 });

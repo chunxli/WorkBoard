@@ -43,14 +43,19 @@ export const docsNavigation = [
 
 export const releaseNotes: ReleaseEntry[] = [
   {
-    date: "2026-10-30",
+    date: "2026-11-03",
     version: "Latest changes",
     status: "latest",
     title: {
-      zh: "近期源码更新：输入快捷键、自动归档与快速入门",
-      en: "Recent source updates: composer shortcuts, auto-archive and Quick Start",
+      zh: "近期源码更新：卡片快速重命名、输入快捷键与自动归档",
+      en: "Recent source updates: quick card renaming, composer shortcuts and auto-archive",
     },
     notes: [
+      {
+        title: "Quick Work Renaming",
+        zh: "点击 Current 或 Archived 卡片标题旁的铅笔直接重命名：Enter 或勾号保存，Esc 或取消按钮放弃。名称自动去除首尾空白，限 1-200 字符；不重命名磁盘目录或改写 Prompt、Run 历史，失败保留草稿并显示错误。",
+        en: "Click the pencil beside a Current or Archived card title to rename inline: Enter/checkmark saves, Esc/cancel discards. Names are trimmed to 1-200 characters; the folder, Prompt and Run history stay unchanged, and failures retain the draft with a visible error.",
+      },
       {
         title: "Composer Keyboard Shortcuts",
         zh: "Follow Up / Steer now 输入框按 Enter 发送、Shift+Enter 换行，发送按钮旁显示小字提示。输入法确认候选词与长按回车不重复发送；按钮禁用时快捷键同样不能发送。",
@@ -329,6 +334,13 @@ export const docsSections: DocsSection[] = [
         en: "Cards show status, directory, engine, actual models, tokens, Automation count, and Terminal state; Work directories can open directly in Windows Explorer or VS Code, and Current Work supports persistent drag ordering.",
         href: "/work",
         label: "View cards",
+      },
+      {
+        title: "Quick Work Renaming",
+        zh: "点击 Current 或 Archived 卡片标题旁的铅笔编辑名称，Enter 或勾号保存，Esc 或取消按钮放弃；输入法确认候选词不会保存。名称自动去除首尾空白，限 1-200 字符，仅更新 Work 显示名与元数据，不改变目录、Prompt、Run 历史或归档状态。编辑时禁用该卡片的拖动和归档，保存中阻止重复提交；失败保留草稿并显示错误。长名称在窄屏内换行，不撑宽卡片。",
+        en: "Click the pencil beside a Current or Archived card title to edit inline: Enter/checkmark saves, Esc/cancel discards. IME confirmation does not save. Names are trimmed to 1-200 characters; only the Work label and metadata change, not the folder, Prompt, Run history or archived status. Editing blocks card drag/archive actions; saving blocks duplicate submissions. Failures retain the draft with a visible error, and long names wrap within narrow cards.",
+        href: "/work",
+        label: "Rename a Work",
       },
       {
         title: "Execution Settings",

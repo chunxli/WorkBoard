@@ -18,6 +18,17 @@ const validWork = {
 };
 
 describe("Work execution settings", () => {
+  it("accepts a trimmed name-only update without changing execution settings or the directory", () => {
+    expect(updateWorkSchema.parse({ name: "  Renamed Work  " })).toEqual({ name: "Renamed Work" });
+    expect(updateWorkSchema.shape.name.unwrap().parse("  Renamed Work  ")).toBe("Renamed Work");
+    expect(updateWorkSchema.parse({ name: "W".repeat(200) })).toEqual({ name: "W".repeat(200) });
+  });
+
+  it.each(["", "   ", "W".repeat(201)])("rejects an invalid Work rename (%s)", (name) => {
+    expect(updateWorkSchema.safeParse({ name }).success).toBe(false);
+    expect(updateWorkSchema.shape.name.unwrap().safeParse(name).success).toBe(false);
+  });
+
   it("accepts all explicit Work execution settings", () => {
     expect(createWorkSchema.parse(validWork)).toMatchObject(validWork);
     expect(updateWorkSchema.parse({

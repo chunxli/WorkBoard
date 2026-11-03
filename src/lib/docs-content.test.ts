@@ -28,6 +28,7 @@ describe("in-app documentation content", () => {
     expect(releaseNotes.filter((release) => release.status === "latest")).toHaveLength(1);
     const latestTitles = releaseNotes[0]?.notes.map((note) => note.title) ?? [];
     expect(latestTitles).toEqual(expect.arrayContaining([
+      "Quick Work Renaming",
       "First Run in Terminal",
       "Background System Notifications",
       "In-App Documentation",
@@ -117,6 +118,25 @@ describe("in-app documentation content", () => {
     expect(note?.en).toContain("Enter to send");
     expect(note?.en).toContain("Shift+Enter");
     expect(note?.en).toContain("held Enter does not repeat-submit");
+  });
+
+  it("documents quick card renaming without changing folders, history or archived status", () => {
+    const note = releaseNotes[0].notes.find((note) => note.title === "Quick Work Renaming");
+    const feature = docsSections.find((section) => section.id === "work-lifecycle")?.features
+      .find((feature) => feature.title === "Quick Work Renaming");
+    expect(feature?.href).toBe("/work");
+    for (const content of [note, feature]) {
+      for (const label of ["Current", "Archived", "pencil", "Enter", "Esc", "1-200", "folder", "Prompt", "Run history", "draft"]) {
+        expect(content?.en).toContain(label);
+      }
+      for (const label of ["Enter", "Esc", "1-200", "Prompt", "Run"]) {
+        expect(content?.zh).toContain(label);
+      }
+    }
+    expect(feature?.en).toContain("IME confirmation does not save");
+    expect(feature?.en).toContain("duplicate submissions");
+    expect(feature?.en).toContain("archived status");
+    expect(feature?.en).toContain("long names wrap");
   });
 
   it("documents automatic missing-root archiving without treating file errors as directory deletion", () => {

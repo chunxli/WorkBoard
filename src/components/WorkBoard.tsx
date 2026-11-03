@@ -25,6 +25,7 @@ import {
   ArrowUpRight,
   Bot,
   Boxes,
+  Check,
   ChevronDown,
   Code2,
   Copy,
@@ -35,10 +36,12 @@ import {
   LoaderCircle,
   MessageSquareText,
   Gauge,
+  Pencil,
   Play,
   Plus,
   SquareKanban,
   TerminalSquare,
+  X,
 } from "lucide-react";
 import FolderBrowserModal from "@/components/FolderBrowserModal";
 import ConfirmFolderCopyModal from "@/components/ConfirmFolderCopyModal";
@@ -63,6 +66,7 @@ import { formatTokenCount } from "@/lib/format";
 import { TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
 import { insertPromptName, type PromptSelection } from "@/lib/prompt-insertion";
 import { prepareNewWork, type CreatedWorkDraft } from "@/lib/new-work-submission";
+import { updateWorkSchema } from "@/lib/validation";
 
 type Initialization = "USE_PATH" | "COPY_REPO";
 
@@ -1147,6 +1151,74 @@ function SortableWorkCard({
   archivingWorkId: string | null;
   onArchive: (work: WorkSummary) => void;
 }) {
+  const router = useRouter();
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(work.name);
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const renameButton = useRef<HTMLButtonElement>(null);
+  const renameBusy = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!editingName) return;
+    nameInput.current?.focus();
+    nameInput.current?.select();
+  }, [editingName]);
+
+  function closeNameEditor() {
+    if (renameBusy.current) return;
+    setEditingName(false);
+    setNameError(null);
+    requestAnimationFrame(() => renameButton.current?.focus({ preventScroll: true }));
+  }
+
+  async function saveWorkName() {
+    if (renameBusy.current) return;
+    const parsed = updateWorkSchema.shape.name.unwrap().safeParse(nameDraft);
+    if (!parsed.success) {
+      setNameError("Work name must be between 1 and 200 characters.");
+      nameInput.current?.focus();
+      return;
+    }
+    const name = parsed.data;
+    if (name === work.name) {
+      closeNameEditor();
+      return;
+    }
+
+    renameBusy.current = true;
+    setSavingName(true);
+    setNameError(null);
+    try {
+      const response = await fetch(`/api/works/${work.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const body: unknown = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
+            ? body.error : "Failed to rename Work"
+        );
+      }
+      if (typeof body !== "object" || body === null ||
+        !("id" in body) || body.id !== work.id || !("name" in body) || body.name !== name) {
+        throw new Error("The server returned an invalid Work rename response.");
+      }
+      setEditingName(false);
+      router.refresh();
+      requestAnimationFrame(() => renameButton.current?.focus({ preventScroll: true }));
+    } catch (reason) {
+      setNameError(reason instanceof Error ? reason.message : String(reason));
+      nameInput.current?.focus();
+    } finally {
+      renameBusy.current = false;
+      setSavingName(false);
+    }
+  }
+
   const {
     attributes,
     listeners,
@@ -1154,7 +1226,7 @@ function SortableWorkCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: work.id, disabled: !draggable });
+  } = useSortable({ id: work.id, disabled: !draggable || editingName });
   const modelLabel = work.latestModels.length > 1
     ? `${work.latestModels[0]} +${work.latestModels.length - 1}`
     : work.latestModels[0] ?? "Auto";
@@ -1176,20 +1248,107 @@ function SortableWorkCard({
     <article
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`group relative flex min-h-56 flex-col rounded-lg border bg-neutral-900/60 p-4 shadow-sm transition-[border-color,background-color,box-shadow,opacity] ${
+      className={`group relative flex min-h-56 min-w-0 flex-col rounded-lg border bg-neutral-900/60 p-4 shadow-sm transition-[border-color,background-color,box-shadow,opacity] ${
         isDragging
           ? "z-10 border-emerald-600 bg-neutral-900 opacity-80 shadow-2xl shadow-black/30"
           : "border-neutral-800 hover:border-neutral-700 hover:bg-neutral-900/85 hover:shadow-lg hover:shadow-black/10"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Link
-            href={`/work/${work.id}`}
-            className="line-clamp-2 rounded text-base font-bold leading-6 text-white hover:text-emerald-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60"
-          >
-            {work.name}
-          </Link>
+        <div className="min-w-0 flex-1">
+          {editingName ? (
+            <form
+              aria-label={`Rename ${work.name}`}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveWorkName();
+              }}
+              className="space-y-2"
+            >
+              <div className="flex items-center gap-1">
+                <input
+                  ref={nameInput}
+                  value={nameDraft}
+                  maxLength={200}
+                  disabled={savingName}
+                  aria-label="Work name"
+                  aria-invalid={nameError !== null}
+                  aria-describedby={`work-name-hint-${work.id}${nameError ? ` work-name-error-${work.id}` : ""}`}
+                  onChange={(event) => {
+                    setNameDraft(event.target.value);
+                    setNameError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
+                      if (event.key === "Enter") event.preventDefault();
+                      return;
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      closeNameEditor();
+                    } else if (event.key === "Enter" && event.repeat) {
+                      event.preventDefault();
+                    }
+                  }}
+                  className="ui-input min-h-8 min-w-0 flex-1 px-2 py-1 text-sm font-semibold disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={savingName}
+                  aria-label="Save Work name"
+                  title="Save name (Enter)"
+                  className="grid size-8 shrink-0 place-items-center rounded-md text-emerald-400 hover:bg-neutral-800 disabled:opacity-40"
+                >
+                  {savingName ? (
+                    <LoaderCircle size={14} className="animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Check size={14} aria-hidden="true" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeNameEditor}
+                  disabled={savingName}
+                  aria-label="Cancel renaming"
+                  title="Cancel (Esc)"
+                  className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-white disabled:opacity-40"
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+              <p id={`work-name-hint-${work.id}`} className="text-[10px] text-neutral-500">
+                Enter to save. Esc to cancel.
+              </p>
+              {nameError && (
+                <p id={`work-name-error-${work.id}`} role="alert" className="break-words text-xs text-red-400">
+                  {nameError}
+                </p>
+              )}
+            </form>
+          ) : (
+            <div className="flex items-start gap-1">
+              <Link
+                href={`/work/${work.id}`}
+                className="line-clamp-2 min-w-0 flex-1 break-words rounded text-base font-bold leading-6 text-white hover:text-emerald-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60"
+              >
+                {work.name}
+              </Link>
+              <button
+                ref={renameButton}
+                type="button"
+                onClick={() => {
+                  setNameDraft(work.name);
+                  setNameError(null);
+                  setEditingName(true);
+                }}
+                aria-label={`Rename ${work.name}`}
+                title="Rename Work"
+                className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-emerald-300"
+              >
+                <Pencil size={14} aria-hidden="true" />
+              </button>
+            </div>
+          )}
           <span className="mt-2 inline-flex rounded border border-neutral-700 px-1.5 py-0.5 font-mono text-[9px] uppercase text-neutral-500">
             {work.status}
           </span>
@@ -1199,9 +1358,10 @@ function SortableWorkCard({
             type="button"
             {...attributes}
             {...listeners}
+            disabled={editingName}
             aria-label={`Reorder ${work.name}`}
             title="Drag to reorder"
-            className="grid size-8 shrink-0 touch-none cursor-grab place-items-center rounded-md text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200 active:cursor-grabbing"
+            className="grid size-8 shrink-0 touch-none cursor-grab place-items-center rounded-md text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200 active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
           >
             <GripVertical size={16} aria-hidden="true" />
           </button>
@@ -1316,7 +1476,7 @@ function SortableWorkCard({
             <button
               type="button"
               onClick={() => onArchive(work)}
-              disabled={archivingWorkId !== null}
+              disabled={archivingWorkId !== null || editingName}
               aria-label={`Archive ${work.name}`}
               title="Archive Work"
               className="grid size-8 place-items-center rounded-md text-neutral-600 hover:bg-neutral-800 hover:text-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
