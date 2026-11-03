@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, Download, LoaderCircle, Radio, Send, TerminalSquare, User, Wrench } from "lucide-react";
+import { ArrowDown, Bot, Check, ChevronDown, Download, LoaderCircle, Radio, Send, TerminalSquare, User, Wrench } from "lucide-react";
 import MarkdownResult from "@/components/MarkdownResult";
 import LiveRunLog from "@/components/LiveRunLog";
 import ManagedRuntimePanel from "@/components/ManagedRuntimePanel";
@@ -118,6 +118,23 @@ export function handleConversationComposerKeyDown(
   if (!event.repeat) submit();
 }
 
+export function handleConversationHistoryWheel(
+  event: {
+    deltaY: number;
+    ctrlKey: boolean;
+    currentTarget: EventTarget & Pick<HTMLDivElement, "scrollTop">;
+    nativeEvent: Pick<WheelEvent, "composedPath">;
+  },
+  loadEarlier: () => void,
+) {
+  if (event.ctrlKey || event.deltaY >= 0 || event.currentTarget.scrollTop > 0) return;
+  for (const target of event.nativeEvent.composedPath()) {
+    if (target === event.currentTarget) break;
+    if (target instanceof HTMLElement && target.scrollTop > 0 && target.scrollHeight > target.clientHeight) return;
+  }
+  loadEarlier();
+}
+
 export default function SessionConversation({ workId, runId, runtimeEngine, initialLog, isLive, historySync, outputFormat, runActions, workHeader, workActions, notices, runError, panels = [], fileBrowser }: {
   workId: string;
   runId: string | null;
@@ -167,6 +184,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   const hasWorkspace = Boolean(workHeader);
   const [pending, setPending] = useState<{ runId: string; text: string; afterOffset: number; attachments?: WorkAttachment[] } | null>(null);
   const container = useRef<HTMLDivElement>(null);
+  const earlierScroll = useRef<{ top: number; height: number } | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const submitButton = useRef<HTMLButtonElement>(null);
   const nearBottom = useRef(true);
@@ -284,8 +302,15 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     };
   }, [workId, runId, router]);
 
-  useEffect(() => {
-    if (nearBottom.current && container.current) container.current.scrollTop = container.current.scrollHeight;
+  useLayoutEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    if (earlierScroll.current) {
+      element.scrollTop = earlierScroll.current.top + element.scrollHeight - earlierScroll.current.height;
+      earlierScroll.current = null;
+    } else if (nearBottom.current) {
+      element.scrollTop = element.scrollHeight;
+    }
   }, [events, pending]);
 
   useEffect(() => {
@@ -302,24 +327,21 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   }, [workId]);
 
   async function loadEarlier() {
-    if (!previous.current || readBusy.current) return;
+    if (!previous.current || readBusy.current || earlierScroll.current) return;
     readBusy.current = true;
     setEarlierLoading(true);
-    const oldHeight = container.current?.scrollHeight ?? 0;
-    const oldTop = container.current?.scrollTop ?? 0;
     nearBottom.current = false;
     try {
       const response = await fetch(endpoint({ before: previous.current }), { cache: "no-store" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Unable to load earlier messages");
       const page = body as SessionConversationData;
+      if (container.current) earlierScroll.current = { top: container.current.scrollTop, height: container.current.scrollHeight };
       page.events.forEach((event) => history.current.set(event.id, event));
       previous.current = page.previousCursor;
       setEvents([...history.current.values()].sort((left, right) => left.offset - right.offset));
       setData((current) => current ? { ...current, previousCursor: page.previousCursor, hasEarlier: page.hasEarlier } : page);
-      requestAnimationFrame(() => {
-        if (container.current) container.current.scrollTop = oldTop + container.current.scrollHeight - oldHeight;
-      });
+      setReadError(null);
     } catch (error) { setReadError(error instanceof Error ? error.message : "Unable to load earlier messages"); }
     finally { readBusy.current = false; setEarlierLoading(false); }
   }
@@ -472,9 +494,6 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
         {runActions}
         <div className={`${workHeader ? "" : "ml-auto "}flex shrink-0 items-center gap-1 text-[10px] text-neutral-400`}>
           {data?.sessionId && <span className={workHeader ? "sr-only" : "font-mono"} title={data.sessionId}>Session {data.sessionId.slice(0, 8)}</span>}
-          {view === "conversation" && data?.hasEarlier && <button type="button" title="Earlier messages" aria-label="Earlier messages" disabled={earlierLoading} onClick={() => { setSelectedPanel("conversation"); void loadEarlier(); }} className="work-toolbar-action">
-            {earlierLoading ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <ArrowUp size={13} aria-hidden="true" />}{workHeader ? "Earlier" : "Earlier messages"}
-          </button>}
           {runId && (data?.historyAvailable || readError) && <a href={endpoint({ download: "1" })} title="Download full session history" aria-label="Download full session history" className="work-toolbar-control grid size-8 place-items-center rounded-md hover:bg-neutral-800 hover:text-emerald-400"><Download size={14} aria-hidden="true" /></a>}
           {view === "conversation" && <button type="button" title="Latest messages" aria-label="Latest messages" onClick={() => {
             setSelectedPanel("conversation");
@@ -512,9 +531,15 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
             ? <LiveRunLog key={runId} runId={runId} initialLog={initialLog} isLive={isLive} historySync={historySync} outputFormat={outputFormat} refreshOnStatusChange={false} />
             : <p className="py-4 text-sm text-neutral-500">No Run output yet.</p>}</div>
           : <div ref={container} className="work-conversation-log max-h-[65dvh] min-h-48 overflow-y-auto overscroll-contain pr-2"
-            role="log" aria-label="Session conversation" aria-busy={loading}
+            role="log" aria-label="Session conversation" aria-busy={loading || earlierLoading}
+            onWheel={(event) => handleConversationHistoryWheel(event, () => void loadEarlier())}
             onScroll={(change) => { const element = change.currentTarget; nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 100; }}>
             {loading && <p className="flex items-center gap-2 py-6 text-sm text-neutral-500"><LoaderCircle size={14} className="animate-spin" aria-hidden="true" />Loading conversation...</p>}
+            {!loading && data?.hasEarlier && <p role="status" className="flex min-h-11 items-center justify-center gap-2 text-xs text-neutral-500">
+              {earlierLoading
+                ? <><LoaderCircle size={14} className="animate-spin" aria-hidden="true" />Loading earlier messages...</>
+                : <button type="button" aria-label="Load earlier messages" onClick={() => void loadEarlier()} className="min-h-11 px-2 hover:text-neutral-300">Scroll up to load earlier messages</button>}
+            </p>}
             {!loading && timeline.length === 0 && <p className="py-6 text-sm text-neutral-500">{data?.historyUnavailableReason ?? "Waiting for recorded messages..."}</p>}
             {timeline.map((item) => item.kind === "activity"
               ? <ConversationActivityGroup key={item.id} activity={item} live={isLive && item.id === latestActivity?.id} />

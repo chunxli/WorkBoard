@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage, handleConversationComposerKeyDown } from "./SessionConversation";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage, handleConversationComposerKeyDown, handleConversationHistoryWheel } from "./SessionConversation";
 import { normalizeConversationEvent } from "@/lib/session-conversation";
 import { conversationTimeline, withPendingFollowUp } from "@/lib/conversation-activity";
 
@@ -142,6 +142,78 @@ describe("conversation composer keyboard shortcuts", () => {
     expect(describedBy).toBeTruthy();
     expect(markup).toContain(`id="${describedBy}" class="text-[11px] leading-5 text-neutral-500"`);
     expect(markup).toContain("Enter to send · Shift+Enter for a new line");
+  });
+});
+
+describe("upward conversation history scrolling", () => {
+  class ScrollElement extends EventTarget {
+    scrollTop = 0;
+    scrollHeight = 1000;
+    clientHeight = 400;
+  }
+
+  beforeEach(() => { vi.stubGlobal("HTMLElement", ScrollElement); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  function wheelEvent(overrides: Partial<Parameters<typeof handleConversationHistoryWheel>[0]> = {}) {
+    const container = new ScrollElement();
+    return {
+      deltaY: -120, ctrlKey: false, currentTarget: container,
+      nativeEvent: { composedPath: () => [container] },
+      ...overrides,
+    };
+  }
+
+  it("loads only on the next upward wheel gesture after reaching the top", () => {
+    const event = wheelEvent();
+    const loadEarlier = vi.fn();
+    event.currentTarget.scrollTop = 40;
+    handleConversationHistoryWheel(event, loadEarlier);
+    expect(loadEarlier).not.toHaveBeenCalled();
+    event.currentTarget.scrollTop = 0;
+    expect(loadEarlier).not.toHaveBeenCalled();
+    handleConversationHistoryWheel(event, loadEarlier);
+    expect(loadEarlier).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { deltaY: 120 },
+    { deltaY: 0 },
+    { ctrlKey: true },
+    { currentTarget: Object.assign(new ScrollElement(), { scrollTop: 0.1 }) },
+  ])("does not load on downward/horizontal scrolling, zoom or before the top: %j", (overrides) => {
+    const loadEarlier = vi.fn();
+    handleConversationHistoryWheel(wheelEvent(overrides), loadEarlier);
+    expect(loadEarlier).not.toHaveBeenCalled();
+  });
+
+  it("also recognizes a negative top offset during overscroll", () => {
+    const loadEarlier = vi.fn();
+    handleConversationHistoryWheel(wheelEvent({ currentTarget: Object.assign(new ScrollElement(), { scrollTop: -1 }) }), loadEarlier);
+    expect(loadEarlier).toHaveBeenCalledOnce();
+  });
+
+  it("lets a nested code block scroll upward before loading conversation history", () => {
+    const event = wheelEvent();
+    const code = new ScrollElement();
+    code.scrollTop = 80;
+    event.nativeEvent.composedPath = () => [code, event.currentTarget];
+    const loadEarlier = vi.fn();
+    handleConversationHistoryWheel(event, loadEarlier);
+    expect(loadEarlier).not.toHaveBeenCalled();
+    code.scrollTop = 0;
+    handleConversationHistoryWheel(event, loadEarlier);
+    expect(loadEarlier).toHaveBeenCalledOnce();
+  });
+
+  it("does not mistake a scrolled ancestor outside the conversation for a nested scroller", () => {
+    const event = wheelEvent();
+    const ancestor = new ScrollElement();
+    ancestor.scrollTop = 100;
+    event.nativeEvent.composedPath = () => [event.currentTarget, ancestor];
+    const loadEarlier = vi.fn();
+    handleConversationHistoryWheel(event, loadEarlier);
+    expect(loadEarlier).toHaveBeenCalledOnce();
   });
 });
 

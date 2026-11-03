@@ -62,6 +62,11 @@ export const releaseNotes: ReleaseEntry[] = [
         en: "Follow Up / Steer now uses Enter to send and Shift+Enter for a new line, with a small hint beside Send. IME confirmation does not send, held Enter does not repeat-submit, and keyboard submission respects the disabled button.",
       },
       {
+        title: "Scroll-to-load Earlier History",
+        zh: "对话滚到顶部后继续向上滚动，自动加载一页更早内容并保持当前阅读位置；加载中避免重复请求，失败显示错误。顶部小字入口保留点击和键盘操作，不再需要工具栏 Earlier 按钮。",
+        en: "Keep scrolling upward at the top of the conversation to load one earlier page without moving your reading position. Loading prevents duplicate requests and failures remain visible. The top hint retains click/keyboard access instead of the toolbar Earlier button.",
+      },
+      {
         title: "Missing Directory Auto-archive",
         zh: "本机 Work 根目录确认不存在时自动归档，保留数据库中的历史，不重建目录。启动、列表加载及后台每 30 秒检查；活跃 Run、Terminal 占用、访问错误和非本机 Work 不会被误归档。",
         en: "Confirmed missing local Work roots are automatically archived without recreating folders or deleting database history. Checks run at startup, on listing and every 30 seconds; active Runs, Terminal ownership, access errors and foreign-host Works are protected.",
@@ -73,7 +78,7 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Refresh-Stable Input Order",
-        zh: "刷新分页未包含当前 Follow Up 的原始输入时，按保存的提交时间在后续回复之前显示，不追加到时间线底部；加载 Earlier 后以原始消息替换并去重。",
+        zh: "刷新分页未包含当前 Follow Up 的原始输入时，按保存的提交时间在后续回复之前显示，不追加到时间线底部；向上滚动加载更早历史后以原始消息替换并去重。",
         en: "When a refreshed history page omits the current Follow Up input, its saved prompt appears before later replies by submission time instead of at the bottom. Earlier history replaces the placeholder without duplication.",
       },
       {
@@ -364,8 +369,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Session Conversation",
-        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。工具与运行元数据按活动归组，执行中展示进度，完成后折叠；失败在摘要可见，技术事件可展开检查。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。刷新按分页恢复最近历史；若当前 Follow Up 的原始输入位于更早分页，已保存的输入按提交时间显示在后续回复之前，加载原始消息后自动去重，不再追加到时间线底部。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
-        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Tool/runtime activity opens for progress and folds after completion; failures stay visible and technical events remain inspectable. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Refresh restores recent history in pages. If the current Follow Up input is in an earlier page, its saved prompt is placed by submission time before later replies and deduplicated when the source message loads, never appended to the timeline bottom. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
+        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。工具与运行元数据按活动归组，执行中展示进度，完成后折叠；失败在摘要可见，技术事件可展开检查。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。刷新按分页恢复最近历史；滚到顶部后继续向上滚动自动加载一页更早内容，保持阅读位置并显示加载与错误提示，顶部小字也可点击或用键盘操作。若当前 Follow Up 的原始输入位于更早分页，已保存的输入按提交时间显示在后续回复之前，加载原始消息后自动去重，不再追加到时间线底部。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
+        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Tool/runtime activity opens for progress and folds after completion; failures stay visible and technical events remain inspectable. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Refresh restores recent history in pages. Keep scrolling upward at the top to load one earlier page while preserving your reading position, with visible loading/errors and a clickable, keyboard-accessible top hint. If the current Follow Up input is in an earlier page, its saved prompt is placed by submission time before later replies and deduplicated when the source message loads, never appended to the timeline bottom. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
       },
       {
         title: "In-App Follow Up",
