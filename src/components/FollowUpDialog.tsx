@@ -108,7 +108,7 @@ export default function FollowUpDialog({
           setError(null);
           setOpen(true);
         }}
-        title={disabledReason ?? "Send a new prompt to this Work session"}
+        title={inline ? "Focus the conversation composer" : disabledReason ?? "Send a new prompt to this Work session"}
         className="ui-primary-button disabled:cursor-not-allowed"
       >
         <MessageSquarePlus size={15} aria-hidden="true" />

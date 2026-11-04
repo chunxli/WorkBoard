@@ -44,6 +44,11 @@ export interface SessionConversationData {
   historyAvailable: boolean;
   historyUnavailableReason: string | null;
   canFollowUp: boolean;
+  canQueue: boolean;
+  queueParentRunId: string | null;
+  queueBlockedReason: string | null;
+  queuedMessageCount: number;
+  queuedMessages: { runId: string; text: string; createdAt: string; attachments: WorkAttachment[] }[];
   blockedReason: string | null;
   terminalActive: boolean;
   canSteer: boolean;
@@ -64,7 +69,7 @@ export interface SessionConversationData {
     transportMessageId: string | null;
   }[];
   promptHash: string | null;
-  pendingPrompt: { runId: string; text: string; status: string; attachments?: WorkAttachment[] } | null;
+  pendingPrompt: { runId: string; text: string; status: string; timestamp?: string; attachments?: WorkAttachment[] } | null;
 }
 
 interface HistoryCursor {
@@ -183,15 +188,23 @@ function parseCursor(value: string | undefined, sessionId: string): HistoryCurso
 export async function readSessionConversationPage(sessionId: string, options: {
   cursor?: string;
   before?: string;
+  atOffset?: number;
   baseDirectory?: string;
   pageBytes?: number;
 } = {}) {
   if (options.cursor && options.before) throw new ConversationReadError("Choose either a forward or earlier cursor");
+  if (options.atOffset !== undefined && (options.cursor || options.before || !Number.isSafeInteger(options.atOffset) || options.atOffset < 0)) {
+    throw new ConversationReadError("Invalid pinned conversation position");
+  }
   const cursor = parseCursor(options.cursor ?? options.before, sessionId);
   const file = await open(getCopilotSessionEventsPath(sessionId, options.baseDirectory), "r");
   try {
     const info = await file.stat();
     const generation = digest(`${sessionId}:${info.dev}:${info.ino}:${info.birthtimeMs}`);
+    if (options.atOffset !== undefined && (options.atOffset >= info.size ||
+      options.atOffset > 0 && (await readBytes(file, options.atOffset - 1, 1))[0] !== 10)) {
+      throw new ConversationReadError("The pinned conversation position is no longer available.", 409);
+    }
     if (cursor) {
       const prefix = await readBytes(file, 0, cursor.prefixLength);
       const previous = await readBytes(file, Math.max(0, cursor.offset - 128), Math.min(cursor.offset, 128));
@@ -203,7 +216,7 @@ export async function readSessionConversationPage(sessionId: string, options: {
     }
     const budget = Math.max(64, Math.min(options.pageBytes ?? PAGE_BYTES, PAGE_BYTES));
     const end = options.before && cursor ? cursor.offset : info.size;
-    const start = options.cursor && cursor ? cursor.offset : await lineStart(file, Math.max(0, end - budget));
+    const start = options.atOffset ?? (options.cursor && cursor ? cursor.offset : await lineStart(file, Math.max(0, end - budget)));
     let position = start;
     let boundary = start;
     let recordStart = start;

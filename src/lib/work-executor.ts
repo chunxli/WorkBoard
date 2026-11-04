@@ -2,14 +2,18 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { readFile } from "node:fs/promises";
 import { prisma } from "@/lib/prisma";
+import { QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
+export { getWorkRunQueueKey } from "@/lib/work-run-queue";
 import { attachmentPrompt, type WorkAttachment } from "@/lib/work-attachment-types";
 import { parseWorkAttachments, readInitialWorkAttachments, runtimeWorkAttachments } from "@/lib/work-attachments";
 import {
   extractFinalCopilotOutput,
+  isNativeCopilotRunActive,
   startCopilotRun,
   type RunOutputFormat,
 } from "@/lib/copilot-runner";
 import { startCopilotSdkRun } from "@/lib/copilot-sdk-runner";
+import { getManagedSessionController } from "@/lib/managed-session-controller";
 import {
   getHeadCommit,
 } from "@/lib/git-safety";
@@ -81,6 +85,7 @@ export async function createPendingFollowUpRun(options: {
   parentRunId?: string | null;
   requestId?: string;
   attachments?: WorkAttachment[];
+  queue?: boolean;
 }) {
   const runId = options.requestId ?? randomUUID();
   const work = await prisma.work.findUniqueOrThrow({ where: { id: options.workId } });
@@ -93,6 +98,7 @@ export async function createPendingFollowUpRun(options: {
         },
       })
     : null;
+  if (options.queue && !parent) throw new Error("A queued follow-up requires a parent Run.");
   const sessionId = parent?.copilotSessionId ?? randomUUID();
   const executionPath = parent?.executionPath ?? work.directoryPath;
   const outputDir = getWorkRunArtifactPaths(work.directoryPath, runId).outputDirectory;
@@ -118,7 +124,7 @@ export async function createPendingFollowUpRun(options: {
       permissionMode: settings.permissionMode,
       outputDir,
       copilotSessionId: sessionId,
-      concurrencyMode: parent ? "FOLLOW_UP_RESUME" : "FOLLOW_UP_NEW_SESSION",
+      concurrencyMode: options.queue ? QUEUED_FOLLOW_UP_MODE : parent ? "FOLLOW_UP_RESUME" : "FOLLOW_UP_NEW_SESSION",
       resumedFromRunId: parent?.id ?? null,
     },
   });
@@ -153,16 +159,6 @@ export function resolveFollowUpExecutionSettings(
     outputFormat: source.outputFormat ?? work.outputFormat ?? "text",
     timeoutSeconds: source.timeoutSeconds,
   };
-}
-
-export function getWorkRunQueueKey(run: {
-  id: string;
-  trigger: string;
-  copilotSessionId: string | null;
-}): string {
-  return run.trigger === "FOLLOW_UP" && run.copilotSessionId
-    ? `session:${run.copilotSessionId}`
-    : run.id;
 }
 
 export function resolveWorkCliOutputOptions(outputFormat: RunOutputFormat) {
@@ -207,6 +203,29 @@ export async function ensureSteeringPrompt(
   });
 }
 
+async function waitForQueuedParent(run: { id: string; resumedFromRunId: string | null }): Promise<void> {
+  let parentId = run.resumedFromRunId;
+  const visited = new Set<string>();
+  while (parentId) {
+    if (visited.has(parentId)) throw new Error(`Cyclic queued follow-up dependency at Run ${parentId}`);
+    const parent = await prisma.run.findUnique({
+      where: { id: parentId },
+      select: { id: true, status: true, startedAt: true, resumedFromRunId: true },
+    });
+    if (!parent) throw new Error(`Queued follow-up parent Run ${parentId} is unavailable.`);
+    if (["PENDING", "RUNNING"].includes(parent.status) || isNativeCopilotRunActive(parent.id) || getManagedSessionController(parent.id)) {
+      const current = await prisma.run.findUnique({ where: { id: run.id }, select: { status: true } });
+      if (current?.status !== "PENDING") return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      continue;
+    }
+    visited.add(parentId);
+    // A cancelled, unstarted predecessor can still have an active ancestor.
+    if (parent.startedAt !== null) return;
+    parentId = parent.resumedFromRunId;
+  }
+}
+
 export async function executeWorkRun(runId: string): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
@@ -228,6 +247,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
   let baseCommit: string | null = null;
   let finalCommit: string | null = null;
   let startedAt: Date | null = null;
+  let queueClaimed = false;
 
   const snapshot = (overrides: Partial<WorkRunSnapshot> = {}): WorkRunSnapshot => ({
     schemaVersion: 1,
@@ -266,10 +286,6 @@ export async function executeWorkRun(runId: string): Promise<void> {
   });
 
   try {
-    await prepareWorkRunArtifacts(work.directoryPath, run.id, snapshot());
-    if (run.trigger === "FOLLOW_UP") {
-      await ensureFollowUpPrompt(work, run);
-    }
     const pendingRun = await prisma.run.findUnique({
       where: { id: run.id },
       select: { status: true },
@@ -279,6 +295,25 @@ export async function executeWorkRun(runId: string): Promise<void> {
         await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
       }
       return;
+    }
+    if (run.concurrencyMode === QUEUED_FOLLOW_UP_MODE) {
+      await waitForQueuedParent(run);
+      // Claim before Prompt sync so cancelling a waiting message cannot append it.
+      startedAt = new Date();
+      const claimed = await prisma.run.updateMany({
+        where: { id: run.id, status: "PENDING" },
+        data: { status: "RUNNING", startedAt, hostname: hostname(), logPath: artifactPaths.stdout, copilotSessionId: sessionId },
+      });
+      if (claimed.count === 0) {
+        const current = await prisma.run.findUnique({ where: { id: run.id }, select: { status: true } });
+        if (current?.status === "CANCELLED") await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
+        return;
+      }
+      queueClaimed = true;
+    }
+    await prepareWorkRunArtifacts(work.directoryPath, run.id, snapshot({ status: queueClaimed ? "RUNNING" : run.status }));
+    if (run.trigger === "FOLLOW_UP") {
+      await ensureFollowUpPrompt(work, run);
     }
 
     if (run.resumedFromRunId) {
@@ -298,9 +333,9 @@ export async function executeWorkRun(runId: string): Promise<void> {
       beforeTree = await captureRunSourceBaseline(executionPath, work.directoryPath, run.id);
     }
     baseCommit = await getHeadCommit(executionPath).catch(() => null);
-    startedAt = new Date();
+    startedAt ??= new Date();
     const claimed = await prisma.run.updateMany({
-      where: { id: run.id, status: "PENDING" },
+      where: { id: run.id, status: queueClaimed ? "RUNNING" : "PENDING" },
       data: {
         status: "RUNNING",
         startedAt,

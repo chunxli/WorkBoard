@@ -6,9 +6,11 @@ import type { WorkAttachment } from "@/lib/work-attachment-types";
 const mocks = vi.hoisted(() => ({
   user: vi.fn(), work: vi.fn(), run: vi.fn(), existing: vi.fn(), create: vi.fn(), prompt: vi.fn(), enqueue: vi.fn(),
   resolve: vi.fn(), conflicts: vi.fn(),
+  runs: vi.fn(), nativeActive: vi.fn(),
 }));
 vi.mock("@/lib/session", () => ({ getSessionUserId: mocks.user }));
-vi.mock("@/lib/prisma", () => ({ prisma: { work: { findFirst: mocks.work }, run: { findFirst: mocks.run, findUnique: mocks.existing } } }));
+vi.mock("@/lib/prisma", () => ({ prisma: { work: { findFirst: mocks.work }, run: { findFirst: mocks.run, findMany: mocks.runs, findUnique: mocks.existing } } }));
+vi.mock("@/lib/copilot-runner", () => ({ isNativeCopilotRunActive: mocks.nativeActive }));
 vi.mock("@/lib/work-executor", () => ({
   createPendingFollowUpRun: mocks.create, ensureFollowUpPrompt: mocks.prompt, executeWorkRun: vi.fn(),
   getWorkRunQueueKey: (run: { id: string }) => run.id,
@@ -31,11 +33,13 @@ describe("Follow Up attachment contract", () => {
     file = { id, requestId: randomUUID(), uploadId: randomUUID(), name: "image.png", storedName: `${id}-image.png`, size: 50, mediaType: "image/png", sha256: "a".repeat(64) };
     mocks.user.mockResolvedValue("owner"); mocks.work.mockResolvedValue(work);
     mocks.run.mockResolvedValue(null); mocks.existing.mockImplementation(async () => stored);
+    mocks.runs.mockResolvedValue([]); mocks.nativeActive.mockReturnValue(false);
     mocks.conflicts.mockResolvedValue([]); mocks.resolve.mockImplementation(async () => [file]);
     mocks.prompt.mockResolvedValue(undefined);
     mocks.create.mockImplementation(async (options) => {
       stored = { id: options.requestId, workId: options.workId, trigger: "FOLLOW_UP", promptSnapshot: options.prompt,
-        attachmentsJson: JSON.stringify(options.attachments), resumedFromRunId: null, copilotSessionId: randomUUID() };
+        attachmentsJson: JSON.stringify(options.attachments), resumedFromRunId: options.parentRunId ?? null, copilotSessionId: "same-session",
+        concurrencyMode: options.queue ? "FOLLOW_UP_QUEUED" : "FOLLOW_UP_NEW_SESSION", status: "PENDING" };
       return stored;
     });
   });
@@ -72,5 +76,23 @@ describe("Follow Up attachment contract", () => {
     expect((await post(input)).status).toBe(409);
     expect((await post({ ...input, expectedParentRunId: "stale" })).status).toBe(409);
     expect(mocks.create).not.toHaveBeenCalled();
+  });
+  it("persists an attachment-only queued message and its bound receipts once while the parent runs", async () => {
+    const parent = { id: "running-parent", status: "RUNNING", hostname: hostname(), trigger: "WORK", engine: "CLI",
+      copilotSessionId: "same-session", executionPath: work.directoryPath, createdAt: new Date(), resumedFromRunId: null, terminalLaunches: [] };
+    mocks.run.mockResolvedValue(parent);
+    mocks.runs.mockResolvedValue([parent]);
+    mocks.nativeActive.mockReturnValue(true);
+    mocks.conflicts.mockResolvedValue([{ id: parent.id }]);
+    const input = { requestId: file.requestId, prompt: "", attachmentIds: [file.id], expectedParentRunId: parent.id, queue: true };
+    const response = await post(input);
+    const body = await response.json();
+    expect(response.status).toBe(202);
+    expect(body).toMatchObject({ runId: file.requestId, sessionId: "same-session", queued: true });
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ queue: true, attachments: [file], parentRunId: parent.id }));
+    expect(mocks.prompt).not.toHaveBeenCalled();
+    expect(await (await post(input)).json()).toEqual(body);
+    expect(mocks.create).toHaveBeenCalledOnce();
+    expect(mocks.enqueue).toHaveBeenCalledOnce();
   });
 });

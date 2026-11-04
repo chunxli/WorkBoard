@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 const db = vi.hoisted(() => ({ work: vi.fn(), parent: vi.fn(), create: vi.fn() }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
@@ -24,6 +24,7 @@ const work = {
 };
 
 describe("Follow Up Run settings", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
   it.each(["SDK", "CLI"] as const)("persists attachments and immutable request identity for queued %s Runs", async (engine) => {
     const requestId = randomUUID(); const id = randomUUID();
     const attachments = [{ id, requestId, uploadId: randomUUID(), name: "reference.png", storedName: `${id}-reference.png`,
@@ -31,10 +32,17 @@ describe("Follow Up Run settings", () => {
     db.work.mockResolvedValue({ ...work, id: "owning-work", directoryPath: "C:\\owning-work" });
     db.parent.mockResolvedValue({ ...work, engine, id: "parent-run", copilotSessionId: "same-session", executionPath: "C:\\other-execution-directory" });
     db.create.mockImplementation(async ({ data }) => data);
-    const run = await createPendingFollowUpRun({ workId: "owning-work", parentRunId: "parent-run", requestId, prompt: "", attachments });
+    const run = await createPendingFollowUpRun({ workId: "owning-work", parentRunId: "parent-run", requestId, prompt: "", attachments, queue: true });
     expect(run).toMatchObject({ id: requestId, status: "PENDING", trigger: "FOLLOW_UP", engine,
-      promptSnapshot: "", attachmentsJson: JSON.stringify(attachments), executionPath: "C:\\other-execution-directory", copilotSessionId: "same-session" });
+      promptSnapshot: "", attachmentsJson: JSON.stringify(attachments), executionPath: "C:\\other-execution-directory", copilotSessionId: "same-session",
+      concurrencyMode: "FOLLOW_UP_QUEUED", resumedFromRunId: "parent-run" });
     expect(run.outputDir).toContain("owning-work");
+  });
+  it("does not create a queued message without a parent Run", async () => {
+    db.work.mockResolvedValue({ ...work, id: "owning-work", directoryPath: "C:\\owning-work" });
+    await expect(createPendingFollowUpRun({ workId: "owning-work", prompt: "Next message", queue: true }))
+      .rejects.toThrow("requires a parent Run");
+    expect(db.create).not.toHaveBeenCalled();
   });
 
   it("passes readable text through to the CLI and reserves structured continuation for JSON", () => {
@@ -83,7 +91,7 @@ describe("Follow Up Run settings", () => {
     });
   });
 
-  it("serializes Follow Up Runs by Copilot session", () => {
+  it("shares the session queue key between initial Work and Follow Up Runs", () => {
     expect(getWorkRunQueueKey({
       id: "run-1",
       trigger: "FOLLOW_UP",
@@ -93,6 +101,6 @@ describe("Follow Up Run settings", () => {
       id: "run-2",
       trigger: "WORK",
       copilotSessionId: "session-2",
-    })).toBe("run-2");
+    })).toBe("session:session-2");
   });
 });

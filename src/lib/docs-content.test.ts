@@ -45,7 +45,66 @@ describe("in-app documentation content", () => {
       "Run Concurrency",
       "Composer Keyboard Shortcuts",
       "Missing Directory Auto-archive",
+      "Add to Queue",
+      "Precise Conversation Pins",
+      "Work File References",
+      "Conversation Code Copy",
+      "Scroll-to-load Earlier History",
     ]));
+  });
+
+  it("documents queued delivery separately from immediate SDK Steering", () => {
+    const features = docsSections.flatMap((section) => section.features);
+    const followUp = features.find((feature) => feature.title === "In-App Follow Up");
+    const steering = features.find((feature) => feature.title === "Live Steering");
+    expect(followUp?.en).toContain("FIFO");
+    expect(followUp?.en).toContain("failure, cancellation or timeout");
+    expect(followUp?.en).toContain("Refresh/restart");
+    for (const feature of [followUp, steering]) {
+      expect(feature?.en).toContain("Add to Queue");
+      expect(feature?.en).toContain("Steer now");
+    }
+    expect(steering?.en).toContain("rejects new immediate CLI Steering");
+    expect(steering?.en).toContain("permitting safe queueing");
+    expect(steering?.en).not.toContain("edit an unsent draft during execution");
+  });
+
+  it("documents exact session-scoped Pins and the compact copy affordance", () => {
+    const features = docsSections.flatMap((section) => section.features);
+    const pins = features.find((feature) => feature.title === "Precise Conversation Pins");
+    const copy = features.find((feature) => feature.title === "Conversation Code Copy");
+    for (const label of ["Session", "database", "code lines", "Back to latest", "changed/replaced/missing"]) {
+      expect(pins?.en).toContain(label);
+    }
+    for (const label of ["borderless", "28px", "44px", "green check", "Copy/Pin"]) {
+      expect(copy?.en).toContain(label);
+    }
+  });
+
+  it("documents conversation-aware history continuation, retained records and retry boundaries", () => {
+    const note = releaseNotes[0].notes.find((note) => note.title === "Scroll-to-load Earlier History");
+    for (const label of ["until", "user/assistant", "attachment-only", "Tool-only", "subagent-only", "empty pages", "Retry", "Pinned-history"]) {
+      expect(note?.en).toContain(label);
+    }
+    expect(note?.en).not.toContain("load one earlier page");
+  });
+
+  it("keeps path-only references distinct from attachment upload and documents Pin deployment/backups", () => {
+    const features = docsSections.flatMap((section) => section.features);
+    const paths = features.find((feature) => feature.title === "Work File References");
+    expect(paths?.en).toContain("absolute path");
+    expect(paths?.en).toContain("neither uploads nor sends");
+    const migrations = features.find((feature) => feature.title === "Source Updates & Migrations");
+    expect(migrations?.code).toBe("npm run background:restart\nnpm run background:status");
+    for (const label of ["WorkConversationPin", "database is not reset", "--skip-build", "wait for active Runs"]) {
+      expect(migrations?.en).toContain(label);
+    }
+    const recovery = features.find((feature) => feature.title === "Startup Recovery");
+    expect(recovery?.en).toContain("dependency/FIFO order");
+    expect(recovery?.en).toContain("one Run per Session");
+    const backup = features.find((feature) => feature.title === "Data & Backup");
+    expect(backup?.en).toContain("queued Runs and Pin anchors");
+    expect(backup?.en).toContain("cannot reconstruct conversation text");
   });
 
   it("keeps Quick Start discoverable and its commands aligned with the standalone guide", () => {

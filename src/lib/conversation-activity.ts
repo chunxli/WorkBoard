@@ -50,6 +50,10 @@ export function isAuxiliaryEvent(event: ConversationEvent): boolean {
   return event.role === "tool" || event.role === "system" || event.agentId !== null;
 }
 
+export function isConversationMessage(event: ConversationEvent): boolean {
+  return !isAuxiliaryEvent(event) && Boolean(event.text.trim() || event.attachments?.length);
+}
+
 export function conversationTimeline(events: ConversationEvent[]): ConversationTimelineItem[] {
   const timeline: ConversationTimelineItem[] = [];
   let activity: ConversationActivity | null = null;
@@ -59,7 +63,7 @@ export function conversationTimeline(events: ConversationEvent[]): ConversationT
         if (activity) activity.finished = true;
         activity = null;
       }
-      if (event.text.trim() || event.attachments?.length) timeline.push({ kind: "message", event });
+      if (isConversationMessage(event)) timeline.push({ kind: "message", event });
       continue;
     }
     const rootEvent = event.agentId === null;

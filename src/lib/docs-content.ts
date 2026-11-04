@@ -43,14 +43,34 @@ export const docsNavigation = [
 
 export const releaseNotes: ReleaseEntry[] = [
   {
-    date: "2026-11-03",
+    date: "2026-11-04",
     version: "Latest changes",
     status: "latest",
     title: {
-      zh: "近期源码更新：卡片快速重命名、输入快捷键与自动归档",
-      en: "Recent source updates: quick card renaming, composer shortcuts and auto-archive",
+      zh: "近期源码更新：消息队列、精确对话 Pin 与阅读体验",
+      en: "Recent source updates: queued messages, precise conversation Pins and reading improvements",
     },
     notes: [
+      {
+        title: "Precise Conversation Pins",
+        zh: "助手输出的段落、标题、列表和代码行右侧新增 Pin；右下方 Pins 按当前 Session 保存到数据库，刷新或换浏览器仍保留。点击定位并高亮精确位置，旧内容直接加载历史片段，可前后翻页或返回最新消息；支持取消 Pin，不改写会话或自动发送。源历史缺失或被改写时显示错误，不跳到其他内容。",
+        en: "Pin assistant paragraphs, headings, lists and exact code lines from their right edge. The lower-right Pins shelf persists per Session in the database across refreshes/browsers. Click to focus/highlight the exact source, loading a bounded older-history window with adjacent pages or Back to latest. Remove Pins without changing the session or sending; missing/rewritten history reports an error instead of jumping elsewhere.",
+      },
+      {
+        title: "Work File References",
+        zh: "Work files 的文件和目录条目右侧新增插入按钮，将完整绝对路径插入 Follow Up 的光标处或替换选区；未记录位置时追加到尾部，并返回 Conversation 聚焦输入框。不上传文件、不自动发送，发送中、草稿锁定及输入法组合输入时禁用，超过 100,000 字符显示错误而不截断。",
+        en: "File/folder rows in Work files gain an action to insert the full absolute path at the Follow Up caret/selection, or append without a saved position, then focus Conversation. It does not upload or send. Sending, frozen drafts and IME composition disable insertion; exceeding 100,000 characters shows an error without truncation.",
+      },
+      {
+        title: "Conversation Code Copy",
+        zh: "Session Conversation 的代码块右上角提供轻量无边框 Copy 图标：桌面 28px、触屏点击区域 44px，只复制代码正文并保留缩进与换行，成功变为绿色勾号并显示提示，剪贴板失败明确报错。支持 Markdown 代码块及展开的工具代码输出，内联代码和其他页面的 Markdown 不变。",
+        en: "Session Conversation code blocks use a compact borderless Copy icon: 28px desktop / 44px touch target. Copy plain code with indentation and line breaks intact; a green check and tooltip confirm success, and clipboard failures remain explicit. Markdown blocks and expanded tool code are supported; inline code and other Markdown pages stay unchanged.",
+      },
+      {
+        title: "Add to Queue",
+        zh: "运行中的 CLI / SDK Run 显示 Add to Queue：多条消息与附件持久排队，按同一会话 FIFO 执行，前一个 Run 失败、取消或超时后仍继续。刷新与重启保留队列；排队不改写当前 Prompt，未开始的消息可在 Run 详情取消。SDK 另保留 Steer now 即时发送；同请求重试不重复创建 Run。",
+        en: "Active CLI/SDK Runs show Add to Queue: messages and attachments persist and execute FIFO in the same session, continuing after failure, cancellation or timeout. Refresh/restart retains the queue. Queueing does not rewrite the active Prompt; cancel waiting messages from Run details. SDK retains separate immediate Steer now; same-request retries do not create duplicate Runs.",
+      },
       {
         title: "Quick Work Renaming",
         zh: "点击 Current 或 Archived 卡片标题旁的铅笔直接重命名：Enter 或勾号保存，Esc 或取消按钮放弃。名称自动去除首尾空白，限 1-200 字符；不重命名磁盘目录或改写 Prompt、Run 历史，失败保留草稿并显示错误。",
@@ -58,13 +78,13 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Composer Keyboard Shortcuts",
-        zh: "Follow Up / Steer now 输入框按 Enter 发送、Shift+Enter 换行，发送按钮旁显示小字提示。输入法确认候选词与长按回车不重复发送；按钮禁用时快捷键同样不能发送。",
-        en: "Follow Up / Steer now uses Enter to send and Shift+Enter for a new line, with a small hint beside Send. IME confirmation does not send, held Enter does not repeat-submit, and keyboard submission respects the disabled button.",
+        zh: "输入框按 Enter 执行主按钮：运行中加入队列，结束后发送 Follow Up；Shift+Enter 换行，按钮旁显示小字提示。SDK 的 Steer now 使用独立按钮。输入法确认候选词与长按回车不重复提交；按钮禁用时快捷键同样不能提交。",
+        en: "Enter to queue while running, Enter to send after completion, and Shift+Enter for a new line. SDK Steer now has a separate button, with a small hint beside the actions. IME confirmation does not submit, held Enter does not repeat-submit, and keyboard submission respects the disabled action.",
       },
       {
         title: "Scroll-to-load Earlier History",
-        zh: "对话滚到顶部后继续向上滚动，自动加载一页更早内容并保持当前阅读位置；加载中避免重复请求，失败显示错误。顶部小字入口保留点击和键盘操作，不再需要工具栏 Earlier 按钮。",
-        en: "Keep scrolling upward at the top of the conversation to load one earlier page without moving your reading position. Loading prevents duplicate requests and failures remain visible. The top hint retains click/keyboard access instead of the toolbar Earlier button.",
+        zh: "对话滚到顶部后继续向上滚动，自动连续读取更早分页，直到出现新的可见用户/助手正文（含仅附件消息）或到达历史起点；只有工具、子代理或空记录的分页不提前停止，也不丢弃记录。保持阅读位置，加载中避免重复请求，失败保留已读页，Retry 从最后进度继续。Pin 历史窗口同样适用；切换视图或跳转 Pin/最新消息会取消当前批次。",
+        en: "Keep scrolling upward at the top to read earlier pages until a newly visible user/assistant message (including attachment-only input) appears or history ends. Tool-only, subagent-only and empty pages do not stop the batch or lose records. Reading position is preserved, overlapping requests are blocked, and failures retain completed pages for Retry. Pinned-history windows behave the same; changing views or jumping to a Pin/latest cancels the batch.",
       },
       {
         title: "Missing Directory Auto-archive",
@@ -123,8 +143,8 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Source Upgrade & Data Retention",
-        zh: "本条日期表示当前源码汇总，不是发布或部署确认。附件更新需先迁移数据库再构建/重启；备份应包含 Work 附件、数据库及 Copilot session 历史。",
-        en: "This date identifies the source summary, not a release or deployment. Apply the attachment migration before building/restarting; back up Work attachments, SQLite and Copilot session history together.",
+        zh: "本条日期表示当前源码汇总，不是发布或部署确认。Pin 新增 WorkConversationPin 表，附件元数据迁移仍需保留；完整 background:restart 会生成 Prisma Client、应用迁移、构建并启动，不重置已有数据。备份包含数据库中的队列与 Pin、Work 附件和原始 Copilot session 历史。",
+        en: "This date identifies the source summary, not a release or deployment. Pins add WorkConversationPin; existing attachment migrations remain required. A full background:restart generates Prisma Client, applies migrations and builds/starts without resetting data. Back up queued Runs and Pins in SQLite together with Work attachments and original Copilot session history.",
       },
       {
         title: "First Run in Terminal",
@@ -354,8 +374,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Compact Work Details",
-        zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；左右栏维持原宽，额外空间留给对话，其他页面仍居中。Work 信息、会话视图、Run 状态与快捷操作合并为一条顶部工具栏，吸附在全局导航下。桌面控件高 32px，触控目标至少 44px。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。长名称可悬停或展开 Work details 查看；历史数量仅表示当前已加载的较早 Run。右侧文件区可展开目录并在新标签页打开文件，窄屏提供 Files 选项卡。",
-        en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters. Side columns keep their widths, giving extra space to the conversation; other pages stay centered. Work identity, session views, Run state and shortcuts share a compact toolbar pinned below global navigation. Desktop controls are 32px with at least 44px touch targets. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up returns to the conversation and focuses its draft; the composer stays at the panel bottom while messages scroll independently. Full titles remain in Work details; history counts only loaded earlier Runs. The right file pane expands folders and opens files in new tabs, with a Files tab on narrow screens.",
+        zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；左右栏维持原宽，额外空间留给对话，其他页面仍居中。Work 信息、会话视图、Run 状态与快捷操作合并为一条顶部工具栏，吸附在全局导航下。桌面工具栏控件高 32px，触控目标至少 44px。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。队列有等待消息时，工具栏保留当前 Run，不跳到队列尾部。长名称可悬停或展开 Work details 查看；历史数量仅表示已加载的 Run（包括等待中的消息），不是终身总数。右侧文件区可展开目录、在新标签页打开文件或插入路径，底部提供当前 Session 的 Pins；窄屏在 Files 选项卡访问。",
+        en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters. Side columns keep their widths, giving extra space to the conversation; other pages stay centered. Work identity, session views, Run state and shortcuts share a compact toolbar pinned below global navigation. Desktop toolbar controls are 32px with at least 44px touch targets. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up focuses the draft; the composer stays docked while messages scroll independently. Waiting messages do not move the toolbar from the current Run to the queue tail. Full titles remain in Work details; history counts loaded Runs, including waiting messages, not the lifetime total. The right pane expands folders, opens files or inserts paths, with this Session's Pins below; narrow screens use the Files tab.",
       },
       {
         title: "Folder List and Work Name",
@@ -369,23 +389,38 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Session Conversation",
-        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。工具与运行元数据按活动归组，执行中展示进度，完成后折叠；失败在摘要可见，技术事件可展开检查。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。刷新按分页恢复最近历史；滚到顶部后继续向上滚动自动加载一页更早内容，保持阅读位置并显示加载与错误提示，顶部小字也可点击或用键盘操作。若当前 Follow Up 的原始输入位于更早分页，已保存的输入按提交时间显示在后续回复之前，加载原始消息后自动去重，不再追加到时间线底部。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
-        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Tool/runtime activity opens for progress and folds after completion; failures stay visible and technical events remain inspectable. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Refresh restores recent history in pages. Keep scrolling upward at the top to load one earlier page while preserving your reading position, with visible loading/errors and a clickable, keyboard-accessible top hint. If the current Follow Up input is in an earlier page, its saved prompt is placed by submission time before later replies and deduplicated when the source message loads, never appended to the timeline bottom. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
+        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。工具与运行元数据按活动归组，执行中展示进度，完成后折叠；失败在摘要可见，技术事件可展开检查。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。刷新按分页恢复最近历史；滚到顶部继续向上滚动会连续拉取，直到出现新的可见用户/助手正文或仅附件消息，或历史已全部读完，不因纯工具、子代理或空分页提前停止。工具记录仍保留，阅读位置不变，失败保留进度并可 Retry；Pin 历史窗口同样适用。顶部小字也可点击或用键盘操作。若当前 Follow Up 的原始输入位于更早分页，已保存的输入按提交时间显示在后续回复之前，加载原始消息后自动去重，不再追加到时间线底部。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
+        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Tool/runtime activity opens for progress and folds after completion; failures stay visible and technical events remain inspectable. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Refresh restores recent history in pages. Keep scrolling upward at the top to fetch until a new visible user/assistant message or attachment-only input appears, or history ends; tool-only, subagent-only and empty pages do not stop the batch. All records and reading position are preserved, with retained progress and Retry on failure, including in pinned-history windows. The top hint remains clickable and keyboard-accessible. If the current Follow Up input is in an earlier page, its saved prompt is placed by submission time before later replies and deduplicated when the source message loads, never appended to the timeline bottom. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
+      },
+      {
+        title: "Conversation Code Copy",
+        zh: "对话中的 fenced / 缩进代码块及展开的工具代码输出提供轻量无边框 Copy 图标，桌面尺寸 28px，触屏点击区域 44px。复制内容不包含 Markdown 围栏、语言名或 Copy/Pin 控件，保留缩进、换行与特殊字符，成功显示绿色勾号与提示；剪贴板不可用或权限失败时显示错误，可再次尝试。内联代码和其他页面的 Markdown 渲染保持原样。",
+        en: "Fenced/indented conversation blocks and expanded tool code use a borderless Copy icon, 28px on desktop with a 44px touch target. Copy excludes Markdown fences, language labels and Copy/Pin controls, preserving indentation, line breaks and special characters. A green check/tooltip confirms success; clipboard errors and retry stay explicit. Inline code and other Markdown surfaces remain unchanged.",
+      },
+      {
+        title: "Precise Conversation Pins",
+        zh: "助手输出的段落、标题、列表或代码行右侧可 Pin，右下方按当前 Session 展示预览，数据库持久化，刷新和换浏览器保留。点击后定位并高亮精确源行；未加载的旧消息直接打开有限历史片段，可向前/后加载或返回最新消息，草稿和当前 Run 不变。可在原位置或列表取消 Pin；源历史替换、修改或缺失时明确提示而不跳到其他内容。Follow Up 复用 Session，重新 Run 新建 Session，Pin 不跨 Session 混合。",
+        en: "Pin assistant paragraphs, headings, lists or exact code lines from their right edge. The lower-right shelf previews only this Session's database-persisted Pins across refreshes/browsers. Click to focus/highlight the source line; unloaded older messages open a bounded history window with earlier/later navigation or Back to latest, preserving drafts/current Runs. Unpin at the source or shelf; changed/replaced/missing history stays explicit. Follow Up reuses its Session; new Work Runs create new Sessions, so Pins never mix sessions.",
+      },
+      {
+        title: "Work File References",
+        zh: "Work files 中普通文件和目录的右侧按钮插入服务器原生绝对路径，保留 Unicode、空格和文件名。Follow Up 记住光标或选区，未定位时追加，插入后保持光标可继续输入；窄屏从 Files 选项卡自动返回 Conversation。不上传、不自动发送，也不暴露符号链接或特殊文件路径。冻结、发送或输入法组合输入期间禁用；超出消息长度限制保留原草稿并提示。",
+        en: "The action beside ordinary Work files/folders inserts the server-native absolute path, preserving Unicode, spaces and names. Follow Up remembers its caret/selection or appends if none; insertion restores focus/caret, including from the narrow Files tab. It neither uploads nor sends or exposes redirected/special-file paths. Locked/sending/composing drafts disable insertion; length errors retain the draft.",
       },
       {
         title: "In-App Follow Up",
-        zh: "CLI Run 运行中允许编辑草稿和准备附件，但不能发送、Steer 或自动排队；结束后无需手动刷新即可手动 Follow Up。输入框按 Enter 发送、Shift+Enter 换行，旁边有快捷键小字提示；输入法确认候选词不会触发发送，按钮不可用时快捷键同样不能发送。新关联 Run 使用父 Run 的引擎及同一原生 session，只发送新内容和新附件，不重放初始 Prompt。SDK 保留实时 Steer。Prompt 追加和同请求重试保持幂等；外部 Terminal 占用、并发 Run 和外部修改冲突仍明确阻止发送。",
-        en: "While a CLI Run is active, edit a draft or prepare files but do not send, Steer or auto-queue. Completion enables manual Follow Up without a manual refresh. The composer uses Enter to send and Shift+Enter for a new line, with a small shortcut hint. IME confirmation does not send, and keyboard submission respects the disabled Send button. The linked Run inherits the parent's engine and native session and sends only new content/files, not the initial Prompt again. SDK retains live Steering. Prompt append and same-request retry remain idempotent; external Terminal ownership, concurrent Runs and external-edit conflicts still block sending explicitly.",
+        zh: "运行中的托管 CLI / SDK Run 显示 Add to Queue：Enter 将消息与附件加入持久队列，多条消息按同一会话 FIFO 执行；前一个 Run 成功、失败、取消或超时后都继续。刷新与重启保留队列，输入区展示最早 20 条预览但不限制队列条数，点击可打开 Run 详情查看或取消。排队不改写正在运行的 Prompt，也不将等待消息当作已交付输入显示；执行后的恢复输入按开始时间放在前一条回复之后。结束后主按钮恢复 Send Follow Up。Shift+Enter 换行，输入法与禁用按钮保护保持不变。SDK 另保留 Steer now 即时发送。后续 Run 继承父 Run 的引擎、设置和 session，只发送新内容及新附件；同请求重试不重复创建。外部 Terminal、其他目录或会话占用、跨机器与外部修改冲突仍明确阻止不安全操作。",
+        en: "Active managed CLI/SDK Runs show Add to Queue: Enter persists messages/files, and multiple messages execute FIFO in the same session after success, failure, cancellation or timeout. Refresh/restart retains the queue; the composer previews the first 20 waiting entries without limiting queue length, linking to Run details for inspection/cancellation. Queueing neither rewrites the active Prompt nor presents waiting input as delivered; restored executing input uses start time after the predecessor's reply. Completion restores Send Follow Up. Shift+Enter adds a new line. IME confirmation does not send or queue; keyboard submission respects the disabled Send button or Add to Queue action. SDK retains separate immediate Steer now. Follow-ups inherit their parent's engine/settings/session and send only new text/files; same-request retries do not create duplicates. External Terminal, other directory/session owners, foreign hosts and external-edit conflicts still block unsafe operations.",
       },
       {
         title: "Message Attachments",
-        zh: "New work 的 Prompt、Follow Up 与 Steer now 均支持粘贴图片、拖放和选择文件，也可只发送附件。单文件最多 25 MiB，每条最多 10 个、合计 100 MiB。选择时仅在页面本地预览；New work 的三种创建入口均先创建 Work、上传文件并保存 Prompt 引用，再运行或打开 Terminal。失败后冻结草稿，重试复用同一 Work 与上传回执，不重复创建；Create only 后可在 Prompt 选项卡查看附件。初始附件使用 .workboard/attachments/<work-id>/<work-id>/，其余消息使用 <message-id>；无需新增数据库迁移。托管 CLI/SDK 收到真实附件，交互 Terminal 仅收到已保存的相对文件路径，不使用不受支持的交互附件参数。Follow Up/Steer 的同请求重试不重复发送已确认或不确定的 Steering。切换选项卡保留草稿，整页刷新或离开页面不会恢复未发送的 File 对象。文件长期保留，包括失败尝试；备份需包含附件目录、数据库与 Session。不自动执行、解压、安装、作为 Skill 导入或随 Work/实验复制。授权链接支持查看与下载；专用下载支持 25 MiB，普通文件预览仍限 16 MiB。剪贴板支持和模型图片/文档能力因环境而异，传输确认不代表模型已理解。",
-        en: "New work Prompts, Follow Up and Steer now accept pasted images, dropped or selected files, including attachment-only input: 25 MiB per file, 10 files and 100 MiB total. Selection creates a page-local preview. All three New work actions create the Work, upload files and save Prompt references before running or opening Terminal. Failure freezes the draft; retry reuses the same Work and receipts instead of creating duplicates. Create only exposes saved attachments in the Prompt tab. Initial files use .workboard/attachments/<work-id>/<work-id>/; later messages use <message-id>. No new database migration is needed. Managed CLI/SDK receive native file attachments; interactive Terminal receives saved relative paths, not unsupported interactive attachment flags. Follow Up/Steer same-request repair never replays accepted or uncertain Steering. Tabs preserve drafts, but full reload/navigation does not restore unsent File objects. Files, including failed attempts, are retained: back up the attachment directory, database and sessions. Files are not executed, unpacked, installed, imported as skills, or included in Work/experiment copies. Owned links allow viewing/download; dedicated downloads support 25 MiB while ordinary preview stays at 16 MiB. Clipboard and model image/document capabilities vary; transport acceptance is not evidence of comprehension.",
+        zh: "New work 的 Prompt、Follow Up 与 Steer now 均支持粘贴图片、拖放和选择文件，也可只发送附件。单文件最多 25 MiB，每条最多 10 个、合计 100 MiB。选择时仅在页面本地预览；New work 的三种创建入口均先创建 Work、上传文件并保存 Prompt 引用，再运行或打开 Terminal。失败后冻结草稿，重试复用同一 Work 与上传回执，不重复创建；Create only 后可在 Prompt 选项卡查看附件。初始附件使用 .workboard/attachments/<work-id>/<work-id>/，其余消息使用 <message-id>；初始 Prompt 附件复用已有附件元数据，无需额外的附件列迁移。托管 CLI/SDK 收到真实附件，交互 Terminal 仅收到已保存的相对文件路径，不使用不受支持的交互附件参数。Follow Up/Steer 的同请求重试不重复发送已确认或不确定的 Steering。切换选项卡保留草稿，整页刷新或离开页面不会恢复未发送的 File 对象。文件长期保留，包括失败尝试；备份需包含附件目录、数据库与 Session。不自动执行、解压、安装、作为 Skill 导入或随 Work/实验复制。授权链接支持查看与下载；专用下载支持 25 MiB，普通文件预览仍限 16 MiB。剪贴板支持和模型图片/文档能力因环境而异，传输确认不代表模型已理解。",
+        en: "New work Prompts, Follow Up and Steer now accept pasted images, dropped or selected files, including attachment-only input: 25 MiB per file, 10 files and 100 MiB total. Selection creates a page-local preview. All three New work actions create the Work, upload files and save Prompt references before running or opening Terminal. Failure freezes the draft; retry reuses the same Work and receipts instead of creating duplicates. Create only exposes saved attachments in the Prompt tab. Initial files use .workboard/attachments/<work-id>/<work-id>/; later messages use <message-id>. Initial Prompt attachments reuse existing attachment metadata without another attachment-column migration. Managed CLI/SDK receive native file attachments; interactive Terminal receives saved relative paths, not unsupported interactive attachment flags. Follow Up/Steer same-request repair never replays accepted or uncertain Steering. Tabs preserve drafts, but full reload/navigation does not restore unsent File objects. Files, including failed attempts, are retained: back up the attachment directory, database and sessions. Files are not executed, unpacked, installed, imported as skills, or included in Work/experiment copies. Owned links allow viewing/download; dedicated downloads support 25 MiB while ordinary preview stays at 16 MiB. Clipboard and model image/document capabilities vary; transport acceptance is not evidence of comprehension.",
       },
       {
         title: "Live Steering",
-        zh: "仅活跃 SDK Run 支持 Steer now，即时发送到准确的 Run/session 并保留原有 Prompt、审计和幂等修复。确认不代表模型已应用，不保证停止工具或回滚修改，不确定交付不会自动重发。CLI 使用原生非交互命令，运行中只能编辑待发送草稿，不提供 Steer 或 SDK 控制；后端同样拒绝新增指令。历史已接受指令仍可修复记录但不会重发。CLI 显示原生命令输出和实际进程指标；SDK 保留其原有指标边界。",
-        en: "Only an active SDK Run supports Steer now, targeting the exact Run/session with existing Prompt, audit and idempotent-repair safeguards. Acceptance does not prove application, stop tools or roll back edits; uncertain delivery is not replayed. Native CLI is non-interactive: edit an unsent draft during execution, without Steer or SDK controls. The backend rejects new live instructions too. Previously accepted historical records remain repairable without transport replay. CLI shows native command output and process metrics; SDK retains its existing metric limitations.",
+        zh: "仅活跃 SDK Run 的独立 Steer now 按钮会即时发送到准确的 Run/session，并保留 Prompt、审计和幂等修复。确认不代表模型已应用，不保证停止工具或回滚修改，不确定交付不会自动重发。托管 CLI / SDK 的主按钮 Add to Queue 将消息与附件留给后续 Run，和即时 Steering 不同。CLI 使用原生非交互命令，没有 Steer 或 SDK 控制；后端拒绝 CLI 的新增即时 Steering，但允许安全排队。历史已接受指令仍可修复记录但不会重发。CLI 显示原生命令输出和实际进程指标；SDK 保留其原有指标边界。",
+        en: "Only an active SDK Run's separate Steer now button delivers immediately to the exact Run/session, retaining Prompt, audit and idempotent-repair safeguards. Acceptance does not prove application, stop tools or roll back edits; uncertain delivery is not replayed. The primary Add to Queue action on managed CLI/SDK Runs saves messages/files for later Runs instead of immediate Steering. Native CLI is non-interactive without Steer or SDK controls: the backend rejects new immediate CLI Steering while permitting safe queueing. Previously accepted historical records remain repairable without transport replay. CLI shows native command output and process metrics; SDK retains its existing metric limitations.",
       },
       {
         title: "Live Runtime & MCP",
@@ -676,18 +711,19 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Startup Recovery",
-        zh: "启动时依次恢复 Run、回收 Terminal launch、分发通知 backlog，再启动 scheduler。",
-        en: "Startup recovers Runs, reaps Terminal launches, dispatches the notification backlog, and only then starts the scheduler.",
+        zh: "启动时依次恢复 Run、回收 Terminal launch、分发通知 backlog，再启动 scheduler。被服务重启打断的托管 Run 标记 FAILED；PENDING 消息保留文本、附件、会话和父链，按依赖/FIFO 顺序恢复，同 Session 串行执行。归档 Work 的待执行消息会取消，不重新执行。",
+        en: "Startup recovers Runs, reaps Terminal launches, dispatches notifications, then starts the scheduler. Managed Runs interrupted by restart become FAILED. PENDING messages retain text, attachments, session and parent chain, recovering in dependency/FIFO order with one Run per Session. Waiting messages for archived Works are cancelled rather than executed.",
       },
       {
         title: "Data & Backup",
-        zh: "备份应包括 DATABASE_URL 对应的 SQLite、应用 data/ 与后台日志，各 Work 的 Prompt、资源和 `.workboard`（含附件），以及 COPILOT_HOME（默认 ~/.copilot）下的会话历史。不能只备份数据库或输出日志来代替原始附件与 session 历史。",
-        en: "Back up SQLite at DATABASE_URL, app data/logs, each Work's prompts/resources and `.workboard` including attachments, and conversation history under COPILOT_HOME (default ~/.copilot). Database or output-log backups alone do not replace original attachments and session history.",
+        zh: "备份应包括 DATABASE_URL 对应的 SQLite（含排队 Run 与 Pin 定位信息）、应用 data/ 与后台日志，各 Work 的 Prompt、资源和 `.workboard`（含附件），以及 COPILOT_HOME（默认 ~/.copilot）下的会话历史。Pin 的预览和校验信息不能重建原始正文；源历史改写或替换后可能需要重新 Pin。不能只备份数据库或输出日志来代替原始附件与 session 历史。",
+        en: "Back up SQLite at DATABASE_URL, including queued Runs and Pin anchors, app data/logs, each Work's prompts/resources and `.workboard` attachments, and original history under COPILOT_HOME (default ~/.copilot). Pin previews/checksums cannot reconstruct conversation text; changed or replaced history can require repinning. Database or output-log backups alone do not replace original attachments and session history.",
       },
       {
         title: "Source Updates & Migrations",
-        zh: "Latest source 不表示运行中的后台版本已更新。附件功能新增 Run/Steering 可空元数据列，升级时先停旧服务、应用 migration，再构建并启动；旧记录无需补附件。登录自启不代做迁移或构建，自启脚本修复本身无需重启应用。",
-        en: "Latest source does not mean a background instance is current. Attachments add nullable Run/Steering metadata: stop the old server, apply migrations, then build/start; older records need no attachments. Login startup does not migrate or build, and an autostart-script-only fix needs no application restart.",
+        zh: "Latest source 不表示运行中的后台版本已更新。完整 npm run background:restart 会停旧服务、生成 Prisma Client、应用 migration、构建并启动；有活跃 Run 时应先等待结束，避免打断执行。Pin 新增 WorkConversationPin 表，旧的 Run/Steering 附件元数据迁移仍需保留；不重置数据库，旧记录无需补附件或 Pin。登录自启和 --skip-build 不代做迁移或构建。",
+        en: "Latest source does not mean a background instance is current. A full npm run background:restart stops the old server, generates Prisma Client, applies migrations, builds and starts; wait for active Runs first to avoid interrupting them. Pins add WorkConversationPin; older Run/Steering attachment migrations still apply. The database is not reset and older records need no attachment/Pin backfill. Login startup and --skip-build do not migrate or build.",
+        code: "npm run background:restart\nnpm run background:status",
       },
       {
         title: "Single-Host Boundary",
@@ -705,8 +741,8 @@ export const docsSections: DocsSection[] = [
 
 export const operationalLimits: BilingualText[] = [
   {
-    zh: "New work 名称栏仅引用已选目录的直接子项名称，不递归读取或上传；Prompt、Follow Up / Steer now 的 Add files、粘贴和拖放才保存真实附件。",
-    en: "The New work strip inserts only immediate names from the selected directory, without recursively reading or uploading files. Add files, paste and drop in Prompt, Follow Up / Steer now save actual attachments.",
+    zh: "New work 名称栏插入所选目录的直接子项名称；Work files 的按钮插入文件或目录的原生绝对路径。两者都只添加引用文字，不读取或上传文件正文，也不自动提交。Prompt、Follow Up / Steer now 的 Add files、粘贴和拖放才保存真实附件。",
+    en: "The New work strip inserts immediate names; Work files inserts native absolute file/folder paths. Both add reference text without reading/uploading file contents or automatically submitting. Add files, paste and drop in Prompt, Follow Up / Steer now save actual attachments.",
   },
   {
     zh: "消息附件单文件 25 MiB、每条最多 10 个/100 MiB；专用附件下载支持完整 25 MiB，普通文件预览仍限 16 MiB。传输确认不代表所选模型已理解内容；整页刷新不恢复未发送的浏览器文件草稿。",

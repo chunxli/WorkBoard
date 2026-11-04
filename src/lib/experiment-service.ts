@@ -14,6 +14,7 @@ import {
   type DiscoveredSkill,
 } from "@/lib/skill-discovery";
 import { createPendingWorkRun, executeWorkRun } from "@/lib/work-executor";
+import { getWorkRunQueueKey } from "@/lib/work-run-queue";
 
 interface CreateExperimentOptions {
   workId: string;
@@ -124,7 +125,7 @@ export async function createAndRunExperiment(options: CreateExperimentOptions): 
         experimentVariantId: variant.id,
       });
       runIds.push(run.id);
-      jobQueue.enqueue(run.id, () => executeWorkRun(run.id));
+      jobQueue.enqueue(getWorkRunQueueKey(run), () => executeWorkRun(run.id));
     }
 
     await prisma.$transaction([

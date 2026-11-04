@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { insertPromptName } from "./prompt-insertion";
+import { describe, expect, it, vi } from "vitest";
+import { insertPromptName, restorePromptSelection } from "./prompt-insertion";
 
 describe("plain filename insertion into a Prompt", () => {
   it.each([
@@ -11,6 +11,25 @@ describe("plain filename insertion into a Prompt", () => {
     ["Read \nnext", { start: 6, end: 6 }, "Read \nfile.txt next"],
   ])("inserts at the caret or replaces the selection in %j", (prompt, selection, expected) => {
     expect(insertPromptName(prompt, "file.txt", selection)).toMatchObject({ ok: true, value: expected });
+  });
+  it("inserts full file/folder paths with spaces at a selection or the end", () => {
+    const file = "C:\\Work\\reports\\sample [1].html";
+    expect(insertPromptName("Read old now", file, { start: 5, end: 8 })).toMatchObject({
+      ok: true, value: `Read ${file} now`,
+    });
+    expect(insertPromptName("Read", "C:\\Work\\docs", null)).toMatchObject({ ok: true, value: "Read C:\\Work\\docs" });
+    const exact = insertPromptName("Read now", file, { start: 5, end: 5 });
+    expect(exact).toEqual({
+      ok: true, value: `Read ${file} now`, selection: { start: 6 + file.length, end: 6 + file.length },
+    });
+  });
+
+  it("restores focus without page scrolling and collapses the selection at the returned caret", () => {
+    const textarea = { focus: vi.fn(), setSelectionRange: vi.fn() };
+    restorePromptSelection(textarea, { start: 12, end: 12 });
+    expect(textarea.focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(textarea.setSelectionRange).toHaveBeenCalledWith(12, 12);
+    expect(() => restorePromptSelection(null, { start: 0, end: 0 })).not.toThrow();
   });
 
   it("preserves exact Unicode, spaces, punctuation, extensions and existing boundary whitespace", () => {

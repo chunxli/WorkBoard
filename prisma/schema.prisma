@@ -190,12 +190,30 @@ model Work {
   tasks          Task[]
   runs           Run[]
   steeringMessages WorkSteeringMessage[]
+  conversationPins WorkConversationPin[]
   experiments    Experiment[]
 
   @@unique([userId, canonicalPath, promptFileName])
   @@index([userId, status, updatedAt])
   @@index([userId, status, position])
   @@index([sourceRepoId])
+}
+
+model WorkConversationPin {
+  id          String   @id @default(cuid())
+  workId      String
+  work        Work     @relation(fields: [workId], references: [id], onDelete: Cascade)
+  sessionId   String
+  eventId     String
+  eventOffset Float
+  line        Int
+  contentHash String
+  preview     String
+  timestamp   String?
+  createdAt   DateTime @default(now())
+
+  @@unique([workId, sessionId, eventId, line])
+  @@index([workId, sessionId, createdAt])
 }
 
 model WorkPathShortcut {

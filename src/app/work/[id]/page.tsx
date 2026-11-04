@@ -3,6 +3,8 @@ import { notFound, redirect } from "next/navigation";
 import { hostname } from "node:os";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@/generated/prisma/client";
+import { QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
 import { getSessionUserId } from "@/lib/session";
 import { hashWorkContent, readWorkPrompt } from "@/lib/work-files";
 import PromptEditor from "@/components/PromptEditor";
@@ -37,6 +39,11 @@ import { getRunStatusSnapshot } from "@/lib/run-status";
 import { readInitialWorkAttachmentMetadata } from "@/lib/work-attachments";
 import { MessageAttachments } from "@/components/WorkMessageAttachments";
 
+const workRunRelations = {
+  terminalLaunches: { select: { id: true, status: true, errorMessage: true }, take: 1 },
+  resumedRuns: { select: { id: true }, take: 1 },
+} satisfies Prisma.RunInclude;
+
 export default async function WorkDetailPage({
   params,
   searchParams,
@@ -58,10 +65,7 @@ export default async function WorkDetailPage({
         where: { experimentVariantId: null },
         orderBy: { createdAt: "desc" },
         take: 20,
-        include: {
-          terminalLaunches: { select: { id: true, status: true, errorMessage: true }, take: 1 },
-          resumedRuns: { select: { id: true }, take: 1 },
-        },
+        include: workRunRelations,
       },
       experiments: {
         orderBy: { createdAt: "desc" },
@@ -94,7 +98,22 @@ export default async function WorkDetailPage({
       files: [],
       error: error instanceof Error ? error.message : "Could not load initial Prompt attachments.",
     }));
-  const latestRun = work.runs[0];
+  const queuedFollowUp = await prisma.run.findFirst({
+    where: { workId: work.id, concurrencyMode: QUEUED_FOLLOW_UP_MODE, status: "PENDING", experimentVariantId: null },
+    select: { id: true },
+  });
+  const queueHead = queuedFollowUp ? await prisma.run.findFirst({
+    where: { workId: work.id, experimentVariantId: null, OR: [
+      { status: "RUNNING" },
+      { status: "PENDING", OR: [
+        { resumedFromRunId: null },
+        { resumedFromRun: { is: { status: { notIn: ["PENDING", "RUNNING"] } } } },
+      ] },
+    ] },
+    orderBy: [{ status: "desc" }, { createdAt: "asc" }],
+    include: workRunRelations,
+  }) : null;
+  const latestRun = queueHead ?? work.runs[0];
   const latestRunState = latestRun ? await getRunStatusSnapshot(latestRun) : null;
   const settlingRun = latestRunState?.displayStatus === "SYNCING" ? latestRun : null;
   const followUpParentCandidate = await prisma.run.findFirst({
@@ -190,7 +209,7 @@ export default async function WorkDetailPage({
               {work.sourceRepo && <MetaChip icon={Boxes}>{work.sourceRepo.name}</MetaChip>}
             </div>
             {latestRun && (
-              <p className="text-neutral-500">Latest Run: {latestRun.trigger} · {latestRun.engine ?? "CLI"}</p>
+              <p className="text-neutral-500">{queuedFollowUp ? "Current Run" : "Latest Run"}: {latestRun.trigger} · {latestRun.engine ?? "CLI"}</p>
             )}
             {latestRun?.copilotSessionId && (
               <p className="break-all font-mono text-neutral-400">Session {latestRun.copilotSessionId}</p>

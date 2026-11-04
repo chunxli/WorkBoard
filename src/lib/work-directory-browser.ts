@@ -44,12 +44,16 @@ export async function listWorkDirectory(directoryPath: string, relativePath: str
   if (!Number.isSafeInteger(offset) || offset < 0) throw new WorkDirectoryError("Invalid directory page.", 400);
   const { resolved, info } = await resolveEntry(directoryPath, relativePath);
   if (!info.isDirectory()) throw new WorkDirectoryError("The requested entry is not a folder.", 400);
-  const entries = (await readdir(resolved, { withFileTypes: true })).map((entry) => ({
-    name: entry.name,
-    path: [...safeSegments(relativePath), entry.name].join("/"),
-    kind: /[\u0000-\u001f\u007f\\:]/.test(entry.name) || entry.isSymbolicLink()
-      ? "unsupported" : entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "unsupported",
-  })).sort((left, right) =>
+  const entries = (await readdir(resolved, { withFileTypes: true })).map((entry) => {
+    const kind = /[\u0000-\u001f\u007f\\:]/.test(entry.name) || entry.isSymbolicLink()
+      ? "unsupported" : entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "unsupported";
+    return {
+      name: entry.name,
+      path: [...safeSegments(relativePath), entry.name].join("/"),
+      absolutePath: kind === "unsupported" ? null : path.join(resolved, entry.name),
+      kind,
+    };
+  }).sort((left, right) =>
     Number(right.kind === "directory") - Number(left.kind === "directory") ||
     left.name.localeCompare(right.name, undefined, { numeric: true }));
   const nextOffset = offset + PAGE_SIZE < entries.length ? offset + PAGE_SIZE : null;

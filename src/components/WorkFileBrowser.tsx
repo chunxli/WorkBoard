@@ -1,19 +1,36 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, File, Folder, LoaderCircle, RefreshCw } from "lucide-react";
+import { useCallback, useContext, useEffect, useState } from "react";
+import { ChevronDown, ChevronRight, File, Folder, LoaderCircle, MessageSquarePlus, RefreshCw } from "lucide-react";
 import { z } from "zod";
+import { FollowUpComposerContext } from "@/components/FollowUpComposerContext";
 
 interface FileEntry {
   name: string;
   path: string;
+  absolutePath: string | null;
   kind: "directory" | "file" | "unsupported";
 }
 
-const directoryPageSchema = z.object({
-  entries: z.array(z.object({ name: z.string(), path: z.string(), kind: z.enum(["directory", "file", "unsupported"]) })),
+export const directoryPageSchema = z.object({
+  entries: z.array(z.object({
+    name: z.string(), path: z.string(), absolutePath: z.string().min(1).nullable(), kind: z.enum(["directory", "file", "unsupported"]),
+  }).refine((entry) => entry.kind === "unsupported" || entry.absolutePath !== null, "An ordinary file or folder requires an absolute path.")),
   nextOffset: z.number().int().nonnegative().nullable(),
 });
+
+export function WorkPathReferenceButton({ workId, name, absolutePath }: { workId: string; name: string; absolutePath: string | null }) {
+  const composer = useContext(FollowUpComposerContext);
+  const available = composer?.workId === workId && !composer.disabled && absolutePath !== null;
+  return <button type="button" aria-label={`Insert ${name} path into Follow Up`}
+    title={available ? `Insert ${absolutePath} into Follow Up` : "The Follow Up draft is not available for editing."}
+    disabled={!available} onClick={() => {
+      if (available) composer.insertPath(absolutePath);
+    }}
+    className="grid size-8 shrink-0 place-items-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:size-11">
+    <MessageSquarePlus size={13} aria-hidden="true" />
+  </button>;
+}
 
 function Directory({ workId, directory, version }: { workId: string; directory: string; version: number }) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -67,25 +84,28 @@ function Directory({ workId, directory, version }: { workId: string; directory: 
     <ul className="min-w-0 space-y-0.5" aria-label={directory ? `${directory} files` : "Work directory files"}>
       {entries.map((entry) => <li key={entry.path} className="min-w-0">
         {entry.kind === "directory" ? <>
+          <div className="flex min-w-0 items-center gap-1">
           <button type="button" aria-expanded={open.has(entry.path)} title={entry.name}
             onClick={() => setOpen((current) => {
               const next = new Set(current);
               if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path);
               return next;
             })}
-            className="flex min-h-8 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-xs text-neutral-300 hover:bg-neutral-800">
+            className="flex min-h-8 min-w-0 flex-1 items-center gap-1 rounded px-1 text-left text-xs text-neutral-300 hover:bg-neutral-800">
             {open.has(entry.path) ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
             <Folder size={13} className="shrink-0" aria-hidden="true" /><span className="truncate">{entry.name}</span>
           </button>
+          <WorkPathReferenceButton workId={workId} name={entry.name} absolutePath={entry.absolutePath} />
+          </div>
           {open.has(entry.path) && <div className="ml-3 border-l border-neutral-800 pl-1">
             <Directory key={entry.path} workId={workId} directory={entry.path} version={version} />
           </div>}
-        </> : entry.kind === "file" ? <a
+        </> : entry.kind === "file" ? <div className="flex min-w-0 items-center gap-1"><a
           href={`/api/works/${encodeURIComponent(workId)}/files?${new URLSearchParams({ path: entry.path, open: "1" })}`}
           target="_blank" rel="noopener noreferrer" title={`Open ${entry.name} in a new tab`}
-          className="flex min-h-8 min-w-0 items-center gap-1.5 rounded px-1 pl-4 text-xs text-neutral-300 hover:bg-neutral-800 hover:text-emerald-300">
+          className="flex min-h-8 min-w-0 flex-1 items-center gap-1.5 rounded px-1 pl-4 text-xs text-neutral-300 hover:bg-neutral-800 hover:text-emerald-300">
           <File size={13} className="shrink-0" aria-hidden="true" /><span className="truncate">{entry.name}</span>
-        </a> : <span className="block truncate px-1 py-1 pl-4 text-xs text-neutral-500" title="Special files and symbolic links are not exposed">
+        </a><WorkPathReferenceButton workId={workId} name={entry.name} absolutePath={entry.absolutePath} /></div> : <span className="block truncate px-1 py-1 pl-4 text-xs text-neutral-500" title="Special files and symbolic links are not exposed">
           {entry.name}
         </span>}
       </li>)}
@@ -117,7 +137,7 @@ export default function WorkFileBrowser({ workId }: { workId: string }) {
           <RefreshCw size={13} aria-hidden="true" />
         </button>
       </div>
-      <p className="text-[10px] text-neutral-400">Read-only · files open in a new tab</p>
+      <p className="text-[10px] text-neutral-400">Read-only · open files or insert their paths into Follow Up</p>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <Directory key={workId} workId={workId} directory="" version={version} />
       </div>

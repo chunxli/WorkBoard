@@ -3,6 +3,15 @@ export interface PromptSelection {
   end: number;
 }
 
+export function restorePromptSelection(
+  textarea: Pick<HTMLTextAreaElement, "focus" | "setSelectionRange"> | null,
+  selection: PromptSelection,
+) {
+  if (!textarea) return;
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(selection.start, selection.end);
+}
+
 type PromptInsertionResult =
   | { ok: true; value: string; selection: PromptSelection }
   | { ok: false; error: string };

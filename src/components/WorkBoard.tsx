@@ -64,7 +64,7 @@ import {
 } from "@/lib/execution-defaults";
 import { formatTokenCount } from "@/lib/format";
 import { TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
-import { insertPromptName, type PromptSelection } from "@/lib/prompt-insertion";
+import { insertPromptName, restorePromptSelection, type PromptSelection } from "@/lib/prompt-insertion";
 import { prepareNewWork, type CreatedWorkDraft } from "@/lib/new-work-submission";
 import { updateWorkSchema } from "@/lib/validation";
 
@@ -109,12 +109,6 @@ interface DirectoryPromptFile {
 function inferName(directoryPath: string): string {
   const trimmed = directoryPath.trim().replace(/[\\/]+$/, "");
   return trimmed.split(/[\\/]/).pop() ?? "";
-}
-
-function restorePromptSelection(textarea: HTMLTextAreaElement | null, selection: PromptSelection) {
-  if (!textarea) return;
-  textarea.focus({ preventScroll: true });
-  textarea.setSelectionRange(selection.start, selection.end);
 }
 
 export default function WorkBoard({

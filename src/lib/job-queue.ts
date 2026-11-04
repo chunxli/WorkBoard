@@ -2,10 +2,8 @@ type Job = () => Promise<void>;
 type QueueEntry = { key: string; job: Job; waitForPreviousRuns: boolean };
 
 /**
- * Runs are keyed by repoId: at most one run per repo executes at a time (they share a single
- * git working directory, so concurrent runs on the same repo would corrupt each other's
- * checkout/branch state), but runs on different repos are free to execute in parallel, up to
- * an overall concurrency cap.
+ * One Run executes per key (Automation repository or Work session).
+ * Independent keys can execute in parallel up to the overall concurrency cap.
  */
 export class JobQueue {
   private queue: QueueEntry[] = [];

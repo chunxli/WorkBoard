@@ -18,6 +18,8 @@ import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { ConversationReadError, readSessionConversationPage, type SessionConversationData } from "@/lib/session-conversation";
 import { parseWorkAttachments } from "@/lib/work-attachments";
 import { attachmentRelativePath } from "@/lib/work-attachment-types";
+import { getWorkQueueBlockedReason, orderPendingWorkRuns, QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
+import { readPinTarget } from "@/lib/conversation-pins";
 
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "private, no-store", "Vary": "Cookie" };
@@ -26,13 +28,15 @@ const querySchema = z.object({
   cursor: z.string().max(2048).optional(),
   before: z.string().max(2048).optional(),
   download: z.literal("1").optional(),
+  pin: z.string().min(1).max(128).optional(),
 }).strict();
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const userId = await getSessionUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers });
   const parsed = querySchema.safeParse(Object.fromEntries(req.nextUrl.searchParams));
-  if (!parsed.success || parsed.data?.cursor && parsed.data.before) {
+  if (!parsed.success || parsed.data?.cursor && parsed.data.before ||
+    parsed.data?.pin && (parsed.data.cursor || parsed.data.before || parsed.data.download)) {
     return NextResponse.json({ error: "Invalid conversation request" }, { status: 400, headers });
   }
   const { id } = await params;
@@ -54,6 +58,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     historyUnavailableReason: null, canFollowUp: false, blockedReason: null, terminalActive: false,
     canSteer: false, steeringRunId: null, steeringBlockedReason: null, steeringMessages: [],
     promptHash: work.promptHash, pendingPrompt: null,
+    canQueue: false, queueParentRunId: null, queueBlockedReason: null, queuedMessageCount: 0, queuedMessages: [],
   };
   try {
     if (work.hostname && work.hostname !== hostname() || anchor?.hostname && anchor.hostname !== hostname()) {
@@ -61,10 +66,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     const conflicts = await findActiveRunConflicts(userId, anchor?.executionPath ?? work.directoryPath);
     if (!anchor?.copilotSessionId) {
+      if (parsed.data.pin) throw new ConversationReadError("This Run has no available Session for Pins.", 404);
       base.historyUnavailableReason = anchor ? "Session history has not been created yet." : "No session yet.";
       base.blockedReason = work.status === "ARCHIVED" ? "Restore this Work before following up."
         : conflicts.length ? "Wait for the active Run to finish." : anchor ? "Wait for the session to start." : null;
       base.canFollowUp = !base.blockedReason;
+      base.queueBlockedReason = base.blockedReason ?? "Wait for this Run to prepare its session.";
       return NextResponse.json(base, { headers });
     }
     const sessionId = anchor.copilotSessionId;
@@ -77,7 +84,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       where: { workId: id, copilotSessionId: sessionId, experimentVariantId: null },
       orderBy: { createdAt: "desc" },
       select: { id: true, status: true, trigger: true, hostname: true, createdAt: true, startedAt: true, finishedAt: true,
-        engine: true, attachmentsJson: true,
+        engine: true, attachmentsJson: true, concurrencyMode: true, resumedFromRunId: true,
         terminalLaunches: { select: { id: true }, take: 1 } },
     });
     if (!work.hostname && !anchor.hostname && !runs.some((run) => run.hostname === hostname()) && authMode !== "local") {
@@ -96,9 +103,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       : await getTerminalSessionActivity(sessionId, current?.terminalLaunches[0]?.id ?? null,
           currentActive && isTerminalRunTrigger(current.trigger) ? current.createdAt : undefined);
     const stoppedRunId = currentActive && isTerminalRunTrigger(current.trigger) && !activity.active && !activity.starting ? current.id : null;
-    const activeOwner = await prisma.run.findFirst({
+    const activeOwners = await prisma.run.findMany({
       where: { workId: id, status: { in: ["PENDING", "RUNNING"] }, ...(stoppedRunId ? { id: { not: stoppedRunId } } : {}) },
-      select: { id: true },
+      select: { id: true, trigger: true, copilotSessionId: true, hostname: true, experimentVariantId: true,
+        createdAt: true, resumedFromRunId: true },
     });
     base.runs = runs.map((run) => ({ id: run.id, status: run.status, trigger: run.trigger,
       createdAt: run.createdAt.toISOString(), startedAt: run.startedAt?.toISOString() ?? null, finishedAt: run.finishedAt?.toISOString() ?? null }));
@@ -129,12 +137,41 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     base.canSteer = base.steeringBlockedReason === null && managedRun !== undefined;
     base.blockedReason = work.status === "ARCHIVED" ? "Restore this Work before following up."
       : base.terminalActive ? "This session is open in Terminal. Close the Copilot session before sending."
-        : activeOwner || conflicts.some((run) => run.id !== stoppedRunId) ? "Wait for the active Run to finish."
+        : activeOwners.length || conflicts.some((run) => run.id !== stoppedRunId) ? "Wait for the active Run to finish."
           : !parent ? "This session has not started yet." : null;
-    if (current?.trigger === "FOLLOW_UP" && ["PENDING", "RUNNING", "FAILED"].includes(current.status)) {
-      const pending = await prisma.run.findUnique({ where: { id: current.id }, select: { promptSnapshot: true, attachmentsJson: true } });
+    const activeIds = new Set(activeOwners.map((run) => run.id));
+    base.queueBlockedReason = work.status === "ARCHIVED" ? "Restore this Work before adding messages to its queue."
+      : base.terminalActive ? "This session is open in Terminal. Close it before adding messages to the queue."
+        : getWorkQueueBlockedReason(activeOwners, sessionId, hostname())
+          ?? (conflicts.some((run) => run.id !== stoppedRunId && !activeIds.has(run.id))
+            ? "Wait for the active Run in this Work directory to finish." : null);
+    base.canQueue = base.queueBlockedReason === null;
+    if (base.canQueue) base.queueParentRunId = orderPendingWorkRuns(activeOwners).at(-1)?.id ?? null;
+    const queued = orderPendingWorkRuns(runs.filter((run) => run.status === "PENDING" && run.concurrencyMode === QUEUED_FOLLOW_UP_MODE));
+    base.queuedMessageCount = queued.length;
+    if (queued.length) {
+      const previews = await prisma.run.findMany({
+        where: { workId: id, id: { in: queued.slice(0, 20).map((run) => run.id) } },
+        select: { id: true, promptSnapshot: true, attachmentsJson: true },
+      });
+      const byId = new Map(previews.map((run) => [run.id, run]));
+      base.queuedMessages = queued.slice(0, 20).flatMap((run) => {
+        const preview = byId.get(run.id);
+        if (!preview) return [];
+        const text = preview.promptSnapshot ?? "";
+        return [{ runId: run.id, text: text.length > 500 ? `${text.slice(0, 500)}...` : text,
+          createdAt: run.createdAt.toISOString(), attachments: parseWorkAttachments(preview.attachmentsJson) }];
+      });
+    }
+    const promptRun = current?.concurrencyMode === QUEUED_FOLLOW_UP_MODE
+      ? managedRun ?? runs.find((run) => run.startedAt !== null) : current;
+    if (promptRun?.trigger === "FOLLOW_UP" && ["PENDING", "RUNNING", "FAILED"].includes(promptRun.status)
+      && (promptRun.concurrencyMode !== QUEUED_FOLLOW_UP_MODE || promptRun.startedAt !== null)) {
+      const pending = await prisma.run.findUnique({ where: { id: promptRun.id }, select: { promptSnapshot: true, attachmentsJson: true } });
       const attachments = parseWorkAttachments(pending?.attachmentsJson);
-      if (pending?.promptSnapshot || attachments.length) base.pendingPrompt = { runId: current.id, text: pending?.promptSnapshot ?? "", status: current.status, attachments };
+      const timestamp = promptRun.concurrencyMode === QUEUED_FOLLOW_UP_MODE ? promptRun.startedAt : promptRun.createdAt;
+      if (timestamp && (pending?.promptSnapshot || attachments.length)) base.pendingPrompt = { runId: promptRun.id, text: pending?.promptSnapshot ?? "", status: promptRun.status, attachments,
+        timestamp: timestamp.toISOString() };
     }
     if (parsed.data.download) {
       const filePath = getCopilotSessionEventsPath(sessionId);
@@ -147,7 +184,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       } });
     }
     try {
-      const page = await readSessionConversationPage(sessionId, { cursor: parsed.data.cursor, before: parsed.data.before });
+      const pin = parsed.data.pin ? await prisma.workConversationPin.findFirst({
+        where: { id: parsed.data.pin, workId: id, sessionId },
+      }) : null;
+      if (parsed.data.pin && !pin) throw new ConversationReadError("Pin not found in this Session.", 404);
+      const page = pin ? (await readPinTarget(sessionId, pin)).page
+        : await readSessionConversationPage(sessionId, { cursor: parsed.data.cursor, before: parsed.data.before });
       Object.assign(base, page, { historyAvailable: true });
       const steeringMessages = await prisma.workSteeringMessage.findMany({
         where: { workId: id, sessionId },

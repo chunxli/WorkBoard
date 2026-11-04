@@ -640,6 +640,71 @@ body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
   padding: 0.25rem;
 }
 
+.conversation-pins-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 0.375rem;
+  border-top: 1px solid var(--neutral-800);
+  padding: 0.5rem 0.25rem;
+}
+
+.conversation-pins-panel.has-pins {
+  max-height: 35%;
+}
+
+.conversation-pinnable,
+.conversation-code-line {
+  position: relative;
+  padding-right: 2rem;
+  scroll-margin: 1rem;
+}
+
+.conversation-code-line {
+  display: block;
+  min-height: 1lh;
+}
+
+.conversation-line-pin {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  min-width: 28px;
+  min-height: 24px;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--neutral-500);
+  opacity: 0;
+}
+
+.conversation-pinnable:hover > .conversation-line-pin,
+.conversation-code-line:hover > .conversation-line-pin,
+.conversation-line-pin:focus-visible,
+.conversation-line-pin.is-pinned {
+  opacity: 1;
+}
+
+.conversation-line-pin:hover,
+.conversation-line-pin.is-pinned {
+  color: var(--emerald-400);
+  background: var(--neutral-800);
+}
+
+[data-pin-active="true"] {
+  outline: 2px solid var(--emerald-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (max-width: 639px), (pointer: coarse) {
+  .conversation-line-pin { opacity: 1; min-height: 44px; min-width: 44px; }
+  .conversation-pinnable, .conversation-code-line { padding-right: 3rem; min-height: 44px; }
+  .conversation-pins-panel button { min-height: 44px; }
+  .conversation-pins-panel button:has(> svg) { min-width: 44px; }
+}
+
 .work-detail-layout .work-conversation-log,
 .work-detail-layout .work-raw-output {
   min-height: 0;

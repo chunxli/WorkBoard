@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityRecords, conversationTimeline, withPendingFollowUp, type PendingFollowUp } from "./conversation-activity";
+import { activityRecords, conversationTimeline, isConversationMessage, withPendingFollowUp, type PendingFollowUp } from "./conversation-activity";
 import { normalizeConversationEvent, type ConversationEvent } from "./session-conversation";
 
 function event(type: string, offset: number, data: Record<string, unknown> = {}, agentId: string | null = null): ConversationEvent {
@@ -7,10 +7,26 @@ function event(type: string, offset: number, data: Record<string, unknown> = {},
 }
 
 describe("conversation activity timeline", () => {
+  it("uses the same visible-message boundary for history loading and timeline rendering", () => {
+    const records = [
+      event("user.message", 0, { content: "User input" }),
+      event("assistant.message", 1, { content: "Root answer" }),
+      event("assistant.message", 2, { content: " \n\t" }),
+      event("assistant.message", 3, { content: "Subagent answer" }, "agent"),
+      event("tool.execution_complete", 4, { result: "Tool output" }),
+      event("session.error", 5, { message: "Recorded runtime error" }),
+      event("user.message", 6, { content: "", attachments: [{ type: "file", path: "C:\\unregistered.png" }] }),
+    ];
+    expect(records.map(isConversationMessage)).toEqual([true, true, false, false, false, false, false]);
+    for (const record of records) {
+      expect(isConversationMessage(record)).toBe(conversationTimeline([record]).some((item) => item.kind === "message"));
+    }
+  });
   it("keeps registered attachment-only user messages in the prose timeline", () => {
     const message = event("user.message", 0, { content: "" });
     message.attachments = [{ id: "file-id", requestId: "request-id", uploadId: "upload-id", name: "image.png",
       storedName: "file-image.png", size: 12, mediaType: "image/png", sha256: "0".repeat(64) }];
+    expect(isConversationMessage(message)).toBe(true);
     expect(conversationTimeline([message])).toEqual([{ kind: "message", event: message }]);
   });
 

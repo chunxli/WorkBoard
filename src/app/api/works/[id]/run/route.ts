@@ -5,6 +5,7 @@ import { getSessionUserId } from "@/lib/session";
 import { runWorkSchema } from "@/lib/validation";
 import { copyWorkToNumberedSibling, readWorkPrompt } from "@/lib/work-files";
 import { createPendingWorkRun, executeWorkRun } from "@/lib/work-executor";
+import { getWorkRunQueueKey } from "@/lib/work-run-queue";
 import { findActiveRunConflicts } from "@/lib/run-access";
 import { RunStartInProgressError, withRunStartLock } from "@/lib/run-start-lock";
 
@@ -55,7 +56,7 @@ export async function POST(
         prompt: prompt.content,
         concurrencyMode,
       });
-      jobQueue.enqueue(run.id, () => executeWorkRun(run.id));
+      jobQueue.enqueue(getWorkRunQueueKey(run), () => executeWorkRun(run.id));
       return {
         runId: run.id,
         conflictCount: conflictingRuns.length,

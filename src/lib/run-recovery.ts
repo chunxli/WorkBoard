@@ -4,8 +4,8 @@ import { executeRun, finalizeAutomationRun } from "@/lib/task-executor";
 import {
   executeWorkRun,
   finalizeCancelledWorkRun,
-  getWorkRunQueueKey,
 } from "@/lib/work-executor";
+import { getWorkRunQueueKey, orderPendingWorkRuns } from "@/lib/work-run-queue";
 import {
   finalizeWorkRunArtifacts,
   getWorkRunArtifactPaths,
@@ -106,7 +106,7 @@ export async function recoverRuns(): Promise<void> {
     include: { task: true, work: true },
     orderBy: { createdAt: "asc" },
   });
-  for (const run of pending) {
+  for (const run of orderPendingWorkRuns(pending)) {
     if (run.task) {
       if (run.task.archivedAt) {
         await prisma.run.update({ where: { id: run.id }, data: { status: "CANCELLED" } });

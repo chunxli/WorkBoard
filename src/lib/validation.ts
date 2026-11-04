@@ -137,8 +137,11 @@ export const followUpWorkSchema = z.object({
   expectedParentRunId: z.string().min(1).max(128).nullable().optional(),
   requestId: z.string().uuid().optional(),
   attachmentIds: attachmentIdsSchema.default([]),
+  queue: z.boolean().default(false),
 }).strict().refine((value) => value.prompt.length > 0 || value.attachmentIds.length > 0, "Enter a prompt or attach a file.")
-  .refine((value) => !value.attachmentIds.length || value.requestId, "Attachment messages require a request ID.");
+  .refine((value) => !value.attachmentIds.length || value.requestId, "Attachment messages require a request ID.")
+  .refine((value) => !value.queue || value.requestId && typeof value.expectedParentRunId === "string",
+    "Queued messages require a request ID and the selected parent Run.");
 
 export const createWorkPathShortcutSchema = z.object({
   label: z.string().trim().min(1).max(80),

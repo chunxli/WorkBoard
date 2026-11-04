@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, open, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { listWorkDirectory, previewWorkFile } from "./work-directory-browser";
@@ -21,12 +21,13 @@ describe("Work directory listing", () => {
     await writeFile(path.join(root, "answer.md"), "# Answer");
     await writeFile(path.join(root, "docs", "nested.txt"), "Nested answer");
     const listing = await listWorkDirectory(root, "");
+    const absoluteRoot = await realpath(root);
     expect(listing.entries).toEqual([
-      { name: "docs", path: "docs", kind: "directory" },
-      { name: "answer.md", path: "answer.md", kind: "file" },
+      { name: "docs", path: "docs", absolutePath: path.join(absoluteRoot, "docs"), kind: "directory" },
+      { name: "answer.md", path: "answer.md", absolutePath: path.join(absoluteRoot, "answer.md"), kind: "file" },
     ]);
     expect((await listWorkDirectory(root, "docs")).entries).toEqual([
-      { name: "nested.txt", path: "docs/nested.txt", kind: "file" },
+      { name: "nested.txt", path: "docs/nested.txt", absolutePath: path.join(absoluteRoot, "docs", "nested.txt"), kind: "file" },
     ]);
   });
 
@@ -53,7 +54,7 @@ describe("Work directory listing", () => {
     await mkdir(outside);
     await writeFile(path.join(outside, "private.txt"), "Must not escape the Work root");
     await symlink(outside, path.join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
-    expect((await listWorkDirectory(root, "")).entries[0].kind).toBe("unsupported");
+    expect((await listWorkDirectory(root, "")).entries[0]).toMatchObject({ kind: "unsupported", absolutePath: null });
     await expect(listWorkDirectory(root, "linked")).rejects.toMatchObject({ status: 403 });
     await expect(previewWorkFile(root, "linked/private.txt")).rejects.toMatchObject({ status: 403 });
   });

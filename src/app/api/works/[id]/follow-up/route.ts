@@ -7,8 +7,10 @@ import {
   createPendingFollowUpRun,
   ensureFollowUpPrompt,
   executeWorkRun,
-  getWorkRunQueueKey,
 } from "@/lib/work-executor";
+import { getWorkQueueBlockedReason, getWorkRunQueueKey, orderPendingWorkRuns, QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
+import { getManagedSessionController } from "@/lib/managed-session-controller";
+import { isNativeCopilotRunActive } from "@/lib/copilot-runner";
 import { jobQueue } from "@/lib/job-queue";
 import {
   copilotSessionExists,
@@ -62,23 +64,36 @@ export async function POST(
         const existing = await prisma.run.findUnique({ where: { id: parsed.data.requestId } });
         if (existing) {
           if (existing.workId !== work.id || existing.trigger !== "FOLLOW_UP" ||
+            (existing.concurrencyMode === QUEUED_FOLLOW_UP_MODE) !== parsed.data.queue ||
             existing.promptSnapshot !== parsed.data.prompt ||
             parsed.data.expectedParentRunId !== undefined && existing.resumedFromRunId !== parsed.data.expectedParentRunId ||
             JSON.stringify(parseWorkAttachments(existing.attachmentsJson).map((file) => file.id)) !== JSON.stringify(parsed.data.attachmentIds)) {
             throw new FollowUpConflictError("This request ID already refers to a different message.");
           }
-          return { runId: existing.id, sessionId: existing.copilotSessionId, resumed: Boolean(existing.resumedFromRunId) };
+          return { runId: existing.id, sessionId: existing.copilotSessionId, resumed: Boolean(existing.resumedFromRunId),
+            ...(parsed.data.queue ? { queued: true } : {}) };
         }
       }
-      const activeWorkRun = await prisma.run.findFirst({
+      const activeWorkRuns = parsed.data.queue ? await prisma.run.findMany({
+        where: { workId: work.id, status: { in: ["PENDING", "RUNNING"] } },
+        select: { id: true, trigger: true, status: true, copilotSessionId: true, hostname: true, engine: true,
+          experimentVariantId: true, createdAt: true, resumedFromRunId: true },
+      }) : [];
+      const activeWorkRun = parsed.data.queue ? activeWorkRuns[0] : await prisma.run.findFirst({
         where: { workId: work.id, status: { in: ["PENDING", "RUNNING"] } },
         select: { id: true },
       });
-      if (activeWorkRun) {
+      if (activeWorkRun && !parsed.data.queue) {
         throw new FollowUpConflictError("Wait for the active Work Run to finish");
       }
+      const queueTail = orderPendingWorkRuns(activeWorkRuns).at(-1);
+      const queueingActive = parsed.data.queue && queueTail !== undefined;
+      if (queueingActive) {
+        const reason = getWorkQueueBlockedReason(activeWorkRuns, queueTail.copilotSessionId, hostname());
+        if (reason) throw new FollowUpConflictError(reason);
+      }
       const parent = await prisma.run.findFirst({
-        where: {
+        where: queueingActive ? { id: queueTail.id, workId: work.id, experimentVariantId: null } : {
           workId: work.id,
           experimentVariantId: null,
           copilotSessionId: { not: null },
@@ -94,7 +109,7 @@ export async function POST(
       if (parent?.hostname && parent.hostname !== hostname()) {
         throw new FollowUpConflictError("The latest Work session belongs to another machine");
       }
-      if (
+      if (!queueingActive &&
         parent?.copilotSessionId &&
         !(await copilotSessionExists(parent.copilotSessionId))
       ) {
@@ -104,24 +119,41 @@ export async function POST(
         userId,
         parent?.executionPath ?? work.directoryPath
       );
-      if (conflictingRuns.length > 0) {
+      const allowedActiveIds = new Set(activeWorkRuns.map((run) => run.id));
+      if (conflictingRuns.some((run) => !allowedActiveIds.has(run.id))) {
         throw new FollowUpConflictError("Wait for the active Run in this Work directory to finish");
       }
       const createFollowUp = async () => {
         if (parent?.copilotSessionId) {
-          const activeSessionRun = await prisma.run.findFirst({
+          if (queueingActive) {
+            const activeSessionRuns = await prisma.run.findMany({
+              where: { copilotSessionId: parent.copilotSessionId, status: { in: ["PENDING", "RUNNING"] } },
+              select: { id: true },
+            });
+            if (activeSessionRuns.some((run) => !allowedActiveIds.has(run.id))) {
+              throw new FollowUpConflictError("The Copilot session is already active in another Work");
+            }
+          } else {
+            const activeSessionRun = await prisma.run.findFirst({
             where: {
               copilotSessionId: parent.copilotSessionId,
               status: { in: ["PENDING", "RUNNING"] },
             },
             select: { id: true },
-          });
-          if (activeSessionRun) {
-            throw new FollowUpConflictError("The Copilot session is already active");
+            });
+            if (activeSessionRun) {
+              throw new FollowUpConflictError("The Copilot session is already active");
+            }
           }
-          const activity = await getTerminalSessionActivity(parent.copilotSessionId, parent.terminalLaunches[0]?.id ?? null);
-          if (activity.active) throw new FollowUpConflictError("This session is open in Terminal. Close the Copilot session before sending.");
-          await repairLegacyCopilotSessionEvents(parent.copilotSessionId);
+          const running = activeWorkRuns.find((run) => run.status === "RUNNING");
+          const ownedRunning = running?.hostname === hostname() && (running.engine === "SDK"
+            ? getManagedSessionController(running.id) !== null
+            : running.engine === "CLI" && isNativeCopilotRunActive(running.id));
+          if (!ownedRunning) {
+            const activity = await getTerminalSessionActivity(parent.copilotSessionId, parent.terminalLaunches[0]?.id ?? null);
+            if (activity.active || activity.starting) throw new FollowUpConflictError("This session is open in Terminal. Close the Copilot session before sending.");
+          }
+          if (!queueingActive) await repairLegacyCopilotSessionEvents(parent.copilotSessionId);
         }
 
         const attachments = parsed.data.attachmentIds.length && parsed.data.requestId
@@ -132,14 +164,18 @@ export async function POST(
           parentRunId: parent?.id,
           requestId: parsed.data.requestId,
           attachments,
+          ...(parsed.data.queue ? { queue: true } : {}),
         });
-        try {
-          await ensureFollowUpPrompt(work, run);
-        } catch (error) {
-          console.warn(`[follow-up] Deferring prompt sync for Run ${run.id}:`, error);
+        if (!parsed.data.queue) {
+          try {
+            await ensureFollowUpPrompt(work, run);
+          } catch (error) {
+            console.warn(`[follow-up] Deferring prompt sync for Run ${run.id}:`, error);
+          }
         }
         jobQueue.enqueue(getWorkRunQueueKey(run), () => executeWorkRun(run.id));
-        return { runId: run.id, sessionId: run.copilotSessionId, resumed: Boolean(parent) };
+        return { runId: run.id, sessionId: run.copilotSessionId, resumed: Boolean(parent),
+          ...(parsed.data.queue ? { queued: true } : {}) };
       };
 
       return parent?.copilotSessionId
