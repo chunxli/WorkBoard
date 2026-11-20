@@ -3,12 +3,12 @@ import type { RunStatusSnapshot } from "@/lib/work-run-status";
 
 const harness = vi.hoisted(() => ({
   effect: undefined as (() => void | (() => void)) | undefined,
-  refresh: vi.fn(), setError: vi.fn(),
+  refresh: vi.fn(), setError: vi.fn(), setObservation: vi.fn(), stateIndex: 0,
 }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useEffect: (effect: () => void | (() => void)) => { harness.effect = effect; },
-  useState: () => [null, harness.setError],
+  useState: () => [null, harness.stateIndex++ === 0 ? harness.setError : harness.setObservation],
   useRef: (current: unknown) => ({ current }),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: harness.refresh }) }));
@@ -44,11 +44,31 @@ afterEach(() => {
 });
 
 function mount(snapshot = initial) {
+  harness.stateIndex = 0;
   RunStatusRefresher({ initialState: snapshot });
   cleanup = harness.effect?.();
 }
 
 describe("Run status observation independent of history and output tabs", () => {
+  it("observes snapshot progress on the existing status poll without refreshing the page for each update", async () => {
+    const pending = { ...initial, status: "PENDING", displayStatus: "PENDING", terminalActive: null };
+    const scanning = {
+      ...pending,
+      preparation: { phase: "snapshot", progress: { filesScanned: 2, bytesRead: 290_000_000 } },
+    };
+    const started = { ...pending, status: "RUNNING", displayStatus: "RUNNING" };
+    fetchStatus.mockImplementationOnce(() => respond(scanning)).mockImplementationOnce(() => respond(started));
+
+    mount(pending);
+    await flush();
+    expect(harness.setObservation).toHaveBeenLastCalledWith(scanning);
+    expect(harness.refresh).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(harness.setObservation).toHaveBeenLastCalledWith(started);
+    expect(harness.refresh).toHaveBeenCalledOnce();
+  });
+
   it("refreshes when the first response already differs from the server-rendered status", async () => {
     fetchStatus.mockImplementation(() => respond({ ...initial, status: "SUCCESS", displayStatus: "SUCCESS", terminalActive: null }));
     mount();

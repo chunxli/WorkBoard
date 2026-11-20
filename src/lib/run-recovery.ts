@@ -18,6 +18,7 @@ import { captureRunSourceDiff } from "@/lib/run-source-snapshot";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { TERMINAL_RUN_TRIGGERS } from "@/lib/terminal-run";
+import { verifyPairedRunDirectory } from "@/lib/work-pair-directories";
 
 const globalForRecovery = globalThis as unknown as { workBoardRecoveryStarted?: boolean };
 
@@ -28,7 +29,7 @@ export async function recoverRuns(): Promise<void> {
 
   const interrupted = await prisma.run.findMany({
     where: { status: "RUNNING", trigger: { notIn: [...TERMINAL_RUN_TRIGGERS] } },
-    include: { work: true },
+    include: { work: { include: { sessionPair: true } } },
   });
   for (const run of interrupted) {
     const errorMessage = "Work Board restarted while this run was active";
@@ -37,7 +38,17 @@ export async function recoverRuns(): Promise<void> {
       await finalizeAutomationRun(run.id, "FAILED", null, errorMessage);
       continue;
     } else if (run.work) {
-      const paths = getWorkRunArtifactPaths(run.work.directoryPath, run.id);
+      let artifactRoot: string;
+      try { artifactRoot = await verifyPairedRunDirectory(run.work, run); }
+      catch (error) {
+        console.error("[Work Board] Could not recover paired Run artifacts.", error);
+        await prisma.run.update({
+          where: { id: run.id },
+          data: { status: "FAILED", errorMessage: `${errorMessage}. Its original output directory could not be verified.`, finishedAt },
+        });
+        continue;
+      }
+      const paths = getWorkRunArtifactPaths(artifactRoot, run.id);
       const executionPath = run.executionPath ?? run.work.directoryPath;
       let snapshot = await readWorkRunSnapshot(paths.snapshot).catch(() => null);
       if (!snapshot) {
@@ -71,11 +82,11 @@ export async function recoverRuns(): Promise<void> {
           outputFormat: run.outputFormat,
           timeoutSeconds: run.timeoutSeconds,
         } satisfies WorkRunSnapshot;
-        await prepareWorkRunArtifacts(run.work.directoryPath, run.id, snapshot).catch(() => {});
+        await prepareWorkRunArtifacts(artifactRoot, run.id, snapshot).catch(() => {});
       }
       const sourceDiff = await captureRunSourceDiff({
         executionPath,
-        workDirectory: run.work.directoryPath,
+        workDirectory: artifactRoot,
         runId: run.id,
         beforeGitTree: snapshot.gitBeforeTree,
       }).catch(() => ({ afterGitTree: null, diff: "" }));

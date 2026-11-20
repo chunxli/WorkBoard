@@ -1,7 +1,48 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { FollowUpComposerContext } from "./FollowUpComposerContext";
-import { directoryPageSchema, WorkPathReferenceButton } from "./WorkFileBrowser";
+import { WorkFileNavigationContext, type WorkFileLocation } from "./WorkFileNavigationContext";
+import WorkFileBrowser, { directoryPageSchema, WorkPathReferenceButton } from "./WorkFileBrowser";
+
+describe("Work file locations", () => {
+  const pairedOutputRoot = "work-results-a794edab-8889-4898-8ba5-32c22111253f";
+
+  it("initially opens Shared and ties each selector to its own panel without mounting the output lists", () => {
+    const markup = renderToStaticMarkup(<WorkFileBrowser workId="paired-work" pairedOutputRoot={pairedOutputRoot} />);
+    expect(markup).toContain('role="tablist" aria-label="Work file locations"');
+    expect(markup).toMatch(/aria-selected="true" tabindex="0">Shared<\/button>/);
+    expect(markup).toMatch(/aria-selected="false" tabindex="-1">Copilot CLI<\/button>/);
+    expect(markup).toMatch(/aria-selected="false" tabindex="-1">CaseIQ<\/button>/);
+    expect(markup).toContain(`title="${pairedOutputRoot}/copilot-cli"`);
+    expect(markup).toContain(`title="${pairedOutputRoot}/caseiq"`);
+    for (const [, tab, panel] of markup.matchAll(/id="([^"]*)" aria-controls="([^"]*)"/g)) {
+      expect(markup).toContain(`id="${panel}" role="tabpanel" aria-labelledby="${tab}"`);
+    }
+    expect(markup.match(/role="tabpanel"[^>]+hidden=""/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="Shared Work files"');
+    expect(markup).not.toContain('aria-label="Copilot CLI output files"');
+    expect(markup).not.toContain('aria-label="CaseIQ output files"');
+  });
+
+  it("keeps the existing directory tree on single-Session Works", () => {
+    const markup = renderToStaticMarkup(<WorkFileBrowser workId="ordinary-work" />);
+    expect(markup).toContain('aria-label="Work directory files"');
+    expect(markup).not.toContain('aria-label="Work file locations"');
+    expect(markup).not.toContain('role="tabpanel"');
+  });
+
+  it("opens the location selected by the workspace and offers its return action", () => {
+    const markup = renderToStaticMarkup(<WorkFileNavigationContext.Provider value={{
+      location: "CASEIQ", visited: new Set<WorkFileLocation>(["CASEIQ"]), selectLocation: vi.fn(), returnToConversation: vi.fn(),
+    }}>
+      <WorkFileBrowser workId="paired-work" pairedOutputRoot={pairedOutputRoot} />
+    </WorkFileNavigationContext.Provider>);
+    expect(markup).toContain('aria-label="Back to Conversation"');
+    expect(markup).toMatch(/aria-selected="true" tabindex="0">CaseIQ<\/button>/);
+    expect(markup).toContain('aria-label="CaseIQ output files"');
+    expect(markup).not.toContain('aria-label="Copilot CLI output files"');
+  });
+});
 
 describe("Work file path references", () => {
   const absolutePath = "C:\\Work\\docs\\report [1].html";

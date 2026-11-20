@@ -6,18 +6,21 @@ import {
   getDirectorySnapshotPath,
   readDirectorySnapshot,
   writeDirectorySnapshot,
+  type DirectorySnapshotProgress,
 } from "@/lib/directory-snapshot";
 import { captureWorktreeTree, getWorktreeSnapshotDiff } from "@/lib/git-safety";
 
 export async function captureRunSourceBaseline(
   executionPath: string,
   workDirectory: string,
-  runId: string
+  runId: string,
+  onProgress?: (progress: DirectorySnapshotProgress) => void,
+  directoryOnly = false,
 ): Promise<string | null> {
-  const gitTree = await captureWorktreeTree(executionPath);
+  const gitTree = directoryOnly ? null : await captureWorktreeTree(executionPath);
   if (gitTree) return gitTree;
   const snapshotPath = getDirectorySnapshotPath(workDirectory, runId);
-  await writeDirectorySnapshot(snapshotPath, await captureDirectorySnapshot(executionPath));
+  await writeDirectorySnapshot(snapshotPath, await captureDirectorySnapshot(executionPath, undefined, onProgress));
   return null;
 }
 

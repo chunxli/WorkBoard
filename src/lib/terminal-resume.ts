@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { buildCopilotEnvironment } from "@/lib/copilot-runner";
 import {
   assertCopilotSessionNotInUse,
+  copilotSessionHasHistory,
   CopilotSessionInUseError,
   processIsAlive,
   readCopilotSessionSnapshot,
@@ -41,10 +42,19 @@ import {
   subtractCopilotTokenUsage,
 } from "@/lib/copilot-session-insights";
 import type { CopilotCompletionSummary } from "@/lib/copilot-completion";
-import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { isTerminalRunTrigger, TERMINAL_HISTORY_STABLE_MS } from "@/lib/terminal-run";
 import { findActiveRunConflicts } from "@/lib/run-access";
 import { getDirectorySnapshotPath } from "@/lib/directory-snapshot";
 import { TERMINAL_COMPLETION_UNCONFIRMED } from "@/lib/work-run-status";
+import { CASEIQ_PROVIDER_ID } from "@/lib/runtime-provider";
+import type { CaseIqLaunchOptions } from "@/lib/caseiq-options";
+import {
+  acceptCaseIqPreparation, ensurePrivateRuntimeDirectory, monitorCaseIqPreparation,
+  prepareCaseIqTerminal, type CaseIqTerminalSpec,
+} from "@/lib/caseiq-integration";
+import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
+import { readNativeSessionBindingSync } from "@/lib/native-session-bindings";
+import { WINDOWS_PROCESS_START_TIME, windowsProcessMatchesStartTime } from "@/lib/copilot-process";
 
 export class TerminalResumeInProgressError extends Error {
   constructor() {
@@ -71,9 +81,10 @@ export interface TerminalRunOutcome {
 
 export function resolveTerminalRunOutcome(
   exitCode: number | null,
-  completion: CopilotCompletionSummary
+  completion: CopilotCompletionSummary,
+  requireCompletion = false
 ): TerminalRunOutcome {
-  if (exitCode !== null) {
+  if (exitCode !== null && (exitCode !== 0 || !requireCompletion)) {
     return {
       status: exitCode === 0 ? "SUCCESS" : "FAILED",
       exitCode,
@@ -90,7 +101,7 @@ export function resolveTerminalRunOutcome(
     completion.openTools.length === 0;
   return {
     status: isComplete ? "SUCCESS" : "UNKNOWN",
-    exitCode: null,
+    exitCode,
     errorMessage: isComplete ? null : UNKNOWN_TERMINAL_EXIT_ERROR,
   };
 }
@@ -134,12 +145,12 @@ export function buildNewTerminalSessionArgs(
   return args;
 }
 
-function spawnDetached(executable: string, args: string[], cwd: string): Promise<number | null> {
+export function spawnDetached(executable: string, args: string[], cwd: string, environment: Partial<NodeJS.ProcessEnv> = {}): Promise<number | null> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd,
       detached: true,
-      env: buildCopilotEnvironment(),
+      env: { ...buildCopilotEnvironment(), ...environment },
       stdio: "ignore",
       windowsHide: false,
     });
@@ -167,7 +178,7 @@ export async function launchTerminalResume(parentRunId: string): Promise<{
 }> {
   const candidate = await prisma.run.findUniqueOrThrow({
     where: { id: parentRunId },
-    select: { copilotSessionId: true, workId: true, taskId: true, status: true, trigger: true },
+    select: { copilotSessionId: true, workId: true, taskId: true, status: true, trigger: true, providerId: true },
   });
   if (!candidate.copilotSessionId) {
     throw new Error("This run does not have a resumable Copilot session");
@@ -197,8 +208,21 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
 }> {
   const parentRun = await prisma.run.findUniqueOrThrow({
     where: { id: parentRunId },
-    include: { work: true, task: { include: { repo: true } } },
+    include: { work: { include: { sessionPair: true } }, task: { include: { repo: true } } },
   });
+  if (parentRun.work?.sessionPair) throw new TerminalStartError("Continue paired Sessions from the Work's Conversation.");
+  if (parentRun.providerId && parentRun.providerId !== CASEIQ_PROVIDER_ID) {
+    throw new TerminalStartError("This runtime does not have a supported native Terminal adapter.");
+  }
+  const caseIq = parentRun.providerId === CASEIQ_PROVIDER_ID;
+  if (caseIq && !parentRun.work) throw new TerminalStartError("CaseIQ Automations are not supported.");
+  if (caseIq) {
+    const binding = parentRun.copilotSessionId ? readNativeSessionBindingSync(parentRun.copilotSessionId) : null;
+    if (!binding?.home || binding.workId !== parentRun.workId || binding.userId !== parentRun.work?.userId ||
+        !await copilotSessionHasHistory(binding.sessionId, binding.home)) {
+      throw new CaseIqIntegrationError("The original CaseIQ binding is unavailable. Start a new CaseIQ Terminal session explicitly.");
+    }
+  }
   if ((!parentRun.work && !parentRun.task) || !parentRun.copilotSessionId) {
     throw new Error("This run does not have a resumable Copilot session");
   }
@@ -251,7 +275,10 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
   });
   if (!baselineReady) throw new TerminalResumeNotReadyError();
 
-  const repairResult = await repairLegacyCopilotSessionEvents(parentRun.copilotSessionId);
+  const repairResult = caseIq
+    ? { eventCount: (await readCopilotSessionSnapshot(parentRun.copilotSessionId)).events.length }
+    : await repairLegacyCopilotSessionEvents(parentRun.copilotSessionId);
+  await assertCopilotSessionNotInUse(parentRun.copilotSessionId);
   const beforeTree = await inheritRunSourceBaseline({
     sourceWorkDirectory: sourceArtifactRoot,
     sourceRunId: parentRun.id,
@@ -272,6 +299,7 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
     prompt,
     promptHash: hashWorkContent(prompt),
     engine: "CLI",
+    providerId: parentRun.providerId,
     sessionId: parentRun.copilotSessionId,
     executionPath,
     concurrencyMode: "EXTERNAL_TERMINAL",
@@ -307,6 +335,7 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
         status: "RUNNING",
         trigger: "TERMINAL_RESUME",
         engine: "CLI",
+        providerId: parentRun.providerId,
         executionPath,
         promptSnapshot: snapshot.prompt,
         outputFormat: "json",
@@ -324,7 +353,7 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
         baseCommit,
         startedAt,
         hostname: hostname(),
-        command: "copilot --resume=<session>",
+        command: caseIq ? "CaseIQ --resume=<session> (native Terminal)" : "copilot --resume=<session>",
       },
     }),
     prisma.terminalLaunch.create({
@@ -338,12 +367,19 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
   const launchFile = path.join(process.cwd(), "data", "terminal-launches", `${launchId}.json`);
   const launcherScript = path.join(process.cwd(), "scripts", "workboard-resume.ps1");
   try {
+    const caseIqSpec = caseIq ? await prepareCaseIqTerminal({
+      userId: work!.userId, workId: work!.id, workingDirectory: executionPath,
+      sessionId: parentRun.copilotSessionId, runId, launchId, prompt: "",
+      launch: { packs: [], caseNumber: null, sendPrompt: false }, resume: true,
+    }) : null;
+    if (caseIq) await ensurePrivateRuntimeDirectory(path.dirname(launchFile));
     await mkdir(path.dirname(launchFile), { recursive: true });
     await writeFile(
       launchFile,
       JSON.stringify({
         sessionId: parentRun.copilotSessionId,
         workingDirectory: executionPath,
+        ...(caseIqSpec ? { providerId: CASEIQ_PROVIDER_ID, caseIqRequestFile: caseIqSpec.requestFile } : {}),
       }),
       { encoding: "utf8", flag: "wx" }
     );
@@ -360,19 +396,19 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
         "powershell.exe",
         "-NoLogo",
         "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
+        ...(caseIq ? [] : ["-ExecutionPolicy", "Bypass"]),
         "-File",
-        launcherScript,
-        "-LaunchFile",
-        launchFile,
+        caseIqSpec?.script ?? launcherScript,
+        ...(caseIqSpec?.arguments ?? ["-LaunchFile", launchFile]),
       ],
-      executionPath
+      executionPath,
+      caseIqSpec?.environment
     );
     await prisma.terminalLaunch.updateMany({
       where: { id: launchId, status: "PENDING" },
       data: { status: "LAUNCHED", launcherPid, launchedAt: new Date() },
     });
+    if (caseIqSpec) monitorCaseIqPreparation(caseIqSpec);
     return { runId, launcherPid };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -402,9 +438,9 @@ export async function isTerminalResumeReady(run: {
   id: string;
   taskId: string | null;
   status: string;
-  work: { directoryPath: string } | null;
+  work: { directoryPath: string; sessionPair?: object | null } | null;
 }): Promise<boolean> {
-  if (run.status === "PENDING" || run.status === "RUNNING") return false;
+  if (run.status === "PENDING" || run.status === "RUNNING" || run.work?.sessionPair) return false;
   const paths = run.taskId
     ? getAutomationRunArtifactPaths(run.id)
     : run.work
@@ -414,6 +450,15 @@ export async function isTerminalResumeReady(run: {
 
   const snapshot = await readWorkRunSnapshot(paths.snapshot).catch(() => null);
   if (!snapshot?.finishedAt) return false;
+  if (snapshot.providerId === CASEIQ_PROVIDER_ID) {
+    try {
+      const binding = readNativeSessionBindingSync(snapshot.sessionId);
+      if (!binding?.home || !await copilotSessionHasHistory(snapshot.sessionId, binding.home)) return false;
+    } catch (error) {
+      console.error("[CaseIQ] Native Resume binding could not be verified.", error);
+      return false;
+    }
+  }
   return isRunSourceBaselineReady({
     workDirectory: run.taskId ? paths.outputDirectory : run.work!.directoryPath,
     runId: run.id,
@@ -503,13 +548,14 @@ export async function finalizeFailedTerminalRun(
   return finalizeTerminalRun(runId, "FAILED", errorMessage, finishedAt);
 }
 
-export async function getTerminalSessionActivity(sessionId: string, launchId: string | null, createdAt?: Date) {
-  let sessionActive = false;
+export async function getTerminalSessionActivity(
+  sessionId: string, launchId: string | null, createdAt?: Date, observedAt = Date.now(),
+) {
   try {
-    await assertCopilotSessionNotInUse(sessionId);
+    if (readNativeSessionBindingSync(sessionId)?.home !== null) await assertCopilotSessionNotInUse(sessionId);
   } catch (error) {
     if (!(error instanceof CopilotSessionInUseError)) throw error;
-    sessionActive = true;
+    return { active: true, wrapperExited: false, exitCode: null, starting: false };
   }
   const launchFile = launchId
     ? path.join(process.cwd(), "data", "terminal-launches", `${launchId}.json`)
@@ -519,6 +565,7 @@ export async function getTerminalSessionActivity(sessionId: string, launchId: st
     throw error;
   }) : null;
   let wrapperPid: number | null = null;
+  let wrapperStartTime: string | null = null;
   let exitCode: number | null = null;
   if (content !== null) {
     const launch: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
@@ -531,22 +578,30 @@ export async function getTerminalSessionActivity(sessionId: string, launchId: st
       }
       wrapperPid = launch.wrapperPid;
     }
+    if ("wrapperStartTime" in launch) {
+      if (wrapperPid === null || typeof launch.wrapperStartTime !== "string" ||
+          !WINDOWS_PROCESS_START_TIME.test(launch.wrapperStartTime)) {
+        throw new Error("Terminal wrapper creation identity is invalid; activity could not be verified.");
+      }
+      wrapperStartTime = launch.wrapperStartTime;
+    }
     if ("exitCode" in launch) exitCode = parseTerminalLaunchExitCode(content);
   }
-  const wrapperAlive = wrapperPid !== null && processIsAlive(wrapperPid);
+  const wrapperAlive = wrapperPid !== null && processIsAlive(wrapperPid) &&
+    (wrapperStartTime === null || await windowsProcessMatchesStartTime(wrapperPid, wrapperStartTime));
   const wrapperExited = wrapperPid !== null && !wrapperAlive;
   return {
-    active: sessionActive || exitCode === null && wrapperAlive,
+    active: exitCode === null && wrapperAlive,
     wrapperExited,
     exitCode,
-    starting: !wrapperExited && exitCode === null && createdAt !== undefined && Date.now() - createdAt.getTime() < 120_000,
+    starting: wrapperPid === null && exitCode === null && createdAt !== undefined && observedAt - createdAt.getTime() < 120_000,
   };
 }
 
 export async function reconcileTerminalRun(
   runId: string,
   now = new Date(),
-  { settleStopped = false }: { settleStopped?: boolean } = {}
+  { settleStopped = false, stoppedOnly = false }: { settleStopped?: boolean; stoppedOnly?: boolean } = {}
 ): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
@@ -580,14 +635,46 @@ export async function reconcileTerminalRun(
         select: { id: true },
       });
       if (conflictingRun) return;
+      const activity = await getTerminalSessionActivity(run.copilotSessionId!, terminalLaunch.id, run.createdAt, now.getTime());
+      const active = activity.active;
+      if (activity.starting || (stoppedOnly && active)) {
+        if (terminalLaunch.inactiveSince !== null) {
+          await prisma.terminalLaunch.updateMany({
+            where: { runId: run.id, syncToken: token },
+            data: { inactiveSince: null },
+          });
+        }
+        return;
+      }
       const paths = run.task ? getAutomationRunArtifactPaths(run.id) : getWorkRunArtifactPaths(run.work!.directoryPath, run.id);
       const priorSnapshot = await readWorkRunSnapshot(paths.snapshot);
-      const activity = await getTerminalSessionActivity(run.copilotSessionId!, terminalLaunch.id);
       const persistedExitCode = activity.exitCode;
-      const active = activity.active;
       const launchFile = path.join(process.cwd(), "data", "terminal-launches", `${terminalLaunch.id}.json`);
+      if (run.providerId === CASEIQ_PROVIDER_ID) {
+        const bound = await acceptCaseIqPreparation(run, terminalLaunch.id);
+        if (!bound) {
+          if (!active && !activity.starting && (activity.wrapperExited || persistedExitCode !== null)) {
+            await finalizeWorkRunArtifacts({
+              paths, snapshot: { ...priorSnapshot, status: "FAILED", finishedAt: now.toISOString(), exitCode: persistedExitCode,
+                errorMessage: terminalLaunch.errorMessage ?? "CaseIQ native setup ended before its session was bound. Inspect the native Terminal." },
+              finalOutput: null, diff: "",
+            });
+            await prisma.run.update({ where: { id: run.id }, data: { status: "FAILED", finishedAt: now, exitCode: persistedExitCode,
+              errorMessage: terminalLaunch.errorMessage ?? "CaseIQ native setup did not create a bound session." } });
+            await prisma.terminalLaunch.updateMany({
+              where: { runId: run.id, syncToken: token },
+              data: { status: "FAILED", completedAt: now,
+                errorMessage: terminalLaunch.errorMessage ?? "CaseIQ native setup did not create a bound session." },
+            });
+            if (run.work && run.work.status !== "ARCHIVED") {
+              await prisma.work.update({ where: { id: run.work.id }, data: { status: "ACTIVE" } });
+            }
+          }
+          return;
+        }
+      }
       const history = await readCopilotSessionSnapshot(run.copilotSessionId!).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT" || active || now.getTime() - run.createdAt.getTime() < 120_000) throw error;
+        if (error.code !== "ENOENT" || active) throw error;
         return { events: [], incompleteTail: false, size: 0, modifiedAt: new Date(0) };
       });
       const cursor = priorSnapshot.sessionEventCursorStart ?? 0;
@@ -604,11 +691,8 @@ export async function reconcileTerminalRun(
       const unchanged = terminalLaunch.historySize === history.size &&
         terminalLaunch.historyModifiedAt?.getTime() === history.modifiedAt.getTime();
       const inactiveSince = active ? null : unchanged ? terminalLaunch.inactiveSince ?? now : now;
-      const stoppedForResume = settleStopped && (
-        persistedExitCode !== null || activity.wrapperExited || now.getTime() - run.createdAt.getTime() >= 120_000
-      );
       const settled = !active && (
-        stoppedForResume || inactiveSince !== null && now.getTime() - inactiveSince.getTime() >= 60_000
+        settleStopped || inactiveSince !== null && now.getTime() - inactiveSince.getTime() >= TERMINAL_HISTORY_STABLE_MS
       );
       if (run.status === "UNKNOWN" && unchanged && persistedExitCode === null && terminalLaunch.status === "FAILED" && !active) return;
       const activeState = active ? { status: "RUNNING" as const, finishedAt: null, errorMessage: null } : {};
@@ -636,15 +720,22 @@ export async function reconcileTerminalRun(
         executionPath, workDirectory: run.task ? paths.outputDirectory : run.work!.directoryPath,
         runId: run.id, beforeGitTree: priorSnapshot.gitBeforeTree,
       });
-      await assertCopilotSessionNotInUse(run.copilotSessionId!);
+      const finalActivity = await getTerminalSessionActivity(run.copilotSessionId!, terminalLaunch.id, run.createdAt);
+      if (finalActivity.active || finalActivity.starting) {
+        await prisma.terminalLaunch.updateMany({
+          where: { runId: run.id, syncToken: token },
+          data: { inactiveSince: null },
+        });
+        return;
+      }
       const latest = await readCopilotSessionSnapshot(run.copilotSessionId!).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT" || history.size !== 0) throw error;
         return history;
       });
       if (latest.size !== history.size || latest.modifiedAt.getTime() !== history.modifiedAt.getTime()) return;
       const outcome = history.incompleteTail
-        ? { status: "UNKNOWN" as const, exitCode: persistedExitCode, errorMessage: "Session history ends with an incomplete record" }
-        : resolveTerminalRunOutcome(persistedExitCode, insights.completion);
+        ? { status: "UNKNOWN" as const, exitCode: finalActivity.exitCode, errorMessage: "Session history ends with an incomplete record" }
+        : resolveTerminalRunOutcome(finalActivity.exitCode, insights.completion, run.providerId === CASEIQ_PROVIDER_ID);
       const finalCommit = await getHeadCommit(executionPath).catch(() => null);
       await finalizeWorkRunArtifacts({
         paths,
@@ -724,12 +815,20 @@ function describeTerminalCommand(copilotArgs: string[]): string {
 
 export async function launchNewWorkTerminal(
   userId: string,
-  workId: string
+  workId: string,
+  caseIqOptions?: CaseIqLaunchOptions
 ): Promise<{ runId: string; launcherPid: number | null }> {
   try {
     return await withRunStartLock([`work:${workId}`], async () => {
-      const work = await prisma.work.findFirst({ where: { id: workId, userId } });
+      const work = await prisma.work.findFirst({ where: { id: workId, userId }, include: { sessionPair: true } });
       if (!work) throw new TerminalStartError("Work not found", 404);
+      if (work.sessionPair) throw new TerminalStartError("Continue paired Sessions from the Work's Conversation.");
+      if (work.defaultEngine === "CASEIQ" && !caseIqOptions) {
+        throw new TerminalStartError("Use Create & Run or Execute for CaseIQ. The CaseIQ Runtime runs in WorkBoard, not an ordinary Copilot Terminal.");
+      }
+      if (caseIqOptions && work.hostname && work.hostname !== hostname()) {
+        throw new TerminalStartError("This Work belongs to another machine.");
+      }
       if (work.status === "ARCHIVED") {
         throw new TerminalStartError("Restore this Work before opening Terminal");
       }
@@ -737,7 +836,7 @@ export async function launchNewWorkTerminal(
         where: { workId: work.id },
         select: { id: true },
       });
-      if (priorRun) {
+      if (priorRun && !caseIqOptions) {
         throw new TerminalStartError("A first Terminal session can only be opened before the Work has run");
       }
       if ((await findActiveRunConflicts(userId, work.directoryPath)).length > 0) {
@@ -746,6 +845,9 @@ export async function launchNewWorkTerminal(
 
       const savedPrompt = await readWorkPrompt(work);
       const attachments = await readInitialWorkAttachments(work);
+      if (caseIqOptions?.sendPrompt && attachments.length) {
+        throw new TerminalStartError("CaseIQ interactive attachments must be supplied in native Terminal. Open without automatic Prompt delivery and attach files there.");
+      }
       const runId = randomUUID();
       const launchId = randomUUID();
       const sessionId = randomUUID();
@@ -757,28 +859,30 @@ export async function launchNewWorkTerminal(
       );
       const baseCommit = await getHeadCommit(work.directoryPath).catch(() => null);
       const startedAt = new Date();
-      const copilotArgs = buildNewTerminalSessionArgs({
+      const copilotArgs = caseIqOptions ? [] : buildNewTerminalSessionArgs({
         sessionId,
         workName: work.name,
         prompt: savedPrompt.content,
         promptFileName: work.promptFileName,
         agent: work.agent,
         model: work.model,
-        contextTier: work.contextTier,
-        reasoningEffort: work.reasoningEffort,
+        contextTier: caseIqOptions ? null : work.contextTier,
+        reasoningEffort: caseIqOptions ? null : work.reasoningEffort,
         permissionMode: work.permissionMode,
       });
-      const command = describeTerminalCommand(copilotArgs);
+      const command = caseIqOptions ? "CaseIQ (native Terminal)" : describeTerminalCommand(copilotArgs);
+      const prompt = caseIqOptions && !caseIqOptions.sendPrompt ? "" : savedPrompt.content;
       const snapshot: WorkRunSnapshot = {
         schemaVersion: 1,
         runId,
         workId: work.id,
         workName: work.name,
         promptFileName: work.promptFileName,
-        prompt: savedPrompt.content,
-        promptHash: savedPrompt.hash,
-        attachments,
+        prompt,
+        promptHash: hashWorkContent(prompt),
+        attachments: caseIqOptions ? [] : attachments,
         engine: "CLI",
+        providerId: caseIqOptions ? CASEIQ_PROVIDER_ID : null,
         sessionId,
         executionPath: work.directoryPath,
         concurrencyMode: "EXTERNAL_TERMINAL",
@@ -792,13 +896,13 @@ export async function launchNewWorkTerminal(
         gitBeforeTree: beforeTree,
         gitAfterTree: null,
         sessionEventCursorStart: 0,
-        agent: work.agent,
-        model: work.model,
+        agent: caseIqOptions ? null : work.agent,
+        model: caseIqOptions ? null : work.model,
         fallbackModel: null,
-        contextTier: work.contextTier,
-        reasoningEffort: work.reasoningEffort,
-        permissionMode: work.permissionMode,
-        outputFormat: "text",
+        contextTier: caseIqOptions ? null : work.contextTier,
+        reasoningEffort: caseIqOptions ? null : work.reasoningEffort,
+        permissionMode: caseIqOptions ? "caseiq-managed" : work.permissionMode,
+        outputFormat: caseIqOptions ? "json" : "text",
         timeoutSeconds: null,
       };
       await prepareRunArtifacts(paths, snapshot);
@@ -810,16 +914,17 @@ export async function launchNewWorkTerminal(
             status: "RUNNING",
             trigger: "TERMINAL_START",
             engine: "CLI",
+            providerId: caseIqOptions ? CASEIQ_PROVIDER_ID : null,
             executionPath: work.directoryPath,
-            promptSnapshot: savedPrompt.content,
-            attachmentsJson: attachments.length ? JSON.stringify(attachments) : null,
-            outputFormat: "text",
-            agent: work.agent,
-            model: work.model,
+            promptSnapshot: prompt,
+            attachmentsJson: !caseIqOptions && attachments.length ? JSON.stringify(attachments) : null,
+            outputFormat: snapshot.outputFormat,
+            agent: snapshot.agent,
+            model: snapshot.model,
             fallbackModel: null,
-            contextTier: work.contextTier,
-            reasoningEffort: work.reasoningEffort,
-            permissionMode: work.permissionMode,
+            contextTier: snapshot.contextTier,
+            reasoningEffort: snapshot.reasoningEffort,
+            permissionMode: snapshot.permissionMode,
             outputDir: paths.outputDirectory,
             logPath: paths.stdout,
             copilotSessionId: sessionId,
@@ -847,6 +952,11 @@ export async function launchNewWorkTerminal(
       const launcherScript = path.join(process.cwd(), "scripts", "workboard-resume.ps1");
       let launcherPid: number | null;
       try {
+        const caseIqSpec: CaseIqTerminalSpec | null = caseIqOptions ? await prepareCaseIqTerminal({
+          userId, workId: work.id, workingDirectory: work.directoryPath,
+          sessionId, runId, launchId, prompt, launch: caseIqOptions, resume: false,
+        }) : null;
+        if (caseIqOptions) await ensurePrivateRuntimeDirectory(path.dirname(launchFile));
         await mkdir(path.dirname(launchFile), { recursive: true });
         await writeFile(
           launchFile,
@@ -855,6 +965,7 @@ export async function launchNewWorkTerminal(
             sessionId,
             workingDirectory: work.directoryPath,
             copilotArgs,
+            ...(caseIqSpec ? { providerId: CASEIQ_PROVIDER_ID, caseIqRequestFile: caseIqSpec.requestFile } : {}),
           }),
           { encoding: "utf8", flag: "wx" }
         );
@@ -871,15 +982,15 @@ export async function launchNewWorkTerminal(
             "powershell.exe",
             "-NoLogo",
             "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
+            ...(caseIqOptions ? [] : ["-ExecutionPolicy", "Bypass"]),
             "-File",
-            launcherScript,
-            "-LaunchFile",
-            launchFile,
+            caseIqSpec?.script ?? launcherScript,
+            ...(caseIqSpec?.arguments ?? ["-LaunchFile", launchFile]),
           ],
-          work.directoryPath
+          work.directoryPath,
+          caseIqSpec?.environment
         );
+        if (caseIqSpec) monitorCaseIqPreparation(caseIqSpec);
       } catch (error) {
         await prisma.$transaction([
           prisma.terminalLaunch.deleteMany({ where: { id: launchId } }),

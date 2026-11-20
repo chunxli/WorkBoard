@@ -11,7 +11,7 @@ import { getManagedSessionController } from "@/lib/managed-session-controller";
 import { isNativeCopilotRunActive } from "@/lib/copilot-runner";
 import { getSteeringAvailabilityReason, isWorkSteeringRequestInFlight } from "@/lib/work-steering";
 import { authMode } from "@/lib/auth-mode";
-import { getCopilotSessionEventsPath } from "@/lib/copilot-session-compat";
+import { copilotSessionHasHistory, getCopilotSessionEventsPath } from "@/lib/copilot-session-compat";
 import { getTerminalSessionActivity } from "@/lib/terminal-resume";
 import { findActiveRunConflicts } from "@/lib/run-access";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
@@ -20,6 +20,9 @@ import { parseWorkAttachments } from "@/lib/work-attachments";
 import { attachmentRelativePath } from "@/lib/work-attachment-types";
 import { getWorkQueueBlockedReason, orderPendingWorkRuns, QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
 import { readPinTarget } from "@/lib/conversation-pins";
+import { webFollowUpBlockedReason } from "@/lib/runtime-provider";
+import { readNativeSessionBindingSync } from "@/lib/native-session-bindings";
+import { matchesPairedWorkspace } from "@/lib/work-pair-directories";
 
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "private, no-store", "Vary": "Cookie" };
@@ -42,20 +45,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const work = await prisma.work.findFirst({
     where: { id, userId },
-    select: { id: true, hostname: true, status: true, directoryPath: true, promptHash: true },
+    select: { id: true, hostname: true, status: true, directoryPath: true, promptHash: true, sessionPair: true },
   });
   if (!work) return NextResponse.json({ error: "Work not found" }, { status: 404, headers });
+  if (work.sessionPair && !parsed.data.runId) {
+    return NextResponse.json({ error: "Select Copilot CLI or CaseIQ in this Work's paired Conversation." }, { status: 409, headers });
+  }
   const anchor = await prisma.run.findFirst({
     where: { workId: id, experimentVariantId: null, ...(parsed.data.runId ? { id: parsed.data.runId } : {}) },
     orderBy: { createdAt: "desc" },
-    select: { id: true, status: true, copilotSessionId: true, hostname: true, executionPath: true },
+    select: { id: true, status: true, copilotSessionId: true, hostname: true, executionPath: true, providerId: true, engine: true, trigger: true, taskId: true },
   });
   if (parsed.data.runId && !anchor) return NextResponse.json({ error: "Run not found" }, { status: 404, headers });
   const base: SessionConversationData = {
     sessionId: anchor?.copilotSessionId ?? null, anchorRunId: anchor?.id ?? null,
     continuationParentRunId: null, events: [], runs: [], nextCursor: null, previousCursor: null,
     hasMore: false, hasEarlier: false, incompleteTail: false, revision: null, historyAvailable: false,
-    historyUnavailableReason: null, canFollowUp: false, blockedReason: null, terminalActive: false,
+    historyUnavailableReason: null, sessionUsage: null, canFollowUp: false, blockedReason: null, terminalActive: false,
     canSteer: false, steeringRunId: null, steeringBlockedReason: null, steeringMessages: [],
     promptHash: work.promptHash, pendingPrompt: null,
     canQueue: false, queueParentRunId: null, queueBlockedReason: null, queuedMessageCount: 0, queuedMessages: [],
@@ -64,7 +70,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (work.hostname && work.hostname !== hostname() || anchor?.hostname && anchor.hostname !== hostname()) {
       throw new ConversationReadError("This session is stored on another machine", 409);
     }
-    const conflicts = await findActiveRunConflicts(userId, anchor?.executionPath ?? work.directoryPath);
+    const pairedWork = work.sessionPair ? { directoryPath: work.directoryPath, sessionPair: work.sessionPair } : null;
+    if (pairedWork && (!anchor || work.hostname !== hostname() || anchor.hostname !== hostname() ||
+        anchor.taskId || !["WORK", "FOLLOW_UP"].includes(anchor.trigger) || !matchesPairedWorkspace(pairedWork, anchor))) {
+      throw new ConversationReadError("Select an original paired Session in this Work.", 409);
+    }
+    const conflicts = await findActiveRunConflicts(userId, pairedWork ? work.directoryPath : anchor?.executionPath ?? work.directoryPath, Boolean(pairedWork));
     if (!anchor?.copilotSessionId) {
       if (parsed.data.pin) throw new ConversationReadError("This Run has no available Session for Pins.", 404);
       base.historyUnavailableReason = anchor ? "Session history has not been created yet." : "No session yet.";
@@ -75,6 +86,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       return NextResponse.json(base, { headers });
     }
     const sessionId = anchor.copilotSessionId;
+    let awaitingCaseIqSession = false;
+    if (anchor.providerId === "caseiq") {
+      const binding = readNativeSessionBindingSync(sessionId);
+      if (!binding || binding.userId !== userId || binding.workId !== work.id ||
+          pairedWork && (!anchor.executionPath || path.relative(binding.workingDirectory, anchor.executionPath) !== "")) {
+        base.historyUnavailableReason = "The private CaseIQ session binding is unavailable. Saved Run artifacts remain available.";
+        base.blockedReason = anchor.engine === "CASEIQ"
+          ? "CaseIQ is preparing its private session, or its binding is unavailable. Check this Run's output; do not resume through ordinary CLI or SDK."
+          : "Start a new CaseIQ Terminal session explicitly; do not resume through ordinary CLI or SDK.";
+        base.queueBlockedReason = base.blockedReason;
+        return NextResponse.json(base, { headers });
+      }
+      awaitingCaseIqSession = anchor.engine === "CASEIQ" && binding.home === null;
+    }
     const unrelated = await prisma.run.findFirst({
       where: { copilotSessionId: sessionId, OR: [{ workId: null }, { workId: { not: id } }] },
       select: { id: true },
@@ -82,9 +107,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (unrelated) throw new ConversationReadError("This session is associated with another Work and cannot be combined here", 409);
     const runs = await prisma.run.findMany({
       where: { workId: id, copilotSessionId: sessionId, experimentVariantId: null },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       select: { id: true, status: true, trigger: true, hostname: true, createdAt: true, startedAt: true, finishedAt: true,
-        engine: true, attachmentsJson: true, concurrencyMode: true, resumedFromRunId: true,
+        engine: true, providerId: true, attachmentsJson: true, concurrencyMode: true, resumedFromRunId: true,
         terminalLaunches: { select: { id: true }, take: 1 } },
     });
     if (!work.hostname && !anchor.hostname && !runs.some((run) => run.hostname === hostname()) && authMode !== "local") {
@@ -92,22 +117,29 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     const current = runs[0];
     const managedRun = runs.find((run) => run.status === "RUNNING");
+    if (pairedWork) base.displayRunId = (managedRun
+      ?? orderPendingWorkRuns(runs.filter((run) => run.status === "PENDING"))[0] ?? current)?.id;
     const managedController = managedRun?.engine === "SDK" && managedRun.hostname === hostname()
       ? getManagedSessionController(managedRun.id)
       : null;
-    const ownedNativeRun = managedRun?.engine === "CLI" && managedRun.hostname === hostname()
+    const ownedNativeRun = managedRun && (managedRun.engine === "CLI" || managedRun.engine === "CASEIQ") && managedRun.hostname === hostname()
       && isNativeCopilotRunActive(managedRun.id);
     const currentActive = current && ["PENDING", "RUNNING"].includes(current.status);
-    const activity = managedController || ownedNativeRun
+    const activity = managedController || ownedNativeRun || awaitingCaseIqSession
       ? { active: false, starting: false }
       : await getTerminalSessionActivity(sessionId, current?.terminalLaunches[0]?.id ?? null,
           currentActive && isTerminalRunTrigger(current.trigger) ? current.createdAt : undefined);
     const stoppedRunId = currentActive && isTerminalRunTrigger(current.trigger) && !activity.active && !activity.starting ? current.id : null;
-    const activeOwners = await prisma.run.findMany({
+    const activeWorkRuns = await prisma.run.findMany({
       where: { workId: id, status: { in: ["PENDING", "RUNNING"] }, ...(stoppedRunId ? { id: { not: stoppedRunId } } : {}) },
       select: { id: true, trigger: true, copilotSessionId: true, hostname: true, experimentVariantId: true,
-        createdAt: true, resumedFromRunId: true },
+        createdAt: true, resumedFromRunId: true, executionPath: true, engine: true, providerId: true, taskId: true },
     });
+    const siblingRuns = pairedWork ? new Set(activeWorkRuns.filter((run) =>
+      run.copilotSessionId !== sessionId && run.hostname === hostname() && !run.experimentVariantId && !run.taskId &&
+      ["WORK", "FOLLOW_UP"].includes(run.trigger) && matchesPairedWorkspace(pairedWork, run)).map(({ id }) => id)) : new Set<string>();
+    const activeOwners = activeWorkRuns.filter(({ id }) => !siblingRuns.has(id));
+    const blockingConflicts = conflicts.filter(({ id }) => id !== stoppedRunId && !siblingRuns.has(id));
     base.runs = runs.map((run) => ({ id: run.id, status: run.status, trigger: run.trigger,
       createdAt: run.createdAt.toISOString(), startedAt: run.startedAt?.toISOString() ?? null, finishedAt: run.finishedAt?.toISOString() ?? null }));
     const parent = stoppedRunId ? current : runs.find((run) => !["PENDING", "RUNNING"].includes(run.status) && run.startedAt !== null);
@@ -135,15 +167,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
         ? "External Terminal sessions are read-only."
         : "Steering is available only while a managed Run is actively connected.";
     base.canSteer = base.steeringBlockedReason === null && managedRun !== undefined;
+    const hasRecordedParent = !pairedWork || !!parent && !awaitingCaseIqSession && await copilotSessionHasHistory(sessionId);
     base.blockedReason = work.status === "ARCHIVED" ? "Restore this Work before following up."
       : base.terminalActive ? "This session is open in Terminal. Close the Copilot session before sending."
-        : activeOwners.length || conflicts.some((run) => run.id !== stoppedRunId) ? "Wait for the active Run to finish."
-          : !parent ? "This session has not started yet." : null;
+        : activeOwners.length || blockingConflicts.length ? "Wait for the active Run to finish."
+          : !parent || !hasRecordedParent ? "This Session has no recorded Run to continue." : null;
     const activeIds = new Set(activeOwners.map((run) => run.id));
     base.queueBlockedReason = work.status === "ARCHIVED" ? "Restore this Work before adding messages to its queue."
       : base.terminalActive ? "This session is open in Terminal. Close it before adding messages to the queue."
         : getWorkQueueBlockedReason(activeOwners, sessionId, hostname())
-          ?? (conflicts.some((run) => run.id !== stoppedRunId && !activeIds.has(run.id))
+          ?? (blockingConflicts.some((run) => !activeIds.has(run.id))
             ? "Wait for the active Run in this Work directory to finish." : null);
     base.canQueue = base.queueBlockedReason === null;
     if (base.canQueue) base.queueParentRunId = orderPendingWorkRuns(activeOwners).at(-1)?.id ?? null;
@@ -189,7 +222,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       }) : null;
       if (parsed.data.pin && !pin) throw new ConversationReadError("Pin not found in this Session.", 404);
       const page = pin ? (await readPinTarget(sessionId, pin)).page
-        : await readSessionConversationPage(sessionId, { cursor: parsed.data.cursor, before: parsed.data.before });
+        : await readSessionConversationPage(sessionId, {
+          cursor: parsed.data.cursor, before: parsed.data.before, includeUsage: !parsed.data.before,
+        });
       Object.assign(base, page, { historyAvailable: true });
       const steeringMessages = await prisma.workSteeringMessage.findMany({
         where: { workId: id, sessionId },
@@ -266,14 +301,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       if (error instanceof ConversationReadError) throw error;
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const active = anchor.status === "PENDING" || anchor.status === "RUNNING";
-      base.historyUnavailableReason = active
-        ? "Waiting for this Run to record session history. It will appear automatically when available."
-        : "Stored session history is unavailable. The original Run logs and artifacts are still accessible.";
+      base.historyUnavailableReason = awaitingCaseIqSession
+        ? active
+          ? "CaseIQ is preparing dependencies or authentication. Its native Prompt process has not started yet; see Run startup and output below."
+          : "CaseIQ stopped before starting its native Prompt process. No session messages were recorded; see Run startup and output below."
+        : active
+          ? "Waiting for this Run to record session history. It will appear automatically when available."
+          : "Stored session history is unavailable. The original Run logs and artifacts are still accessible.";
       base.blockedReason ??= active
         ? "Wait for the active Run to record its session history."
         : "Session history is unavailable. Start a new Work Run explicitly.";
     }
     base.canFollowUp = base.historyAvailable && base.blockedReason === null;
+    const runtimeBlock = webFollowUpBlockedReason(current ?? anchor);
+    if (runtimeBlock) {
+      base.canFollowUp = false;
+      base.canQueue = false;
+      base.blockedReason = runtimeBlock;
+      base.queueBlockedReason = runtimeBlock;
+    }
     return NextResponse.json(base, { headers });
   } catch (error) {
     if (error instanceof ConversationReadError) return NextResponse.json({ error: error.message, reset: error.reset }, { status: error.status, headers });

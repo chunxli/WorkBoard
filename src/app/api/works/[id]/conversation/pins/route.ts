@@ -38,7 +38,7 @@ export async function POST(req: NextRequest, { params }: Context) {
   if (!parsed.success) return NextResponse.json({ error: "Invalid Pin target" }, { status: 400, headers });
   try {
     const { id } = await params;
-    const sessionId = await ownedPinSession(id, userId, parsed.data.runId);
+    const sessionId = await ownedPinSession(id, userId, parsed.data.runId, true);
     const { event, text } = await readPinTarget(sessionId, parsed.data);
     const pin = await prisma.workConversationPin.upsert({
       where: { workId_sessionId_eventId_line: { workId: id, sessionId, eventId: event.id, line: parsed.data.line } },

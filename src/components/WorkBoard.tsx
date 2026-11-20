@@ -55,6 +55,7 @@ import RootDirectoryPicker, {
   type RootDirectoryOption,
 } from "@/components/RootDirectoryPicker";
 import StatusBadge from "@/components/StatusBadge";
+import CaseIqRuntimeTag from "@/components/CaseIqRuntimeTag";
 import WorkExecutionFields, {
   workExecutionSettingsPayload,
 } from "@/components/WorkExecutionFields";
@@ -71,16 +72,18 @@ import { updateWorkSchema } from "@/lib/validation";
 type Initialization = "USE_PATH" | "COPY_REPO";
 
 interface WorkSummary {
+  paired?: boolean;
   id: string;
   name: string;
   directoryPath: string;
   promptFileName: string;
   status: "ACTIVE" | "REVIEW" | "ARCHIVED";
-  defaultEngine: "CLI" | "SDK";
+  defaultEngine: "CLI" | "SDK" | "CASEIQ";
   updatedAt: string;
   updatedAtLabel: string;
   automationCount: number;
   latestRunStatus: string | null;
+  latestRunPendingLabel?: string;
   latestRunStatusError?: string | null;
   latestRunId: string | null;
   latestModels: string[];
@@ -171,7 +174,7 @@ export default function WorkBoard({
   const [copyingFolder, setCopyingFolder] = useState(false);
   const [copiedFolderPath, setCopiedFolderPath] = useState<string | null>(null);
   const [openingCopiedFolder, setOpeningCopiedFolder] = useState(false);
-  const [submitting, setSubmitting] = useState<"create" | "run" | "terminal" | null>(null);
+  const [submitting, setSubmitting] = useState<"create" | "run" | "terminal" | "paired" | null>(null);
   const attachments = useMessageAttachments();
   const createdWork = useRef<CreatedWorkDraft | null>(null);
   const [createdWorkId, setCreatedWorkId] = useState<string | null>(null);
@@ -454,7 +457,7 @@ export default function WorkBoard({
     if (submissionBusy.current) return;
     submissionBusy.current = true;
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
-    const action = submitter?.value === "create" || submitter?.value === "terminal"
+    const action = submitter?.value === "create" || submitter?.value === "terminal" || submitter?.value === "paired"
       ? submitter.value
       : "run";
     setSubmitting(action);
@@ -475,13 +478,14 @@ export default function WorkBoard({
           initialization,
           sourceRepoId: initialization === "COPY_REPO" ? sourceRepoId : null,
           ...workExecutionSettingsPayload(executionSettings),
+          ...(action === "paired" ? { startMode: "paired" as const } : {}),
         },
       });
-      if (action === "run") {
-        const runResponse = await fetch(`/api/works/${body.id}/run`, {
+      if (action === "run" || action === "paired") {
+        const runResponse = await fetch(`/api/works/${body.id}/${action === "paired" ? "paired-sessions" : "run"}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+          body: JSON.stringify(action === "paired" ? { action: "start" } : {
             engine: executionSettings.defaultEngine,
             conflictMode: "DIRECT",
           }),
@@ -914,7 +918,7 @@ export default function WorkBoard({
               <p className="text-xs text-neutral-500">
                 Paste images, drop files, or Add files. Up to 10 files, 25 MiB each, 100 MiB total.
                 Files are saved with the Work before it starts. Interactive Terminal receives file paths;
-                use Create &amp; Run for native CLI/SDK attachments.
+                use Create &amp; Run or Create &amp; Run Both to send attachments.
               </p>
               <PromptFileStrip directory={directoryContents} error={promptInsertionError}
                 disabled={submitting !== null || copyingFolder || loadingFolderPrompt || promptComposing}
@@ -949,7 +953,12 @@ export default function WorkBoard({
             <Play size={15} fill="currentColor" aria-hidden="true" />
             {submitting === "run" ? "Creating & starting..." : "Create & Run"}
           </button>
-          {canOpenExplorer && (
+          {canOpenExplorer && <button type="submit" value="paired" disabled={submitting !== null || copyingFolder}
+            className="ui-secondary-button order-2 min-h-10 px-4 py-2.5 font-semibold"
+            title="Start Copilot CLI and CaseIQ with the same Prompt and attachments. Each Session gets its own output folder.">
+            {submitting === "paired" ? "Starting both Sessions..." : "Create & Run Both"}
+          </button>}
+          {canOpenExplorer && executionSettings.defaultEngine !== "CASEIQ" && (
             <button
               type="submit"
               value="terminal"
@@ -1370,9 +1379,9 @@ function SortableWorkCard({
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
-        <span className="rounded-md border border-neutral-800 bg-neutral-950/35 px-2 py-1 font-mono">
-          {work.defaultEngine}
-        </span>
+        {work.paired ? <span className="rounded-md border border-neutral-800 bg-neutral-950/35 px-2 py-1 font-mono">Copilot CLI + CaseIQ</span>
+          : work.defaultEngine === "CASEIQ" ? <CaseIqRuntimeTag title="Default runtime: CaseIQ" />
+          : <span className="rounded-md border border-neutral-800 bg-neutral-950/35 px-2 py-1 font-mono">{work.defaultEngine}</span>}
         <span
           className="inline-flex min-w-0 max-w-44 items-center gap-1 rounded-md border border-neutral-800 bg-neutral-950/35 px-2 py-1 font-mono"
           title={work.latestModels.length > 0 ? work.latestModels.join(", ") : "Automatic model selection"}
@@ -1394,6 +1403,9 @@ function SortableWorkCard({
       </div>
       {work.latestRunStatus === "SYNCING" && (
         <p role="status" className="text-xs text-emerald-200">{TERMINAL_SYNCING_MESSAGE}</p>
+      )}
+      {work.latestRunStatus === "PENDING" && work.latestRunPendingLabel && (
+        <p className="text-xs text-neutral-300">{work.latestRunPendingLabel}</p>
       )}
       {work.latestRunStatusError && (
         <p role="alert" className="break-words text-xs text-red-400">{work.latestRunStatusError}</p>

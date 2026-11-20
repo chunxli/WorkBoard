@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   find: vi.fn(), current: vi.fn(), claim: vi.fn(), update: vi.fn(), count: vi.fn(), workUpdate: vi.fn(),
-  native: vi.fn(), sdk: vi.fn(), controlled: vi.fn(), prepare: vi.fn(), finalize: vi.fn(), attachments: vi.fn(),
-  insights: vi.fn(),
+  native: vi.fn(), sdk: vi.fn(), caseiq: vi.fn(), controlled: vi.fn(), prepare: vi.fn(), finalize: vi.fn(), attachments: vi.fn(),
+  baseline: vi.fn<typeof import("./run-source-snapshot").captureRunSourceBaseline>(),
+  insights: vi.fn(), writeSnapshot: vi.fn(),
   append: vi.fn(), nativeActive: vi.fn(), controller: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
@@ -19,6 +20,9 @@ vi.mock("@/lib/managed-session-controller", async (original) => ({
 vi.mock("@/lib/copilot-sdk-runner", () => ({
   startCopilotSdkRun: mocks.sdk, startCopilotCliControlledRun: mocks.controlled,
 }));
+vi.mock("@/lib/caseiq-runner", async (original) => ({
+  ...await original<typeof import("./caseiq-runner")>(), startCaseIqRun: mocks.caseiq,
+}));
 vi.mock("@/lib/git-safety", () => ({ getHeadCommit: async () => null }));
 vi.mock("@/lib/skill-events", () => ({ detectSkillInvocation: () => false }));
 vi.mock("@/lib/work-attachments", () => ({
@@ -31,10 +35,11 @@ vi.mock("@/lib/run-artifacts", () => ({
     stderr: "C:\\synthetic\\stderr.log", snapshot: "C:\\synthetic\\run.json",
   }),
   readWorkRunSnapshot: async () => null,
+  writeRunSnapshot: mocks.writeSnapshot,
   serializeRunFinalization: async (_id: string, action: () => Promise<void>) => action(),
 }));
 vi.mock("@/lib/run-source-snapshot", () => ({
-  captureRunSourceBaseline: async () => null,
+  captureRunSourceBaseline: mocks.baseline,
   captureRunSourceDiff: async () => ({ afterGitTree: null, diff: "" }),
 }));
 vi.mock("@/lib/copilot-session-compat", () => ({ repairLegacyCopilotSessionEvents: vi.fn() }));
@@ -43,12 +48,16 @@ vi.mock("@/lib/copilot-session-insights", async (original) => ({
   readCopilotSessionInsights: mocks.insights,
 }));
 import { executeWorkRun } from "./work-executor";
+import { getPendingRunPreparation } from "./work-run-preparation-state";
 import { ManagedSessionController } from "./managed-session-controller";
+import { CaseIqRunUnconfirmedError } from "./caseiq-runner";
+import type { startCaseIqRun } from "./caseiq-runner";
 
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.current.mockResolvedValue({ status: "PENDING" });
   mocks.claim.mockResolvedValue({ count: 1 });
+  mocks.baseline.mockResolvedValue(null);
   mocks.count.mockResolvedValue(0);
   mocks.insights.mockResolvedValue(null);
   mocks.nativeActive.mockReturnValue(false);
@@ -57,21 +66,23 @@ beforeEach(() => {
   mocks.attachments.mockResolvedValue([{ type: "file", path: "C:\\synthetic\\new.png", displayName: "new.png" }]);
   const result = {
     exitCode: 0, timedOut: false, cancelled: false, finalOutput: "Synthetic response",
-    cpuTimeMs: null, peakMemoryMb: null, incomplete: false, usage: null,
+    cpuTimeMs: null, peakMemoryMb: null, incomplete: false, usage: null, model: "primary",
   };
   mocks.native.mockResolvedValue(result);
   mocks.sdk.mockResolvedValue(result);
+  mocks.caseiq.mockResolvedValue(result);
   mocks.controlled.mockImplementation(() => { throw new Error("Native CLI must not enter the SDK wrapper"); });
 });
 afterEach(() => { vi.useRealTimers(); });
 
-function run(engine: "CLI" | "SDK", resume: boolean) {
+function run(engine: "CLI" | "SDK" | "CASEIQ", resume: boolean) {
   const work = {
-    id: "work", name: "Synthetic work", directoryPath: "C:\\synthetic", promptFileName: "PROMPT.md",
+    id: "work", userId: "owner", name: "Synthetic work", directoryPath: "C:\\synthetic", promptFileName: "PROMPT.md",
     promptCache: "Original task", defaultEngine: engine,
   };
   return {
     id: "run", workId: work.id, work, status: "PENDING", engine,
+    ...(engine === "CASEIQ" ? { providerId: "caseiq" } : {}),
     executionPath: work.directoryPath, copilotSessionId: "native-session",
     promptSnapshot: resume ? "Only the new follow-up" : "Original task",
     trigger: resume ? "FOLLOW_UP" : "WORK", resumedFromRunId: resume ? "parent" : null,
@@ -86,19 +97,78 @@ vi.mock("@/lib/work-files", () => ({
 }));
 
 describe("Work execution engine routing", () => {
-  it.each(["CLI", "SDK"] as const)("executes a %s Work using only its real engine", async (engine) => {
+  it("reports measured preparation before claiming a direct Run and clears it before native launch", async () => {
+    const workRun = run("CLI", false);
+    const observed = { ...workRun, hostname: null };
+    const entered = Promise.withResolvers<void>();
+    const finishSnapshot = Promise.withResolvers<null>();
+    mocks.find.mockResolvedValue(workRun);
+    mocks.baseline.mockImplementationOnce((_executionPath, _workDirectory, _runId, report) => {
+      report?.({ filesScanned: 1, bytesRead: 130_000_000 });
+      entered.resolve();
+      return finishSnapshot.promise;
+    });
+    const execution = executeWorkRun(workRun.id);
+    try {
+      await Promise.race([entered.promise, execution.then(() => { throw new Error("Run finished without scanning."); })]);
+      expect(getPendingRunPreparation(observed)).toEqual({
+        phase: "snapshot", progress: { filesScanned: 1, bytesRead: 130_000_000 },
+      });
+      expect(mocks.claim).not.toHaveBeenCalled();
+      expect(mocks.native).not.toHaveBeenCalled();
+    } finally {
+      finishSnapshot.resolve(null);
+      await execution;
+    }
+    expect(mocks.native).toHaveBeenCalledOnce();
+    expect(getPendingRunPreparation(observed)).toBeUndefined();
+  });
+
+  it("persists CaseIQ attempt versions before execution and retains them in the final Run snapshot", async () => {
+    const version = { attemptId: "attempt", sourceCommit: "a".repeat(40), sourceBranch: "feature/version",
+      sourceDirty: true, launcherSha256: "b".repeat(64), nativeVersion: "2.0.0" };
+    mocks.find.mockResolvedValue(run("CASEIQ", false));
+    mocks.caseiq.mockImplementationOnce(async (options: Parameters<typeof startCaseIqRun>[0]) => {
+      await options.onVersion?.(version);
+      return { exitCode: 0, timedOut: false, cancelled: false, finalOutput: "Synthetic response",
+        cpuTimeMs: null, peakMemoryMb: null, incomplete: false, usage: null, model: "primary" };
+    });
+    await executeWorkRun("run");
+    expect(mocks.writeSnapshot).toHaveBeenCalledWith("C:\\synthetic\\run.json",
+      expect.objectContaining({ status: "RUNNING", caseIqVersions: [version] }));
+    expect(mocks.finalize).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: expect.objectContaining({ status: "SUCCESS", caseIqVersions: [version] }),
+    }));
+  });
+
+  it("keeps a CaseIQ Work reserved when owned process cleanup cannot be confirmed", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mocks.find.mockResolvedValue(run("CASEIQ", false));
+      mocks.caseiq.mockRejectedValue(new CaseIqRunUnconfirmedError());
+      await executeWorkRun("run");
+      expect(mocks.update).toHaveBeenCalledWith({
+        where: { id: "run" },
+        data: expect.objectContaining({ status: "RUNNING", finishedAt: null, errorMessage: expect.stringContaining("remains reserved") }),
+      });
+      expect(mocks.finalize).not.toHaveBeenCalled();
+      expect(logged).toHaveBeenCalled();
+    } finally { logged.mockRestore(); }
+  });
+  it.each(["CLI", "SDK", "CASEIQ"] as const)("executes a %s Work using only its real engine", async (engine) => {
     mocks.find.mockResolvedValue(run(engine, false));
     await executeWorkRun("run");
-    const selected = engine === "CLI" ? mocks.native : mocks.sdk;
+    const selected = engine === "CASEIQ" ? mocks.caseiq : engine === "CLI" ? mocks.native : mocks.sdk;
     expect(selected).toHaveBeenCalledOnce();
-    expect(engine === "CLI" ? mocks.sdk : mocks.native).not.toHaveBeenCalled();
+    for (const other of [mocks.native, mocks.sdk, mocks.caseiq]) if (other !== selected) expect(other).not.toHaveBeenCalled();
     expect(mocks.controlled).not.toHaveBeenCalled();
     expect(selected).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "native-session", prompt: "Original task", resumeSession: false,
-      ...(engine === "CLI"
+      ...(engine !== "SDK"
         ? { repoPath: "C:\\synthetic", attachmentPaths: ["C:\\synthetic\\new.png"] }
         : { workPath: "C:\\synthetic", attachments: [{ type: "file", path: "C:\\synthetic\\new.png", displayName: "new.png" }] }),
     }));
+    if (engine === "CASEIQ") expect(selected).toHaveBeenCalledWith(expect.objectContaining({ userId: "owner", workId: "work" }));
     expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCESS" }) }));
   });
 

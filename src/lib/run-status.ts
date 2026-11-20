@@ -2,6 +2,7 @@ import { hostname } from "node:os";
 import { authMode } from "@/lib/auth-mode";
 import { getTerminalSessionActivity } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { getPendingRunPreparation } from "@/lib/work-run-preparation-state";
 import { getWorkRunDisplayStatus, type RunStatusSnapshot, type TerminalActivity } from "@/lib/work-run-status";
 
 interface ObservableRun {
@@ -41,11 +42,13 @@ export async function getRunStatusSnapshot(run: ObservableRun): Promise<RunStatu
     const syncError = run.terminalLaunches[0]?.errorMessage;
     if (!observationError && syncError) observationError = `Session synchronization failed: ${syncError}`;
   }
+  const preparation = getPendingRunPreparation(run);
   return {
     id: run.id,
     status: run.status,
     displayStatus: getWorkRunDisplayStatus(run, activity)!,
     terminalActive: activity ? activity.active || activity.starting : null,
     observationError,
+    ...(preparation ? { preparation } : {}),
   };
 }

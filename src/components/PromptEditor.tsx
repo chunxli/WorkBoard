@@ -18,22 +18,26 @@ export default function PromptEditor({
   hasActiveConflict,
   archived,
   embedded = false,
+  paired = false,
+  canStartPair = false,
 }: {
   workId: string;
   promptFileName: string;
   initialContent: string;
   initialHash: string;
-  defaultEngine: "CLI" | "SDK";
+  defaultEngine: "CLI" | "SDK" | "CASEIQ";
   hasActiveConflict: boolean;
   archived: boolean;
   embedded?: boolean;
+  paired?: boolean;
+  canStartPair?: boolean;
 }) {
   const [content, setContent] = useState(initialContent);
   const [savedContent, setSavedContent] = useState(initialContent);
   const [state, setState] = useState<"saved" | "saving" | "error" | "conflict">("saved");
   const [message, setMessage] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
-  const [engineOverride, setEngineOverride] = useState<"CLI" | "SDK" | null>(null);
+  const [engineOverride, setEngineOverride] = useState<"CLI" | "SDK" | "CASEIQ" | null>(null);
   const [conflictMode, setConflictMode] = useState<"DIRECT" | "COPY_ON_CONFLICT">("DIRECT");
   const [starting, setStarting] = useState(false);
   const latestHashRef = useRef(initialHash);
@@ -86,7 +90,7 @@ export default function PromptEditor({
     return operation;
   }, [workId]);
 
-  async function startRun() {
+  async function startRun(startBoth = false) {
     setStarting(true);
     setMessage(null);
     try {
@@ -94,10 +98,10 @@ export default function PromptEditor({
         const saved = await save(content);
         if (!saved) return;
       }
-      const response = await fetch(`/api/works/${workId}/run`, {
+      const response = await fetch(`/api/works/${workId}/${startBoth ? "paired-sessions" : "run"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ engine, conflictMode }),
+        body: JSON.stringify(startBoth ? { action: "start" } : { engine, conflictMode }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -243,7 +247,8 @@ export default function PromptEditor({
           </div>
         </div>
       )}
-      {!archived && (
+      {paired && <p className="text-xs text-neutral-400">Use Conversation to continue either Session. Editing this file does not change sent Prompts.</p>}
+      {!archived && !paired && (
         <div className="flex flex-col justify-between gap-3 border-t border-neutral-800 pt-4 sm:flex-row sm:items-end">
           <div className="flex flex-wrap gap-3">
             <label className="text-xs text-neutral-500">
@@ -251,12 +256,13 @@ export default function PromptEditor({
               <select
                 aria-label="Runtime for this run"
                 value={engine}
-                onChange={(event) => setEngineOverride(event.target.value as "CLI" | "SDK")}
+                onChange={(event) => setEngineOverride(event.target.value as "CLI" | "SDK" | "CASEIQ")}
                 disabled={starting}
                 className="ui-input mt-1.5 block px-3 py-2 text-sm"
               >
                 <option value="CLI">Copilot CLI</option>
                 <option value="SDK">Copilot SDK</option>
+                <option value="CASEIQ">CaseIQ</option>
               </select>
             </label>
             {hasActiveConflict && (
@@ -275,6 +281,9 @@ export default function PromptEditor({
               </label>
             )}
           </div>
+          <div className="flex flex-wrap gap-2">
+          {canStartPair && <button type="button" onClick={() => void startRun(true)}
+            disabled={starting || state === "conflict"} className="ui-secondary-button">Run Both Sessions</button>}
           <button
             type="button"
             onClick={() => void startRun()}
@@ -284,6 +293,7 @@ export default function PromptEditor({
             <Play size={15} fill="currentColor" aria-hidden="true" />
             {starting ? "Starting..." : "Run Work"}
           </button>
+          </div>
         </div>
       )}
       </div>

@@ -22,6 +22,7 @@ import { findActiveRunConflicts } from "@/lib/run-access";
 import { getTerminalSessionActivity, reconcileTerminalRun } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { parseWorkAttachments, resolveWorkAttachments, WorkAttachmentError } from "@/lib/work-attachments";
+import { webFollowUpBlockedReason } from "@/lib/runtime-provider";
 
 export async function POST(
   req: NextRequest,
@@ -37,9 +38,10 @@ export async function POST(
   const { id } = await params;
   const candidate = await prisma.work.findFirst({
     where: { id, userId },
-    select: { id: true },
+    select: { id: true, sessionPair: { select: { workId: true } } },
   });
   if (!candidate) return NextResponse.json({ error: "Work not found" }, { status: 404 });
+  if (candidate.sessionPair) return NextResponse.json({ error: "Select a target in the paired Conversation." }, { status: 409 });
 
   try {
     if (parsed.data.expectedParentRunId) {
@@ -54,8 +56,9 @@ export async function POST(
       }
     }
     const result = await withRunStartLock([`work:${candidate.id}`], async () => {
-      const work = await prisma.work.findFirst({ where: { id, userId } });
+      const work = await prisma.work.findFirst({ where: { id, userId }, include: { sessionPair: true } });
       if (!work) throw new FollowUpConflictError("Work not found", 404);
+      if (work.sessionPair) throw new FollowUpConflictError("Select a target in the paired Conversation.");
       if (work.status === "ARCHIVED") {
         throw new FollowUpConflictError("Restore this Work before following up");
       }
@@ -103,6 +106,8 @@ export async function POST(
         orderBy: { createdAt: "desc" },
         include: { terminalLaunches: { select: { id: true }, take: 1 } },
       });
+      const runtimeBlock = parent ? webFollowUpBlockedReason(parent) : null;
+      if (runtimeBlock) throw new FollowUpConflictError(runtimeBlock);
       if (parsed.data.expectedParentRunId !== undefined && (parent?.id ?? null) !== parsed.data.expectedParentRunId) {
         throw new FollowUpConflictError("The session has changed. Refresh the conversation before sending.");
       }

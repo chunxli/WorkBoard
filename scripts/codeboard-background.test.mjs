@@ -19,6 +19,7 @@ function fixture(settings = {}) {
   const root = realpathSync(mkdtempSync(path.join("scripts", ".workboard-background-")));
   directories.push(root);
   writePrivateFile(path.join(root, ".next", "BUILD_ID"), "prepared-test-build");
+  writePrivateFile(path.join(root, ".next", "server", "instrumentation.js.nft.json"), JSON.stringify({ version: 1, files: [] }));
   writePrivateFile(path.join(root, "node_modules", "next", "dist", "bin", "next"), "test-only");
   const pidFile = path.join(root, "data", "codeboard.pid.json");
   const processes = new Map();
@@ -185,6 +186,27 @@ describe("background autostart lifecycle", () => {
     expect(f.calls.at(-1)[0]).toBe("sync");
   });
 
+  it("protects prepared-build traces before spawning without deleting host runtime files", async () => {
+    const f = fixture();
+    const privateFile = path.join(f.root, "data", "private.json");
+    const trace = path.join(f.root, ".next", "server", "instrumentation.js.nft.json");
+    writePrivateFile(privateFile, "synthetic host-private content");
+    writeFileSync(trace, JSON.stringify({ version: 1, files: [path.relative(path.dirname(trace), privateFile)] }));
+    await runBackground("start", f.options);
+    expect(JSON.parse(readFileSync(trace, "utf8")).files).toEqual([]);
+    expect(readFileSync(privateFile, "utf8")).toBe("synthetic host-private content");
+    expect(f.children).toHaveLength(1);
+  });
+
+  it("never spawns or registers when standalone already contains private runtime data", async () => {
+    const f = fixture();
+    writePrivateFile(path.join(f.root, ".next", "standalone", "data", "private.json"), "synthetic");
+    await expect(runBackground("start", f.options)).rejects.toThrow("Do not deploy");
+    expect(f.children).toHaveLength(0);
+    expect(f.manager.enabled).toBe(false);
+    expect(existsSync(f.pidFile)).toBe(false);
+  });
+
   it.each(["generate", "migrate", "build"])("never spawns or registers after a failed %s command", async (step) => {
     const f = fixture({ skipBuild: false });
     f.options.command = (_binary, args) => ({ status: args[1] === step ? 9 : 0 });
@@ -243,6 +265,68 @@ describe("background autostart lifecycle", () => {
     await runBackground("start", f.options);
     expect(f.children).toHaveLength(0);
     expect(f.manager.enabled).toBe(true);
+  });
+
+  it.each(["start", "login"])("recovers a recycled PID after reboot during %s without signalling or adopting its new owner", async (action) => {
+    const f = fixture();
+    const unrelated = {
+      owned: false, isNext: false, root: null, executable: null, created: "new-boot-system-process",
+    };
+    f.existing({}, unrelated);
+    const current = f.processes.get(3900);
+    f.manager.enabled = true;
+    f.options.portIsOpen = async () => false;
+    if (action === "login") f.options.skipBuild = false;
+    await runBackground(action, f.options);
+    expect(f.processes.get(3900)).toBe(current);
+    expect(f.children).toHaveLength(1);
+    expect(f.children[0].kill).not.toHaveBeenCalled();
+    expect(f.calls.map((call) => call[0])).toEqual(action === "login" ? ["spawn"] : ["spawn", "sync"]);
+    expect(JSON.parse(readFileSync(f.pidFile, "utf8"))).toMatchObject({
+      pid: 4101, processInstance: "instance-4101",
+    });
+    expect(f.messages.join("\n")).toContain("The unrelated process was not signalled");
+    expect(f.manager.enabled).toBe(true);
+  });
+
+  it("reports a recycled PID as stale in status without modifying registration or the unrelated process", async () => {
+    const f = fixture();
+    f.existing({}, { owned: false, isNext: false, created: "new-boot-system-process" });
+    const current = f.processes.get(3900);
+    f.manager.enabled = true;
+    f.options.portIsOpen = async () => false;
+    await runBackground("status", f.options);
+    expect(f.processes.get(3900)).toBe(current);
+    expect(existsSync(f.pidFile)).toBe(false);
+    expect(f.calls).toEqual([]);
+    expect(f.messages.join("\n")).toContain("not managed or running");
+    expect(f.messages).toContain("Login autostart: enabled.");
+  });
+
+  it("does not bypass an occupied port after discarding a positively stale PID", async () => {
+    const f = fixture();
+    f.existing({}, { owned: false, isNext: false, created: "new-boot-system-process" });
+    const current = f.processes.get(3900);
+    await expect(runBackground("start", f.options)).rejects.toThrow("unmanaged process");
+    expect(f.processes.get(3900)).toBe(current);
+    expect(f.children).toHaveLength(0);
+    expect(f.calls).toEqual([]);
+  });
+
+  it.each([
+    [{ processInstance: undefined }, { created: "new-boot-system-process" }],
+    [{}, { created: null }],
+    [{ root: "another-checkout" }, { created: "new-boot-system-process" }],
+    [{}, { created: "original-instance" }],
+  ])("keeps ambiguous or foreign process state fail-closed (%j, %j)", async (state, details) => {
+    const f = fixture();
+    f.existing(state, { owned: false, isNext: false, ...details });
+    f.options.portIsOpen = async () => false;
+    const before = readFileSync(f.pidFile, "utf8");
+    await expect(runBackground("start", f.options)).rejects.toThrow("process instance");
+    expect(readFileSync(f.pidFile, "utf8")).toBe(before);
+    expect(f.children).toHaveLength(0);
+    expect(f.calls).toEqual([]);
   });
 
   it("reports running state and recovery when reconciliation fails for an already-running instance", async () => {
@@ -580,7 +664,7 @@ describe("background autostart lifecycle", () => {
   );
 
   it.runIf(process.platform === "win32")(
-    "verifies native Windows PID ownership/birth, HTTP readiness and stop on an isolated synthetic process",
+    "recovers a recycled Windows PID on login and verifies native ownership, HTTP readiness and safe stop",
     async () => {
       const reservation = createServer();
       await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
@@ -598,9 +682,21 @@ server.listen(port, "127.0.0.1");
 process.once("SIGTERM", () => server.close(() => process.exit(0)));
 `);
       const children = [];
+      const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        cwd: f.root, windowsHide: true, stdio: "ignore",
+        env: { SystemRoot: process.env.SystemRoot },
+      });
+      children.push(unrelated);
+      await once(unrelated, "spawn");
+      writePrivateFile(f.pidFile, JSON.stringify({
+        pid: unrelated.pid, root: f.root, port,
+        nodePath: realpathSync(process.execPath), processInstance: "2000-01-01T00:00:00.0000000Z",
+      }));
+      f.manager.enabled = true;
       const options = {
         root: f.root, port, manager: f.manager,
-        environment: { SystemRoot: process.env.SystemRoot, WORKBOARD_AUTOSTART: "false" },
+        generation: f.manager.generation,
+        environment: { SystemRoot: process.env.SystemRoot, WORKBOARD_AUTOSTART: "true" },
         skipBuild: true, startupTimeoutMs: 15_000, stopTimeoutMs: 8_000,
         output: f.options.output,
         spawn(binary, args, spawnOptions) {
@@ -610,15 +706,18 @@ process.once("SIGTERM", () => server.close(() => process.exit(0)));
         },
       };
       try {
-        await runBackground("start", options);
+        await runBackground("login", options);
         const state = JSON.parse(readFileSync(f.pidFile, "utf8"));
-        expect(state.pid).toBe(children[0].pid);
+        expect(state.pid).toBe(children[1].pid);
         expect(state.processInstance).toMatch(/T.*Z$/);
+        expect(inspectManagedProcess(unrelated.pid, f.root, "win32", port).isNext).toBe(false);
+        expect(f.messages.join("\n")).toContain("The unrelated process was not signalled");
         await runBackground("status", options);
         expect(f.messages.join("\n")).toContain("Work Board is running");
         await runBackground("stop", options);
         expect(existsSync(f.pidFile)).toBe(false);
         expect(f.manager.enabled).toBe(false);
+        expect(inspectManagedProcess(unrelated.pid, f.root, "win32", port)).not.toBeNull();
       } finally {
         for (const child of children) {
           if (child.exitCode === null && child.signalCode === null) {

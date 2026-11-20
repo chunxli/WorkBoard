@@ -42,6 +42,15 @@ export interface WorkRunSteeringArtifact {
   acceptedAt: string;
 }
 
+export interface CaseIqRunVersion {
+  attemptId: string;
+  sourceCommit: string | null;
+  sourceBranch: string | null;
+  sourceDirty: boolean | null;
+  launcherSha256: string;
+  nativeVersion: string;
+}
+
 export interface WorkRunSnapshot {
   schemaVersion: 1;
   runId: string;
@@ -51,7 +60,9 @@ export interface WorkRunSnapshot {
   prompt: string;
   promptHash: string;
   attachments?: WorkAttachment[];
-  engine: "CLI" | "SDK";
+  engine: "CLI" | "SDK" | "CASEIQ";
+  providerId?: string | null;
+  caseIqVersions?: CaseIqRunVersion[];
   sessionId: string;
   executionPath: string;
   concurrencyMode: string;
@@ -138,6 +149,10 @@ async function writeAtomic(filePath: string, content: string): Promise<void> {
   await rename(temporaryPath, filePath);
 }
 
+export async function writeRunSnapshot(filePath: string, snapshot: WorkRunSnapshot): Promise<void> {
+  await writeAtomic(filePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+}
+
 export function getWorkRunArtifactPaths(workDirectory: string, runId: string): RunArtifactPaths {
   return getRunArtifactPaths(path.join(workDirectory, ".workboard", "outputs", runId));
 }
@@ -209,7 +224,7 @@ export async function prepareRunArtifacts(
     writeFile(paths.stderr, "", "utf8"),
     writeFile(paths.transcript, "", "utf8"),
     writeFile(paths.diff, "", "utf8"),
-    writeAtomic(paths.snapshot, `${JSON.stringify(snapshot, null, 2)}\n`),
+    writeRunSnapshot(paths.snapshot, snapshot),
   ]);
 }
 

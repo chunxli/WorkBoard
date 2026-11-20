@@ -32,6 +32,7 @@ export interface ReleaseEntry {
 export const docsNavigation = [
   { id: "release-notes", label: "Release Notes", zh: "版本说明" },
   { id: "quick-start", label: "Quick Start", zh: "快速入门与初始配置" },
+  { id: "caseiq-guides", label: "CaseIQ Guides", zh: "CaseIQ 操作与原生协议" },
   { id: "work-lifecycle", label: "Work Lifecycle", zh: "Work 生命周期" },
   { id: "prompts-files", label: "Prompts & Files", zh: "Prompt 与文件" },
   { id: "runs-sessions", label: "Runs & Sessions", zh: "运行与会话" },
@@ -51,6 +52,11 @@ export const releaseNotes: ReleaseEntry[] = [
       en: "Recent source updates: queued messages, precise conversation Pins and reading improvements",
     },
     notes: [
+      {
+        title: "CaseIQ Web Runtime",
+        zh: "Runtime 新增 CaseIQ：使用用户 Prompt 在原有网页 Create & Run / Execute / Conversation / Follow Up 流程执行，不默认打开 Terminal，不把 CaseIQ 伪装成普通 CLI Agent。原启动器与原生插件/权限保持不变，取消、超时、队列及续跑仍绑定同一 Provider。旧 Terminal 会话单独兼容；Docs 与 Markdown 同源，并如实保留真实认证、模型、案件及遥测验证门槛。",
+        en: "CaseIQ joins Runtime and the normal web Create & Run / Execute / Conversation / Follow Up workflow using your Prompt, without opening Terminal or aliasing a plain CLI agent. Its original launcher, plugins and permissions remain intact; cancellation, timeout, queues and continuation preserve the provider. Legacy Terminal sessions remain separate. Source-backed Docs retain explicit real-auth, model, case and telemetry verification boundaries.",
+      },
       {
         title: "Precise Conversation Pins",
         zh: "助手输出的段落、标题、列表和代码行右侧新增 Pin；右下方 Pins 按当前 Session 保存到数据库，刷新或换浏览器仍保留。点击定位并高亮精确位置，旧内容直接加载历史片段，可前后翻页或返回最新消息；支持取消 Pin，不改写会话或自动发送。源历史缺失或被改写时显示错误，不跳到其他内容。",
@@ -163,8 +169,8 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Terminal Lifecycle Hardening",
-        zh: "Terminal 历史每分钟同步，启动时补扫；运行中不结束 Run，停止后依据退出码或完整历史收口。IN TERMINAL、浅绿色 SYNCING / TERMINAL 区分活动、收口和缺少完成证据，不因关窗口就判成功。",
-        en: "Minute history sync catches up at startup, preserves active Runs and settles stopped ones from exit codes or complete history. IN TERMINAL and light-green SYNCING / TERMINAL distinguish activity, settlement and missing evidence; closing a window is not success.",
+        zh: "Terminal 运行历史每分钟保存，启动时补扫。后台每两秒轻量检查终端是否停止，历史稳定后依据退出码或完整回复收口。IN TERMINAL、浅绿色 SYNCING / TERMINAL 区分活动、收口和缺少完成证据，不因关窗口就判成功。",
+        en: "Active Terminal history checkpoints once a minute and catches up at startup. A lightweight check detects stops every two seconds and settles stable history based on exit codes or complete replies. IN TERMINAL and light-green SYNCING / TERMINAL distinguish activity, settlement and missing evidence; closing a window is not success.",
       },
       {
         title: "In-App Documentation",
@@ -369,13 +375,13 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Execution Settings",
-        zh: "执行设置、Settings 和 Execute 恢复 Copilot CLI / Copilot SDK 选择。内置默认 CLI，但尊重用户显式保存的 SDK 默认值。CLI 直接执行本机 copilot -p，不经过 SDK 或 headless RPC；SDK 保留当前会话能力及 MCP blocker。Execute 的覆盖仅作用于当次 Run，每个 Run 冻结真实引擎与设置，不批量改写已有 Work 或历史。Follow Up 继承父 Run 的引擎和 session，而不是下一次 Execute 的选择。布局与切换选项卡时的草稿保持不变。",
-        en: "Execution settings, Settings and Execute offer Copilot CLI / Copilot SDK. CLI is the built-in default, while explicitly saved SDK defaults are respected. CLI directly runs the installed copilot -p command without SDK/headless RPC; SDK retains its current controls and MCP blocker. An Execute override affects that Run only; each Run freezes its actual engine/settings without migrating existing Works or history. Follow Up inherits the parent's engine and session, not the next Execute selection. Layout and tab-switch draft preservation remain unchanged.",
+        zh: "执行设置、Settings 和 Execute 提供 Copilot CLI / Copilot SDK / CaseIQ 选择。内置默认 CLI，但尊重用户保存的默认值。CLI 直接执行本机 copilot -p；CaseIQ 通过原始启动器准备后运行原生 Prompt，回答仍在网页；两者都不借用 SDK。SDK 保留当前会话能力及 MCP blocker。Execute 覆盖仅作用于当次 Run，每个 Run 冻结真实引擎、Provider 和设置，不改写历史。Follow Up 继承父 Run 的引擎和 session，而不是下一次 Execute 的选择。",
+        en: "Execution settings, Settings and Execute offer Copilot CLI / Copilot SDK / CaseIQ. CLI remains the built-in default and saved defaults are respected. CLI directly runs copilot -p; CaseIQ prepares through its original launcher and returns its native Prompt output to the web. Neither borrows SDK session control. Execute overrides affect that Run only; each Run freezes its engine, provider and settings. Follow Up inherits its parent's engine and session rather than the next Execute selection.",
       },
       {
         title: "Compact Work Details",
-        zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；左右栏维持原宽，额外空间留给对话，其他页面仍居中。Work 信息、会话视图、Run 状态与快捷操作合并为一条顶部工具栏，吸附在全局导航下。桌面工具栏控件高 32px，触控目标至少 44px。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。队列有等待消息时，工具栏保留当前 Run，不跳到队列尾部。长名称可悬停或展开 Work details 查看；历史数量仅表示已加载的 Run（包括等待中的消息），不是终身总数。右侧文件区可展开目录、在新标签页打开文件或插入路径，底部提供当前 Session 的 Pins；窄屏在 Files 选项卡访问。",
-        en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters. Side columns keep their widths, giving extra space to the conversation; other pages stay centered. Work identity, session views, Run state and shortcuts share a compact toolbar pinned below global navigation. Desktop toolbar controls are 32px with at least 44px touch targets. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up focuses the draft; the composer stays docked while messages scroll independently. Waiting messages do not move the toolbar from the current Run to the queue tail. Full titles remain in Work details; history counts loaded Runs, including waiting messages, not the lifetime total. The right pane expands folders, opens files or inserts paths, with this Session's Pins below; narrow screens use the Files tab.",
+        zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；其他页面仍居中。横向拖动 Conversation 两边的分隔线可分别调整左右栏宽度，当前浏览器会记住宽度；双击分隔线恢复该侧默认宽度，聚焦分隔线后也可用左右方向键调整。Work 信息、会话视图、Run 状态与快捷操作合并为一条顶部工具栏，吸附在全局导航下。桌面工具栏控件高 32px，触控目标至少 44px。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。队列有等待消息时，工具栏保留当前 Run，不跳到队列尾部。长名称可悬停或展开 Work details 查看；历史数量仅表示已加载的 Run（包括等待中的消息），不是终身总数。右侧文件区可展开目录、在新标签页打开文件或插入路径，底部提供当前 Session 的 Pins；窄屏在 Files 选项卡访问。",
+        en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters; other pages stay centered. Drag the dividers beside Conversation to resize each visible side pane. The browser remembers the widths; double-click a divider to reset its side, or focus it and use the Left/Right arrow keys. Work identity, session views, Run state and shortcuts share a compact toolbar pinned below global navigation. Desktop toolbar controls are 32px with at least 44px touch targets. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up focuses the draft; the composer stays docked while messages scroll independently. Waiting messages do not move the toolbar from the current Run to the queue tail. Full titles remain in Work details; history counts loaded Runs, including waiting messages, not the lifetime total. The right pane expands folders, opens files or inserts paths, with this Session's Pins below; narrow screens use the Files tab.",
       },
       {
         title: "Folder List and Work Name",
@@ -429,8 +435,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Run Startup States",
-        zh: "Run 入队后、分配执行主机和 Session 前显示排队或启动中，不将空主机名误报为其他机器。只有已确认的本机活跃 Session 才提供实时操作，明确属于其他主机时仍拒绝访问。PENDING/RUNNING 阶段尚未生成会话历史时显示等待记录，由正常轮询自动恢复，不提示重复启动任务；已结束 Run 缺失历史时仍明确提示原始日志与产物可用。",
-        en: "Queued Runs show waiting/starting until their execution host and session are assigned; an empty hostname is not a foreign-machine error. Live actions still require a confirmed local active session, and known foreign hosts remain blocked. Missing recorded history during PENDING/RUNNING is shown as waiting and recovers through normal polling, without suggesting a duplicate Run. Missing history after a Run finishes still reports the original logs and artifacts as available.",
+        zh: "PENDING 时，Work 和 Run 详情明确显示等待开始或实际准备步骤，例如准备 Run 文件、恢复 Session、生成目录快照。扫描目录时显示已扫描文件数和已读取数据量，不估算百分比或剩余时间；Copilot 此时尚未启动。状态和扫描进度自动更新，不改变排队、权限或取消逻辑。运行中尚未生成历史仍显示等待记录；已结束 Run 缺少历史时仍可查看日志和产物。",
+        en: "While PENDING, Work and Run details distinguish waiting to start from observed preparation steps such as preparing Run files, resuming a session, or creating the workspace snapshot. Directory scans show measured files scanned and bytes read, not a percent or ETA; Copilot has not started. Status and scan progress update automatically without changing queueing, permissions or cancellation. Running sessions without history still show a waiting message, and finished Runs without history retain their logs and artifacts.",
       },
       {
         title: "Live Run Duration",
@@ -542,13 +548,13 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Terminal Start, Resume & Sync",
-        zh: "首次运行可创建交互 Session；完成 Run 可恢复同一 Session。每分钟同步已写入的历史，停止并稳定一分钟后收口，不再使用 callback 或手工 Sync。",
-        en: "Create or resume an interactive session. Persisted history syncs every minute; stopped sessions settle after a minute of stable history, without callbacks or manual Sync.",
+        zh: "首次运行可创建交互 Session；完成 Run 可恢复同一 Session。运行中每分钟保存历史，停止检查与历史保存分开：每两秒检查一次，确认停止且历史至少两秒未变化后收口，无需手工 Sync。",
+        en: "Create or resume an interactive session. Active history checkpoints every minute; a separate two-second stop check settles sessions once stopped history has been unchanged for at least two seconds, without manual Sync.",
       },
       {
         title: "Terminal Activity & Settlement",
-        zh: "Work 卡片、Work 详情与 Run 详情统一显示状态：IN TERMINAL 表示仍在运行或启动；浅绿色 SYNCING 表示 Terminal 已停止，历史尚在收口；缺少完成证据时显示浅绿色 TERMINAL（内部 UNKNOWN），不会因关闭窗口就判成功。Resume 与对话区 Follow Up 可先尝试安全收口，再检查 Session 锁、历史、源状态及冲突；失败会明确提示并保留输入。无法确认活动状态时不开放 Resume。",
-        en: "Work cards and both detail pages use consistent status: IN TERMINAL means active or starting; light-green SYNCING means stopped with history settlement pending. Missing completion evidence shows light-green TERMINAL (internally UNKNOWN), never success just because a window closed. Resume and inline Follow Up may safely settle the parent first, then check session locks, history, source state, and conflicts. Failures stay explicit and retain the draft; unverified activity does not unlock Resume.",
+        zh: "Work 卡片、Work 详情与 Run 详情统一显示状态：IN TERMINAL 表示仍在运行或启动；浅绿色 SYNCING 表示 Terminal 已停止，历史尚在收口，详情页此时不显示整个 Run 的耗时。缺少完成证据时显示浅绿色 TERMINAL（内部 UNKNOWN），不会因关闭窗口就判成功。Resume 与对话区 Follow Up 可先尝试安全收口，再检查 Session 锁、历史、源状态及冲突；失败会明确提示并保留输入。无法确认活动状态时不开放 Resume。",
+        en: "Work cards and both detail pages use consistent status: IN TERMINAL means active or starting; light-green SYNCING means stopped with history settlement pending, without the full Run timer in either detail page. Missing completion evidence shows light-green TERMINAL (internally UNKNOWN), never success just because a window closed. Resume and inline Follow Up may safely settle the parent first, then check session locks, history, source state, and conflicts. Failures stay explicit and retain the draft; unverified activity does not unlock Resume.",
       },
       {
         title: "Recovery & Cancellation",
@@ -757,8 +763,8 @@ export const operationalLimits: BilingualText[] = [
     en: "System notifications use at-most-once claims; a crash after claim can lose one toast, but it will not be duplicated.",
   },
   {
-    zh: "外部 Terminal 历史每分钟同步，需要服务持续运行。停止后通常 1–2 分钟收口，期间显示 SYNCING 而不是 RUNNING；缺少退出码和完整完成证据时显示 TERMINAL（内部 UNKNOWN），后续可恢复。VS Code 按钮目前仅打开目录，不自动关联原生 Chat session。",
-    en: "Terminal histories sync every minute while the server runs. Stopped sessions usually settle within 1–2 minutes, showing SYNCING rather than RUNNING meanwhile. Missing exit codes and incomplete evidence show TERMINAL (internally UNKNOWN) for later recovery. VS Code currently opens the folder only, without native Chat session tracking.",
+    zh: "服务运行时会定期保存外部 Terminal 历史。确认终端停止且历史稳定后，通常几秒内收口，期间显示 SYNCING。缺少退出码和完整完成证据时显示 TERMINAL（内部 UNKNOWN），后续可恢复。VS Code 按钮目前仅打开目录，不自动关联原生 Chat session。",
+    en: "External Terminal history is checkpointed while the server runs. Once a stop and stable history are confirmed, settlement usually takes a few seconds, with SYNCING displayed meanwhile. Missing exit codes and incomplete evidence show TERMINAL (internally UNKNOWN) for later recovery. VS Code currently opens the folder only, without native Chat session tracking.",
   },
   {
     zh: "大型目录复制会包含依赖、build output、隐藏文件和 Git metadata；执行前检查磁盘空间。",

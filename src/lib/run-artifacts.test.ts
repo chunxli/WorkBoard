@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureWorktreeTree, getWorktreeSnapshotDiff } from "./git-safety";
 import {
   checkpointRunHistory,
@@ -12,6 +12,8 @@ import {
   prepareWorkRunArtifacts,
   readRunDiffPreview,
   readRunLogTail,
+  readWorkRunSnapshot,
+  writeRunSnapshot,
   type WorkRunSnapshot,
 } from "./run-artifacts";
 import {
@@ -19,6 +21,7 @@ import {
   createDirectorySnapshotDiff,
   readDirectorySnapshot,
   writeDirectorySnapshot,
+  type DirectorySnapshotProgress,
 } from "./directory-snapshot";
 import {
   captureRunSourceBaseline,
@@ -36,11 +39,50 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
+it("reports bytes while a large workspace file is still being scanned", async () => {
+  const directory = await temporaryDirectory();
+  const bytes = 2 * 1024 * 1024;
+  await writeFile(path.join(directory, "fixture.bin"), Buffer.alloc(bytes));
+  await mkdir(path.join(directory, ".workboard"));
+  await writeFile(path.join(directory, ".workboard", "ignored.txt"), "not scanned");
+  const updates: DirectorySnapshotProgress[] = [];
+  let time = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => time += 250);
+  try {
+    await captureDirectorySnapshot(directory, undefined, (progress) => updates.push(progress));
+  } finally { clock.mockRestore(); }
+  expect(updates[0]).toEqual({ filesScanned: 0, bytesRead: 0 });
+  expect(updates.some((progress) => progress.filesScanned === 0 && progress.bytesRead > 0 && progress.bytesRead < bytes)).toBe(true);
+  expect(updates.at(-1)).toEqual({ filesScanned: 1, bytesRead: bytes });
+});
+
 afterEach(async () => {
   await Promise.all(cleanupPaths.splice(0).map((entry) => rm(entry, { recursive: true, force: true })));
 });
 
 describe("Git Work snapshots", () => {
+  it("retains CaseIQ version observations in Run metadata without truncating live logs", async () => {
+    const work = await temporaryDirectory();
+    const snapshot: WorkRunSnapshot = {
+      schemaVersion: 1, runId: "version-run", workId: "work", workName: "Synthetic version recording",
+      promptFileName: null, prompt: "Synthetic", promptHash: "fixture", engine: "CASEIQ", providerId: "caseiq",
+      sessionId: "session", executionPath: work, concurrencyMode: "DIRECT", status: "RUNNING",
+      startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, errorMessage: null,
+      gitBeforeTree: null, gitAfterTree: null,
+    };
+    const paths = await prepareWorkRunArtifacts(work, snapshot.runId, snapshot);
+    await writeFile(paths.stdout, "Existing live preparation output\n");
+    const caseIqVersions = [{ attemptId: "attempt", sourceCommit: "a".repeat(40), sourceBranch: "feature/current",
+      sourceDirty: true, launcherSha256: "b".repeat(64), nativeVersion: "2.0.0" }];
+    await writeRunSnapshot(paths.snapshot, { ...snapshot, caseIqVersions });
+    expect(await readWorkRunSnapshot(paths.snapshot)).toMatchObject({ caseIqVersions });
+    expect(await readFile(paths.stdout, "utf8")).toBe("Existing live preparation output\n");
+    await finalizeWorkRunArtifacts({
+      paths, snapshot: { ...snapshot, status: "SUCCESS", caseIqVersions }, finalOutput: "Synthetic", diff: "",
+    });
+    expect(await readWorkRunSnapshot(paths.snapshot)).toMatchObject({ status: "SUCCESS", caseIqVersions });
+  });
+
   it("captures tracked and untracked changes while excluding .workboard output", async () => {
     const repository = await temporaryDirectory();
     await executeFile("git", ["init"], { cwd: repository });

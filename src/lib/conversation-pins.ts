@@ -3,13 +3,14 @@ import { hostname } from "node:os";
 import { prisma } from "@/lib/prisma";
 import { ConversationReadError, readSessionConversationPage, type ConversationEvent } from "@/lib/session-conversation";
 import type { ConversationPin } from "@/lib/conversation-pin-types";
+import { readNativeSessionBindingSync } from "@/lib/native-session-bindings";
 
-export async function ownedPinSession(workId: string, userId: string, runId: string): Promise<string> {
+export async function ownedPinSession(workId: string, userId: string, runId: string, requireNativeHistory = false): Promise<string> {
   const work = await prisma.work.findFirst({ where: { id: workId, userId }, select: { id: true, hostname: true } });
   if (!work) throw new ConversationReadError("Work not found", 404);
   const run = await prisma.run.findFirst({
     where: { id: runId, workId, experimentVariantId: null },
-    select: { copilotSessionId: true, hostname: true },
+    select: { copilotSessionId: true, hostname: true, providerId: true },
   });
   if (!run?.copilotSessionId) throw new ConversationReadError("This Run has no available session.", 404);
   if (work.hostname && work.hostname !== hostname() || run.hostname && run.hostname !== hostname()) {
@@ -20,6 +21,12 @@ export async function ownedPinSession(workId: string, userId: string, runId: str
     select: { id: true },
   });
   if (unrelated) throw new ConversationReadError("This session is associated with another Work.", 409);
+  if (requireNativeHistory && run.providerId === "caseiq") {
+    const binding = readNativeSessionBindingSync(run.copilotSessionId);
+    if (!binding?.home || binding.userId !== userId || binding.workId !== workId) {
+      throw new ConversationReadError("The private CaseIQ history binding is unavailable.", 409);
+    }
+  }
   return run.copilotSessionId;
 }
 

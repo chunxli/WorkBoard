@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getRunStatusSnapshot } from "./run-status";
+import { beginWorkRunPreparation } from "./work-run-preparation-state";
 
 const { activity, environment } = vi.hoisted(() => ({
   activity: vi.fn(),
@@ -23,6 +24,27 @@ beforeEach(() => {
 });
 
 describe("read-only Run activity snapshots", () => {
+  it("reports only the current pending Work Run's local preparation", async () => {
+    const pending = { ...run, status: "PENDING", trigger: "WORK", hostname: null };
+    const tracking = beginWorkRunPreparation(run.id);
+    const progress = { filesScanned: 3, bytesRead: 45 };
+    try {
+      tracking.report({ phase: "snapshot", progress });
+      expect(await getRunStatusSnapshot(pending)).toMatchObject({
+        status: "PENDING", displayStatus: "PENDING", preparation: { phase: "snapshot", progress },
+      });
+      for (const other of [
+        { ...pending, id: "another-run" },
+        { ...pending, hostname: "remote-host" },
+        { ...pending, status: "RUNNING" },
+        { ...pending, trigger: "TERMINAL_START" },
+      ]) {
+        expect(await getRunStatusSnapshot(other)).not.toHaveProperty("preparation");
+      }
+    } finally { tracking.finish(); }
+    expect(await getRunStatusSnapshot(pending)).not.toHaveProperty("preparation");
+  });
+
   it.each([
     { active: true, starting: false, displayStatus: "IN_TERMINAL", terminalActive: true },
     { active: false, starting: true, displayStatus: "IN_TERMINAL", terminalActive: true },

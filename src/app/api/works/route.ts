@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveRepoWorkdir } from "@/lib/repo-workdir";
@@ -7,12 +8,17 @@ import { getSessionUserId } from "@/lib/session";
 import { createWorkSchema } from "@/lib/validation";
 import {
   provisionWorkDirectory,
+  resolveWorkDirectory,
   unregisterWorkDirectory,
   WorkFileError,
 } from "@/lib/work-files";
 import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
 import { workDefaultsPayload } from "@/lib/execution-defaults";
 import { reconcileMissingWorkDirectories } from "@/lib/work-directory-reconciler";
+import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
+import { getCaseIqInstallationPaths } from "@/lib/caseiq-installation";
+import { localTerminalAvailable } from "@/lib/local-terminal-policy";
+import { assertPairedInputDirectory, WorkPairError } from "@/lib/work-pair-directories";
 
 export async function GET(req: NextRequest) {
   const userId = await getSessionUserId();
@@ -62,6 +68,13 @@ export async function POST(req: NextRequest) {
   const workId = randomUUID();
   let diskRecord: Awaited<ReturnType<typeof provisionWorkDirectory>> | null = null;
   try {
+    if (parsed.data.startMode === "paired") {
+      if (!localTerminalAvailable(req.headers.get("host") ?? req.nextUrl.host)) {
+        throw new WorkPairError("Paired Sessions require the local Windows Work Board.", 403);
+      }
+      const installation = await getCaseIqInstallationPaths();
+      await assertPairedInputDirectory(resolveWorkDirectory(parsed.data.directoryPath), path.dirname(installation.launcherPath), true);
+    }
     const firstPosition = await prisma.work.aggregate({
       where: { userId, status: { not: "ARCHIVED" } },
       _min: { position: true },
@@ -101,6 +114,9 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     if (diskRecord) {
       await unregisterWorkDirectory(diskRecord);
+    }
+    if (error instanceof WorkPairError || error instanceof CaseIqIntegrationError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
     }
     if (error instanceof WorkFileError) {
       const status = ["destination_not_empty", "invalid_manifest"].includes(error.code) ? 409 : 400;

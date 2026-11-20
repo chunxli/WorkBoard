@@ -20,8 +20,9 @@ export async function POST(
 
   try {
     const experiment = await withRunStartLock([`work:${id}`], async () => {
-      const work = await prisma.work.findFirst({ where: { id, userId } });
+      const work = await prisma.work.findFirst({ where: { id, userId }, include: { sessionPair: true } });
       if (!work) throw new ExperimentStartError("Work not found", 404);
+      if (work.sessionPair) throw new ExperimentStartError("Use the existing paired Conversation instead of creating experiment Sessions.");
       if (work.status === "ARCHIVED") {
         throw new ExperimentStartError("Restore this Work before running an experiment");
       }

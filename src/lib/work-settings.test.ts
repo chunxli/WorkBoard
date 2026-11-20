@@ -18,6 +18,11 @@ const validWork = {
 };
 
 describe("Work execution settings", () => {
+  it("accepts CaseIQ in Work creation, settings and normal web execution", () => {
+    expect(createWorkSchema.parse({ ...validWork, defaultEngine: "CASEIQ" }).defaultEngine).toBe("CASEIQ");
+    expect(updateWorkSchema.parse({ defaultEngine: "CASEIQ" })).toEqual({ defaultEngine: "CASEIQ" });
+    expect(runWorkSchema.parse({ engine: "CASEIQ" })).toEqual({ engine: "CASEIQ", conflictMode: "DIRECT" });
+  });
   it("accepts a trimmed name-only update without changing execution settings or the directory", () => {
     expect(updateWorkSchema.parse({ name: "  Renamed Work  " })).toEqual({ name: "Renamed Work" });
     expect(updateWorkSchema.shape.name.unwrap().parse("  Renamed Work  ")).toBe("Renamed Work");

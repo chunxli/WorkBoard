@@ -22,7 +22,7 @@ interface CreateExperimentOptions {
   skillPaths: string[];
   includeBaseline: boolean;
   invocationMode: "EXPLICIT" | "AUTO";
-  engine: "CLI" | "SDK";
+  engine: "CLI" | "SDK" | "CASEIQ";
 }
 
 export async function createAndRunExperiment(options: CreateExperimentOptions): Promise<{

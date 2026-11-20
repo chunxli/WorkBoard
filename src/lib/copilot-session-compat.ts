@@ -1,6 +1,7 @@
 import { copyFile, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { boundNativeSessionHome } from "@/lib/native-session-bindings";
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const repairQueues = new Map<string, Promise<SessionRepairResult>>();
@@ -39,13 +40,13 @@ export class CopilotSessionInUseError extends Error {
 
 function getCopilotHome(baseDirectory?: string): string {
   return path.resolve(
-    baseDirectory ?? process.env.COPILOT_HOME ?? path.join(os.homedir(), ".copilot")
+    /* turbopackIgnore: true */ baseDirectory ?? process.env.COPILOT_HOME ?? path.join(os.homedir(), ".copilot")
   );
 }
 
 function getSessionPaths(sessionId: string, baseDirectory?: string) {
   if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error("Invalid Copilot session ID");
-  const directory = path.join(getCopilotHome(baseDirectory), "session-state", sessionId);
+  const directory = path.join(/* turbopackIgnore: true */ getCopilotHome(baseDirectory ?? boundNativeSessionHome(sessionId)), "session-state", sessionId);
   return { directory, eventsPath: path.join(directory, "events.jsonl") };
 }
 
@@ -53,18 +54,27 @@ export function getCopilotSessionEventsPath(sessionId: string, baseDirectory?: s
   return getSessionPaths(sessionId, baseDirectory).eventsPath;
 }
 
-export async function copilotSessionExists(
+async function statCopilotSessionEvents(
   sessionId: string,
   baseDirectory?: string
-): Promise<boolean> {
+) {
   const { eventsPath } = getSessionPaths(sessionId, baseDirectory);
   try {
-    return (await stat(eventsPath)).isFile();
+    return await stat(/* turbopackIgnore: true */ eventsPath);
   } catch (error) {
     const code = error instanceof Error && "code" in error ? String(error.code) : "";
-    if (code === "ENOENT") return false;
+    if (code === "ENOENT") return null;
     throw error;
   }
+}
+
+export async function copilotSessionExists(sessionId: string, baseDirectory?: string): Promise<boolean> {
+  return (await statCopilotSessionEvents(sessionId, baseDirectory))?.isFile() ?? false;
+}
+
+export async function copilotSessionHasHistory(sessionId: string, baseDirectory?: string): Promise<boolean> {
+  const events = await statCopilotSessionEvents(sessionId, baseDirectory);
+  return events !== null && events.isFile() && events.size > 0;
 }
 
 function legacyModeValue(value: unknown, field: string): boolean {
@@ -151,7 +161,7 @@ export async function readCompatibleCopilotSessionEvents(
   baseDirectory?: string
 ): Promise<unknown[]> {
   const { eventsPath } = getSessionPaths(sessionId, baseDirectory);
-  const content = await readFile(eventsPath, "utf8");
+  const content = await readFile(/* turbopackIgnore: true */ eventsPath, "utf8");
   return upgradeLegacySessionContent(content).events;
 }
 
@@ -160,8 +170,8 @@ export async function readCopilotSessionSnapshot(
   baseDirectory?: string
 ): Promise<{ events: unknown[]; incompleteTail: boolean; size: number; modifiedAt: Date }> {
   const { eventsPath } = getSessionPaths(sessionId, baseDirectory);
-  const content = await readFile(eventsPath, "utf8");
-  const file = await stat(eventsPath);
+  const content = await readFile(/* turbopackIgnore: true */ eventsPath, "utf8");
+  const file = await stat(/* turbopackIgnore: true */ eventsPath);
   const boundary = content.lastIndexOf("\n") + 1;
   const tail = content.slice(boundary);
   let incompleteTail = false;
@@ -194,7 +204,7 @@ export function processIsAlive(pid: number): boolean {
 }
 
 async function assertSessionNotInUse(directory: string): Promise<void> {
-  const entries = await readdir(directory).catch((error: NodeJS.ErrnoException) => {
+  const entries = await readdir(/* turbopackIgnore: true */ directory).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [];
     throw error;
   });
@@ -222,15 +232,15 @@ async function repairSessionEvents(
 ): Promise<SessionRepairResult> {
   const { directory, eventsPath } = getSessionPaths(sessionId, baseDirectory);
   await assertSessionNotInUse(directory);
-  const before = await stat(eventsPath);
-  const original = await readFile(eventsPath, "utf8");
+  const before = await stat(/* turbopackIgnore: true */ eventsPath);
+  const original = await readFile(/* turbopackIgnore: true */ eventsPath, "utf8");
   const upgraded = upgradeLegacySessionContent(original);
   if (upgraded.repairedEvents === 0) {
     return { repairedEvents: 0, backupPath: null, eventCount: upgraded.events.length };
   }
 
   await assertSessionNotInUse(directory);
-  const after = await stat(eventsPath);
+  const after = await stat(/* turbopackIgnore: true */ eventsPath);
   if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
     throw new Error("Copilot session changed while preparing compatibility repair; retry Resume.");
   }
@@ -239,10 +249,10 @@ async function repairSessionEvents(
   const backupPath = `${eventsPath}.workboard-backup-${suffix}`;
   const temporaryPath = `${eventsPath}.workboard-${process.pid}-${Date.now()}.tmp`;
   try {
-    await copyFile(eventsPath, backupPath);
+    await copyFile(/* turbopackIgnore: true */ eventsPath, backupPath);
     await writeFile(temporaryPath, upgraded.content, { encoding: "utf8", flag: "wx" });
     await assertSessionNotInUse(directory);
-    const beforeRename = await stat(eventsPath);
+    const beforeRename = await stat(/* turbopackIgnore: true */ eventsPath);
     if (beforeRename.size !== before.size || beforeRename.mtimeMs !== before.mtimeMs) {
       throw new Error("Copilot session changed while writing compatibility repair; retry Resume.");
     }

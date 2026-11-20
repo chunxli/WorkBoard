@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityRecords, conversationTimeline, isConversationMessage, withPendingFollowUp, type PendingFollowUp } from "./conversation-activity";
+import { activityRecords, conversationTimeline, conversationToolActivityAt, isConversationMessage, withPendingFollowUp, type PendingFollowUp } from "./conversation-activity";
 import { normalizeConversationEvent, type ConversationEvent } from "./session-conversation";
 
 function event(type: string, offset: number, data: Record<string, unknown> = {}, agentId: string | null = null): ConversationEvent {
@@ -7,6 +7,24 @@ function event(type: string, offset: number, data: Record<string, unknown> = {},
 }
 
 describe("conversation activity timeline", () => {
+  it("uses only recorded tool timestamps for startup handoff, not assistant text or runtime metadata", () => {
+    const records = [
+      event("user.message", 0, { content: "Run a task" }),
+      event("assistant.message", 1, { content: "tool.execution_start" }),
+      event("assistant.turn_start", 2),
+      event("session.start", 3),
+      event("tool.execution_start", 4, { toolName: "synthetic-tool", toolCallId: "tool" }),
+      event("tool.execution_complete", 5, { toolCallId: "tool", success: true }),
+      event("tool.execution_start", 6, { toolName: "subagent-tool" }, "subagent"),
+      { ...event("tool.execution_start", 7, { toolName: "undated-tool" }), timestamp: null },
+    ];
+    const before = JSON.stringify(records);
+    expect(conversationToolActivityAt(records)).toEqual([
+      "2026-10-23T02:00:00Z", "2026-10-23T02:00:00Z", "2026-10-23T02:00:00Z",
+    ]);
+    expect(JSON.stringify(records)).toBe(before);
+  });
+
   it("uses the same visible-message boundary for history loading and timeline rendering", () => {
     const records = [
       event("user.message", 0, { content: "User input" }),

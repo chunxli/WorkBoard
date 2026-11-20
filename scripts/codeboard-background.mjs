@@ -12,6 +12,8 @@ import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { nextHostnameArgs, resolveRuntimeAuthMode } from "./auth-mode.mjs";
+import { protectRuntimeTraces } from "./protect-runtime-traces.mjs";
+import { resolveNextDistDir } from "./next-output.mjs";
 import {
   assertSafePath, createAutostartManager, ensurePrivateDirectory,
   isPositivePid, isProcessAlive, loadRuntimeEnvironment, readOptionalText,
@@ -147,12 +149,18 @@ export async function runBackground(action, options = {}) {
     if (current && JSON.stringify(current) === JSON.stringify(state)) rmSync(pidFile);
   }
 
-  function identity(state) {
+  function identity(state, { recoverReusedPid = false } = {}) {
     const current = inspect(state.pid);
     if (!current) return null;
     const expectedNode = state.nodePath ?? realpathSync(process.execPath);
     const equalPath = (first, second) => platform === "win32"
       ? first?.toLowerCase() === second.toLowerCase() : first === second;
+    if (recoverReusedPid && typeof state.root === "string" && equalPath(state.root, root) &&
+      typeof state.processInstance === "string" && state.processInstance &&
+      typeof current.created === "string" && current.created && current.created !== state.processInstance) {
+      output.log(`[Work Board] Ignoring stale managed PID ${state.pid}: its process start time changed. The unrelated process was not signalled.`);
+      return null;
+    }
     if (!current.owned || !current.isNext || !equalPath(current.root, root) ||
       !equalPath(current.executable, expectedNode) ||
       (state.root && !equalPath(state.root, root)) ||
@@ -250,7 +258,7 @@ export async function runBackground(action, options = {}) {
     const mode = resolveRuntimeAuthMode(environment);
     const existing = readPid();
     if (existing) {
-      if (identity(existing)) {
+      if (identity(existing, { recoverReusedPid: true })) {
         if (!(await ready())) throw new Error("The managed Work Board process is alive but not HTTP-ready; inspect background:logs.");
         if (!identity(existing)) throw new Error("The managed process instance exited during its HTTP readiness check.");
         assertOwner();
@@ -271,9 +279,11 @@ export async function runBackground(action, options = {}) {
       output.log("[Work Board] Building release...");
       run(process.execPath, [nextBin, "build"], environment);
     }
-    if (!existsSync(path.join(root, ".next", "BUILD_ID")) || !existsSync(nextBin)) {
+    if (!existsSync(path.join(root, resolveNextDistDir(environment.WORKBOARD_NEXT_DIST_DIR ?? ""), "BUILD_ID")) || !existsSync(nextBin)) {
       throw new Error("No prepared Work Board Release found. Run npm run background:start explicitly to prepare it; login startup never builds or migrates.");
     }
+    const tracing = await protectRuntimeTraces(root, environment);
+    output.log(`[Work Board] Checked ${tracing.traces} deployment traces; removed ${tracing.removedPrivateReferences} host-private references.`);
     ensurePrivateDirectory(dataDir);
     assertSafePath(stdoutLog);
     assertSafePath(stderrLog);
@@ -369,7 +379,7 @@ export async function runBackground(action, options = {}) {
 
   async function status() {
     const state = readPid();
-    if (state && identity(state)) {
+    if (state && identity(state, { recoverReusedPid: true })) {
       output.log(`Work Board is running (PID ${state.pid}) at http://localhost:${state.port ?? port}${await ready() ? "" : " (HTTP not ready)"}.`);
     } else {
       if (state) removePid(state);

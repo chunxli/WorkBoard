@@ -1,5 +1,6 @@
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
+import { isPrivateRuntimePath } from "@/lib/native-runtime-paths";
 
 const PAGE_SIZE = 200;
 const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
@@ -33,6 +34,9 @@ async function resolveEntry(directoryPath: string, relativePath: string) {
     }
   }
   const resolved = await realpath(candidate);
+  if (isPrivateRuntimePath(resolved)) {
+    throw new WorkDirectoryError("Private WorkBoard runtime data is not exposed in the file browser.", 403);
+  }
   const relative = path.relative(root, resolved);
   if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new WorkDirectoryError("The requested entry is outside this Work directory.", 403);
@@ -44,7 +48,8 @@ export async function listWorkDirectory(directoryPath: string, relativePath: str
   if (!Number.isSafeInteger(offset) || offset < 0) throw new WorkDirectoryError("Invalid directory page.", 400);
   const { resolved, info } = await resolveEntry(directoryPath, relativePath);
   if (!info.isDirectory()) throw new WorkDirectoryError("The requested entry is not a folder.", 400);
-  const entries = (await readdir(resolved, { withFileTypes: true })).map((entry) => {
+  const entries = (await readdir(resolved, { withFileTypes: true })).filter((entry) =>
+    !isPrivateRuntimePath(path.join(resolved, entry.name))).map((entry) => {
     const kind = /[\u0000-\u001f\u007f\\:]/.test(entry.name) || entry.isSymbolicLink()
       ? "unsupported" : entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "unsupported";
     return {

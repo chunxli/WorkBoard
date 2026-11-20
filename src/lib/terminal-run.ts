@@ -1,4 +1,5 @@
 export const TERMINAL_RUN_TRIGGERS = ["TERMINAL_START", "TERMINAL_RESUME"] as const;
+export const TERMINAL_HISTORY_STABLE_MS = 2_000;
 
 export function isTerminalRunTrigger(trigger: string): boolean {
   return TERMINAL_RUN_TRIGGERS.includes(

@@ -25,8 +25,9 @@ export async function POST(
 
   try {
     const result = await withRunStartLock([`work:${id}`], async () => {
-      const work = await prisma.work.findFirst({ where: { id, userId } });
+      const work = await prisma.work.findFirst({ where: { id, userId }, include: { sessionPair: true } });
       if (!work) throw new WorkStartError("Work not found", 404);
+      if (work.sessionPair) throw new WorkStartError("Use the paired Conversation to continue either Session.");
       if (work.status === "ARCHIVED") {
         throw new WorkStartError("Restore this Work before running it");
       }

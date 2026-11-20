@@ -1,5 +1,38 @@
 import { execFile, type ChildProcess } from "node:child_process";
-import { setTimeout as sleep } from "node:timers/promises";
+import { stopOwnedProcess } from "../../scripts/owned-process.mjs";
+
+// Windows FILETIME stays a string so its 100-nanosecond precision is not lost.
+export const WINDOWS_PROCESS_START_TIME = /^[1-9]\d{0,18}$/;
+
+export async function readWindowsProcessStartTime(pid: number): Promise<string | null> {
+  if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fff_ffff) throw new Error("Invalid Windows process ID.");
+  if (process.platform !== "win32") throw new Error("Windows process identity is unavailable on this host.");
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    try { $item = [Diagnostics.Process]::GetProcessById(${pid}) }
+    catch [ArgumentException] { [Console]::Write('missing'); exit 0 }
+    try {
+      if ($item.HasExited) { [Console]::Write('missing') }
+      else { [Console]::Write($item.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)) }
+    }
+    catch [InvalidOperationException] {
+      if ($item.HasExited) { [Console]::Write('missing') } else { throw }
+    }
+    finally { $item.Dispose() }
+  `;
+  const value = await new Promise<string>((resolve, reject) => {
+    execFile("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { windowsHide: true, timeout: 10_000 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()));
+  });
+  if (value === "missing") return null;
+  if (!WINDOWS_PROCESS_START_TIME.test(value)) throw new Error("Windows returned an invalid process identity.");
+  return value;
+}
+
+export async function windowsProcessMatchesStartTime(pid: number, expected: string): Promise<boolean> {
+  if (!WINDOWS_PROCESS_START_TIME.test(expected)) throw new Error("Invalid Windows process creation identity.");
+  return await readWindowsProcessStartTime(pid) === expected;
+}
 
 export class CopilotProcessStopError extends Error {
   constructor(cause: unknown) {
@@ -9,57 +42,8 @@ export class CopilotProcessStopError extends Error {
 }
 
 export async function stopCopilotProcess(child: ChildProcess): Promise<void> {
-  const pid = child.pid;
-  if (!pid || child.exitCode !== null || child.signalCode !== null) return;
   try {
-    if (process.platform === "win32") {
-      const script = `
-        $ErrorActionPreference = 'Stop'
-        $processes = @(Get-CimInstance Win32_Process)
-        $root = $processes | Where-Object { $_.ProcessId -eq ${pid} } | Select-Object -First 1
-        if (-not $root) { exit 0 }
-        $owned = [System.Collections.Generic.List[object]]::new()
-        function Add-OwnedChildren([int]$parentId) {
-          foreach ($item in $processes) {
-            if ($item.ParentProcessId -eq $parentId -and $item.CreationDate -ge $root.CreationDate) {
-              Add-OwnedChildren ([int]$item.ProcessId)
-              $owned.Add($item)
-            }
-          }
-        }
-        Add-OwnedChildren ${pid}
-        $owned.Add($root)
-        foreach ($item in $owned) {
-          $current = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $item.ProcessId)
-          if ($current -and $current.CreationDate -eq $item.CreationDate) {
-            try { Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop }
-            catch {
-              $remaining = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $item.ProcessId)
-              if ($remaining -and $remaining.CreationDate -eq $item.CreationDate) { throw }
-            }
-          }
-        }
-      `;
-      await new Promise<void>((resolve, reject) => {
-        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
-          { windowsHide: true, timeout: 15000 }, (error) => error ? reject(error) : resolve());
-      });
-      return;
-    }
-
-    const signalGroup = (signal: NodeJS.Signals | 0) => {
-      try { process.kill(-pid, signal); return true; }
-      catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ESRCH") return false;
-        throw error;
-      }
-    };
-    if (!signalGroup("SIGTERM")) return;
-    const deadline = Date.now() + 5000;
-    while (signalGroup(0)) {
-      if (Date.now() >= deadline) { signalGroup("SIGKILL"); return; }
-      await sleep(50);
-    }
+    await stopOwnedProcess(child);
   } catch (error) {
     throw new CopilotProcessStopError(error);
   }

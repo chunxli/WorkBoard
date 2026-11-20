@@ -15,6 +15,7 @@
 
 # next.js
 /.next/
+/.next-*/
 /out/
 
 # production
@@ -50,5 +51,4 @@ next-env.d.ts
 *.db-journal
 *.db-shm
 *.db-wal
-
 

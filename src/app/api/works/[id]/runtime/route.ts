@@ -6,6 +6,7 @@ import { getSessionUserId } from "@/lib/session";
 import { getManagedRuntime } from "@/lib/managed-runtime";
 import { RuntimeControlError, runtimeActionSchema } from "@/lib/managed-runtime-types";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { webFollowUpBlockedReason } from "@/lib/runtime-provider";
 
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "private, no-store", Vary: "Cookie" };
@@ -18,7 +19,7 @@ async function resolveRuntime(workId: string, runId: string, userId: string, exp
   if (!work) throw new RuntimeControlError(404, "Work not found.");
   const run = await prisma.run.findFirst({
     where: { id: runId, workId, experimentVariantId: null },
-    select: { id: true, hostname: true, status: true, trigger: true, engine: true, copilotSessionId: true },
+    select: { id: true, hostname: true, status: true, trigger: true, engine: true, copilotSessionId: true, providerId: true },
   });
   if (!run || expectedSessionId !== undefined && expectedSessionId !== run.copilotSessionId) {
     throw new RuntimeControlError(409, "The selected Run and session no longer match.");
@@ -29,8 +30,10 @@ async function resolveRuntime(workId: string, runId: string, userId: string, exp
   if (isTerminalRunTrigger(run.trigger)) {
     return { runtime: null, reason: "This session is owned by Terminal. Answer questions and sign in there." };
   }
-  if (run.engine === "CLI") {
-    return { runtime: null, reason: "This Run uses the native non-interactive Copilot CLI. SDK live controls and Steering are unavailable. Wait for the Run to finish, then send Follow Up." };
+  if (run.engine === "CLI" || run.engine === "CASEIQ") {
+    return { runtime: null, reason: webFollowUpBlockedReason(run) ?? (run.engine === "CASEIQ"
+      ? "This Run uses CaseIQ's native CLI transport. Follow Up and Queue use the same CaseIQ session; SDK-only live Steering is unavailable."
+      : "This Run uses the native non-interactive Copilot CLI. SDK live controls and Steering are unavailable. Wait for the Run to finish, then send Follow Up.") };
   }
   if (run.status === "PENDING" && work.status !== "ARCHIVED") {
     return { runtime: null, reason: "This Run is queued or starting. Live runtime controls will appear when its local session is ready." };
