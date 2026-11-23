@@ -9,8 +9,7 @@ import {
   executeWorkRun,
 } from "@/lib/work-executor";
 import { getWorkQueueBlockedReason, getWorkRunQueueKey, orderPendingWorkRuns, QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
-import { getManagedSessionController } from "@/lib/managed-session-controller";
-import { isNativeCopilotRunActive } from "@/lib/copilot-runner";
+import { getLocalManagedWorkRuntime } from "@/lib/managed-work-runtime";
 import { jobQueue } from "@/lib/job-queue";
 import {
   copilotSessionExists,
@@ -22,6 +21,7 @@ import { findActiveRunConflicts } from "@/lib/run-access";
 import { getTerminalSessionActivity, reconcileTerminalRun } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { parseWorkAttachments, resolveWorkAttachments, WorkAttachmentError } from "@/lib/work-attachments";
+import { webFollowUpBlockedReason } from "@/lib/runtime-provider";
 
 export async function POST(
   req: NextRequest,
@@ -37,9 +37,10 @@ export async function POST(
   const { id } = await params;
   const candidate = await prisma.work.findFirst({
     where: { id, userId },
-    select: { id: true },
+    select: { id: true, sessionPair: { select: { workId: true } } },
   });
   if (!candidate) return NextResponse.json({ error: "Work not found" }, { status: 404 });
+  if (candidate.sessionPair) return NextResponse.json({ error: "Select a target in the paired Conversation." }, { status: 409 });
 
   try {
     if (parsed.data.expectedParentRunId) {
@@ -54,8 +55,9 @@ export async function POST(
       }
     }
     const result = await withRunStartLock([`work:${candidate.id}`], async () => {
-      const work = await prisma.work.findFirst({ where: { id, userId } });
+      const work = await prisma.work.findFirst({ where: { id, userId }, include: { sessionPair: true } });
       if (!work) throw new FollowUpConflictError("Work not found", 404);
+      if (work.sessionPair) throw new FollowUpConflictError("Select a target in the paired Conversation.");
       if (work.status === "ARCHIVED") {
         throw new FollowUpConflictError("Restore this Work before following up");
       }
@@ -76,7 +78,7 @@ export async function POST(
       }
       const activeWorkRuns = parsed.data.queue ? await prisma.run.findMany({
         where: { workId: work.id, status: { in: ["PENDING", "RUNNING"] } },
-        select: { id: true, trigger: true, status: true, copilotSessionId: true, hostname: true, engine: true,
+        select: { id: true, trigger: true, status: true, copilotSessionId: true, hostname: true, engine: true, providerId: true,
           experimentVariantId: true, createdAt: true, resumedFromRunId: true },
       }) : [];
       const activeWorkRun = parsed.data.queue ? activeWorkRuns[0] : await prisma.run.findFirst({
@@ -103,6 +105,8 @@ export async function POST(
         orderBy: { createdAt: "desc" },
         include: { terminalLaunches: { select: { id: true }, take: 1 } },
       });
+      const runtimeBlock = parent ? webFollowUpBlockedReason(parent) : null;
+      if (runtimeBlock) throw new FollowUpConflictError(runtimeBlock);
       if (parsed.data.expectedParentRunId !== undefined && (parent?.id ?? null) !== parsed.data.expectedParentRunId) {
         throw new FollowUpConflictError("The session has changed. Refresh the conversation before sending.");
       }
@@ -146,10 +150,8 @@ export async function POST(
             }
           }
           const running = activeWorkRuns.find((run) => run.status === "RUNNING");
-          const ownedRunning = running?.hostname === hostname() && (running.engine === "SDK"
-            ? getManagedSessionController(running.id) !== null
-            : running.engine === "CLI" && isNativeCopilotRunActive(running.id));
-          if (!ownedRunning) {
+          const { controller, native } = getLocalManagedWorkRuntime(running);
+          if (!controller && !native) {
             const activity = await getTerminalSessionActivity(parent.copilotSessionId, parent.terminalLaunches[0]?.id ?? null);
             if (activity.active || activity.starting) throw new FollowUpConflictError("This session is open in Terminal. Close the Copilot session before sending.");
           }

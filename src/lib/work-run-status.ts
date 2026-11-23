@@ -1,3 +1,4 @@
+import type { DirectorySnapshotProgress } from "@/lib/directory-snapshot";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 
 export const TERMINAL_COMPLETION_UNCONFIRMED =
@@ -17,6 +18,21 @@ export interface RunStatusSnapshot {
   displayStatus: string;
   terminalActive: boolean | null;
   observationError: string | null;
+  preparation?: WorkRunPreparation;
+}
+
+export type WorkRunPreparation =
+  | { phase: "files" | "resume" | "startup" }
+  | { phase: "snapshot"; progress?: DirectorySnapshotProgress };
+
+export function pendingRunTitle(preparation?: WorkRunPreparation): string {
+  switch (preparation?.phase) {
+    case "files": return "Preparing Run files";
+    case "resume": return "Preparing to resume the session";
+    case "snapshot": return preparation.progress ? "Scanning workspace files" : "Creating workspace snapshot";
+    case "startup": return "Finishing startup preparation";
+    default: return "Waiting to start";
+  }
 }
 
 export function getRunStatusMessage(status: string, message: string | null): string | null {
@@ -63,5 +79,19 @@ export function isRunStatusSnapshot(value: unknown): value is RunStatusSnapshot 
     "status" in value && typeof value.status === "string" &&
     "displayStatus" in value && typeof value.displayStatus === "string" &&
     "terminalActive" in value && (value.terminalActive === null || typeof value.terminalActive === "boolean") &&
-    "observationError" in value && (value.observationError === null || typeof value.observationError === "string");
+    "observationError" in value && (value.observationError === null || typeof value.observationError === "string") &&
+    (!("preparation" in value) || value.status === "PENDING" && value.displayStatus === "PENDING" && isPreparation(value.preparation));
+}
+
+function isPreparation(value: unknown): value is WorkRunPreparation {
+  if (value === null || typeof value !== "object" || !("phase" in value)) return false;
+  if (value.phase === "files" || value.phase === "resume" || value.phase === "startup") return !("progress" in value);
+  if (value.phase !== "snapshot") return false;
+  if (!("progress" in value)) return true;
+  const progress = value.progress;
+  return progress !== null && typeof progress === "object" &&
+    "filesScanned" in progress && typeof progress.filesScanned === "number" &&
+    Number.isSafeInteger(progress.filesScanned) && progress.filesScanned >= 0 &&
+    "bytesRead" in progress && typeof progress.bytesRead === "number" &&
+    Number.isSafeInteger(progress.bytesRead) && progress.bytesRead >= 0;
 }

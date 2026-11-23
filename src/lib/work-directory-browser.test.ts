@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, open, realpath, rm, symlink, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import { listWorkDirectory, previewWorkFile } from "./work-directory-browser";
+import { pairedLaneInfo, pairedOutputFolder } from "./work-session-pair";
 
 let fixture: string;
 let root: string;
@@ -39,6 +40,23 @@ describe("Work directory listing", () => {
     expect(second.entries).toHaveLength(5);
     expect(second.nextOffset).toBeNull();
     expect(new Set([...first.entries, ...second.entries].map((entry) => entry.path)).size).toBe(205);
+  });
+
+  it("lists and previews same-name files from their exact paired output folders", async () => {
+    const output = pairedOutputFolder({ cliSessionId: "a794edab-8889-4898-8ba5-32c22111253f",
+      caseIqSessionId: "2fe05232-f0b7-4e61-accc-657ff8bfd46b" });
+    const cli = [output, pairedLaneInfo.CLI.folder];
+    const caseIq = [output, pairedLaneInfo.CASEIQ.folder];
+    await mkdir(path.join(root, ...cli), { recursive: true });
+    await mkdir(path.join(root, ...caseIq), { recursive: true });
+    await writeFile(path.join(root, ...cli, "review.md"), "CLI result");
+    await writeFile(path.join(root, ...caseIq, "review.md"), "CaseIQ result");
+    const cliPage = await listWorkDirectory(root, cli.join("/"));
+    const caseIqPage = await listWorkDirectory(root, caseIq.join("/"));
+    expect(cliPage.entries.map(({ path }) => path)).toEqual([[...cli, "review.md"].join("/")]);
+    expect(caseIqPage.entries.map(({ path }) => path)).toEqual([[...caseIq, "review.md"].join("/")]);
+    expect(await (await previewWorkFile(root, cliPage.entries[0].path)).text()).toBe("CLI result");
+    expect(await (await previewWorkFile(root, caseIqPage.entries[0].path)).text()).toBe("CaseIQ result");
   });
 
   it.each(["../outside", "/outside", "C:\\outside", "docs\\file", "C:/outside", "docs/../outside", "docs/file:stream", "a\0b"])(

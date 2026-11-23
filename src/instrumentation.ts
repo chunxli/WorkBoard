@@ -4,7 +4,7 @@ export async function register() {
     const { preventSystemSleep } = await import("@/lib/keep-awake");
     preventSystemSleep();
 
-    const { recoverRuns } = await import("@/lib/run-recovery");
+    const { recoverRuns, startCaseIqRunRecovery } = await import("@/lib/run-recovery");
     await recoverRuns();
 
     const {
@@ -30,5 +30,6 @@ export async function register() {
 
     const { startScheduler } = await import("@/lib/scheduler");
     startScheduler();
+    startCaseIqRunRecovery();
   }
 }

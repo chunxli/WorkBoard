@@ -52,10 +52,11 @@ export const createWorkSchema = z
     name: z.string().trim().min(1).max(200),
     directoryPath: z.string().trim().min(1).max(2000),
     prompt: z.string().min(1).max(100000),
+    startMode: z.literal("paired").optional(),
     initialization: z.enum(["USE_PATH", "COPY_PATH", "COPY_REPO"]).default("USE_PATH"),
     sourcePath: z.string().trim().min(1).max(2000).nullish(),
     sourceRepoId: z.string().min(1).nullish(),
-    defaultEngine: z.enum(["CLI", "SDK"]).default("CLI"),
+    defaultEngine: z.enum(["CLI", "SDK", "CASEIQ"]).default("CLI"),
     agent: z.string().trim().max(200).nullish(),
     model: z.string().trim().max(200).nullish(),
     fallbackModel: z.string().trim().max(200).nullish(),
@@ -98,7 +99,7 @@ export const updateWorkSchema = z
   .object({
     name: z.string().trim().min(1).max(200).optional(),
     status: z.enum(["ACTIVE", "REVIEW", "ARCHIVED"]).optional(),
-    defaultEngine: z.enum(["CLI", "SDK"]).optional(),
+    defaultEngine: z.enum(["CLI", "SDK", "CASEIQ"]).optional(),
     agent: z.string().trim().max(200).nullish(),
     model: z.string().trim().max(200).nullish(),
     fallbackModel: z.string().trim().max(200).nullish(),
@@ -127,7 +128,7 @@ export const updateWorkPromptSchema = z.object({
 
 export const runWorkSchema = z
   .object({
-    engine: z.enum(["CLI", "SDK"]).optional(),
+    engine: z.enum(["CLI", "SDK", "CASEIQ"]).optional(),
     conflictMode: z.enum(["DIRECT", "COPY_ON_CONFLICT"]).default("DIRECT"),
   })
   .strict();
@@ -162,7 +163,7 @@ export const systemNotificationSettingsSchema = z.object({
 
 export const executionDefaultsSchema = z
   .object({
-    defaultEngine: z.enum(["CLI", "SDK"]),
+    defaultEngine: z.enum(["CLI", "SDK", "CASEIQ"]),
     agent: z.string().trim().max(200).nullish(),
     model: z.string().trim().max(200).nullish(),
     fallbackModel: z.string().trim().max(200).nullish(),
@@ -199,7 +200,7 @@ export const createExperimentSchema = z
     skillPaths: z.array(z.string().trim().min(1).max(2000)).max(20).default([]),
     includeBaseline: z.boolean().default(true),
     invocationMode: z.enum(["EXPLICIT", "AUTO"]).default("EXPLICIT"),
-    engine: z.enum(["CLI", "SDK"]).default("CLI"),
+    engine: z.enum(["CLI", "SDK", "CASEIQ"]).default("CLI"),
   })
   .superRefine((value, ctx) => {
     if (value.skillPaths.length === 0 && !value.includeBaseline) {

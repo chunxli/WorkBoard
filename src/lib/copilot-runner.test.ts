@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,7 +28,8 @@ import { appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 const [scenario, record, ...args] = process.argv.slice(2);
 const emit = event => process.stdout.write(JSON.stringify(event) + '\\n');
-const save = extra => appendFileSync(record, JSON.stringify({ args, cwd: process.cwd(), sdkEntra: process.env.WORKBOARD_COPILOT_ENTRA_CLIENT_ID ?? null, ...extra }) + '\\n');
+const save = extra => appendFileSync(record, JSON.stringify({ args, cwd: process.cwd(), sdkEntra: process.env.WORKBOARD_COPILOT_ENTRA_CLIENT_ID ?? null,
+  instructions: process.env.COPILOT_CUSTOM_INSTRUCTIONS_DIRS ?? null, ...extra }) + '\\n');
 if (scenario === 'hang') {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
   save({ childPid: child.pid });
@@ -80,11 +81,26 @@ function options(scenario = "success") {
     executable: process.execPath, executableArgs: [script, scenario, path.join(root, `${runId}.jsonl`)],
   };
 }
-async function records(runId: string): Promise<{ args: string[]; cwd: string; sdkEntra: string | null; childPid?: number }[]> {
+async function records(runId: string): Promise<{ args: string[]; cwd: string; sdkEntra: string | null; instructions: string | null; childPid?: number }[]> {
   return (await readFile(path.join(root, `${runId}.jsonl`), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 }
 
 describe("native CLI process execution without SDK", () => {
+  it("runs a paired CLI in its own folder and adds the common input without changing the user Prompt", async () => {
+    const cwd = path.join(root, "copilot-cli");
+    const instructions = path.join(root, "paired-instructions");
+    await mkdir(cwd);
+    vi.stubEnv("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", path.join(root, "existing-instructions"));
+    const input = options();
+    expect(await startCopilotRun({ ...input, repoPath: cwd, pairedWorkspace: {
+      inputDirectory: root, instructionDirectory: instructions,
+    } })).toMatchObject({ exitCode: 0 });
+    const [invocation] = await records(input.runId);
+    expect(invocation.cwd).toBe(cwd);
+    expect(invocation.args).toEqual(expect.arrayContaining(["--add-dir", root, "-p", input.prompt, "--session-id", input.sessionId]));
+    expect(invocation.instructions?.split(path.delimiter)).toEqual([path.join(root, "existing-instructions"), instructions]);
+  });
+
   it("uses native prompt/session/attachment flags and ignores SDK-only Entra configuration", async () => {
     vi.stubEnv("WORKBOARD_COPILOT_ENTRA_CLIENT_ID", "invalid-sdk-host-config");
     const input = options();

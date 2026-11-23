@@ -4,12 +4,16 @@ import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import type { RunStatus } from "@/generated/prisma/client";
 import StatusBadge from "@/components/StatusBadge";
+import CaseIqRuntimeTag from "@/components/CaseIqRuntimeTag";
 import RunStatusFilter from "@/components/RunStatusFilter";
 import CancelRunButton from "@/components/CancelRunButton";
 import { formatDuration } from "@/lib/format";
 import RunDuration from "@/components/RunDuration";
+import { getPendingRunPreparation } from "@/lib/work-run-preparation-state";
+import { pendingRunTitle } from "@/lib/work-run-status";
 import { ownedRunWhere } from "@/lib/run-access";
 import PageHeader from "@/components/PageHeader";
+import { isCaseIqRuntime, runtimeProviderLabel } from "@/lib/runtime-provider";
 
 const PAGE_SIZE = 20;
 const VALID_STATUSES = new Set(["PENDING", "RUNNING", "UNKNOWN", "SUCCESS", "FAILED", "TIMED_OUT", "CANCELLED"]);
@@ -81,7 +85,13 @@ export default async function RunsPage({
                   </td>
                   <td className="px-4 py-2 text-neutral-400">{run.trigger}</td>
                   <td className="px-4 py-2">
-                    <StatusBadge status={run.status} />
+                    <span className="flex items-center gap-2">
+                      {isCaseIqRuntime(run) && <CaseIqRuntimeTag title={`Runtime: ${runtimeProviderLabel(run)}`} />}
+                      <StatusBadge status={run.status} />
+                    </span>
+                    {run.status === "PENDING" && <span className="mt-1 block text-xs text-neutral-400">
+                      {pendingRunTitle(getPendingRunPreparation(run))}
+                    </span>}
                   </td>
                   <td className="px-4 py-2 text-neutral-400">
                     {run.startedAt ? new Date(run.startedAt).toLocaleString() : "-"}

@@ -335,7 +335,7 @@ async function copySourceDirectory(sourcePath: string, destinationPath: string):
       errorOnExist: true,
       preserveTimestamps: true,
       filter: (candidatePath) =>
-        candidatePath !== sourceBoardPath && !isInside(sourceBoardPath, candidatePath),
+        candidatePath !== sourceBoardPath && !isInside(sourceBoardPath, candidatePath) && !isPrivateRuntimePath(candidatePath),
     });
   }
 }
@@ -353,6 +353,7 @@ async function copyDirectoryEntries(
       force: false,
       errorOnExist: true,
       preserveTimestamps: true,
+      filter: (candidatePath) => !isPrivateRuntimePath(candidatePath),
     });
   }
 }
@@ -631,3 +632,4 @@ export async function copyExperimentVariant(
 ): Promise<void> {
   await copySourceDirectory(basePath, destinationPath);
 }
+import { isPrivateRuntimePath } from "@/lib/native-runtime-paths";

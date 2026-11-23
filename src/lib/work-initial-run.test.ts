@@ -23,7 +23,7 @@ beforeEach(async () => {
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
 describe("initial Prompt files in managed Run metadata", () => {
-  it.each(["CLI", "SDK"] as const)("retains initial image metadata for the %s engine's native file transport", async (engine) => {
+  it.each(["CLI", "SDK", "CASEIQ"] as const)("retains initial image metadata for the %s engine's native file transport", async (engine) => {
     const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0]);
     const file = await saveWorkAttachment({
       work, requestId: work.id, uploadId: randomUUID(), name: "evidence.png", size: bytes.length,
@@ -34,6 +34,7 @@ describe("initial Prompt files in managed Run metadata", () => {
       workId: work.id, engine, executionPath: root, prompt: "Review evidence", concurrencyMode: "DIRECT",
     });
     expect(run.engine).toBe(engine);
+    if (engine === "CASEIQ") expect(run).toMatchObject({ providerId: "caseiq", outputFormat: "json", permissionMode: "default" });
     const saved = parseWorkAttachments(run.attachmentsJson);
     expect(saved).toEqual([file]);
     expect(await runtimeWorkAttachments(work, saved)).toEqual([{

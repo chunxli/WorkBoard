@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ownedRunWhere } from "@/lib/run-access";
 import { getSessionUserId } from "@/lib/session";
+import { assertPairedRunArtifactLocation } from "@/lib/work-pair-directories";
 
 const ARTIFACTS = {
   "result.md": "text/markdown; charset=utf-8",
@@ -21,17 +22,19 @@ export async function GET(
   const userId = await getSessionUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id, name } = await params;
-  if (!(name in ARTIFACTS)) {
+  if (!Object.hasOwn(ARTIFACTS, name)) {
     return NextResponse.json({ error: "Unknown artifact" }, { status: 404 });
   }
 
   const run = await prisma.run.findFirst({
     where: ownedRunWhere(userId, id),
-    select: { outputDir: true },
+    select: { id: true, outputDir: true, engine: true, providerId: true, executionPath: true, copilotSessionId: true,
+      work: { select: { directoryPath: true, sessionPair: true } } },
   });
   if (!run?.outputDir) return NextResponse.json({ error: "Artifact not found" }, { status: 404 });
 
   try {
+    await assertPairedRunArtifactLocation(run.work, run);
     const content = await readFile(path.join(run.outputDir, name));
     return new Response(content, {
       headers: {

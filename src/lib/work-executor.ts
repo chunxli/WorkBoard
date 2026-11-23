@@ -1,18 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { readFile } from "node:fs/promises";
+import type { Prisma, Run } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
+import { isCaseIqWebRun, webFollowUpBlockedReason } from "@/lib/runtime-provider";
 export { getWorkRunQueueKey } from "@/lib/work-run-queue";
 import { attachmentPrompt, type WorkAttachment } from "@/lib/work-attachment-types";
 import { parseWorkAttachments, readInitialWorkAttachments, runtimeWorkAttachments } from "@/lib/work-attachments";
 import {
   extractFinalCopilotOutput,
   isNativeCopilotRunActive,
+  registerNativeRunControl,
   startCopilotRun,
   type RunOutputFormat,
 } from "@/lib/copilot-runner";
 import { startCopilotSdkRun } from "@/lib/copilot-sdk-runner";
+import { caseIqRunAlreadyFinalizing, CaseIqRunUnconfirmedError } from "@/lib/caseiq-errors";
+import { startCaseIqRun } from "@/lib/caseiq-runner";
+import {
+  authorizeCaseIqRunLaunch, persistCaseIqPrelaunchCancellation, prepareCaseIqRunLaunch,
+  sealCaseIqRunCompletion, trackInterruptedCaseIqRun,
+} from "@/lib/caseiq-run-lifecycle";
+import { ensurePrivateRuntimeDirectory } from "@/lib/caseiq-integration";
+import { matchesPairedWorkspace, verifyPairedRunDirectory, writePairedWorkspaceInstructions, WorkPairError } from "@/lib/work-pair-directories";
+import { readNativeSessionBindingSync } from "@/lib/native-session-bindings";
 import { getManagedSessionController } from "@/lib/managed-session-controller";
 import {
   getHeadCommit,
@@ -23,6 +35,8 @@ import {
   prepareWorkRunArtifacts,
   readWorkRunSnapshot,
   serializeRunFinalization,
+  writeRunSnapshot,
+  type CaseIqRunVersion,
   type WorkRunSnapshot,
 } from "@/lib/run-artifacts";
 import { detectSkillInvocation } from "@/lib/skill-events";
@@ -32,7 +46,8 @@ import {
   captureRunSourceDiff,
   inheritRunSourceBaseline,
 } from "@/lib/run-source-snapshot";
-import { repairLegacyCopilotSessionEvents } from "@/lib/copilot-session-compat";
+import { beginWorkRunPreparation } from "@/lib/work-run-preparation-state";
+import { copilotSessionHasHistory, repairLegacyCopilotSessionEvents } from "@/lib/copilot-session-compat";
 import {
   readCopilotSessionInsights,
   serializeCopilotTokenUsage,
@@ -41,7 +56,7 @@ import {
 
 export async function createPendingWorkRun(options: {
   workId: string;
-  engine: "CLI" | "SDK";
+  engine: "CLI" | "SDK" | "CASEIQ";
   executionPath: string;
   prompt: string;
   concurrencyMode: string;
@@ -60,17 +75,18 @@ export async function createPendingWorkRun(options: {
       status: "PENDING",
       trigger: options.trigger ?? "WORK",
       engine: options.engine,
+      ...(options.engine === "CASEIQ" ? { providerId: "caseiq" } : {}),
       executionPath: options.executionPath,
       promptSnapshot: options.prompt,
       attachmentsJson: attachments.length ? JSON.stringify(attachments) : null,
-      outputFormat: work.outputFormat,
+      outputFormat: options.engine === "CASEIQ" ? "json" : work.outputFormat,
       timeoutSeconds: work.timeoutSeconds,
       agent: work.agent,
       model: work.model,
       fallbackModel: work.fallbackModel,
       contextTier: work.contextTier,
       reasoningEffort: work.reasoningEffort,
-      permissionMode: work.permissionMode,
+      permissionMode: options.engine === "CASEIQ" ? "default" : work.permissionMode,
       outputDir,
       copilotSessionId: sessionId,
       concurrencyMode: options.concurrencyMode,
@@ -98,6 +114,8 @@ export async function createPendingFollowUpRun(options: {
         },
       })
     : null;
+  const runtimeBlock = parent ? webFollowUpBlockedReason(parent) : null;
+  if (runtimeBlock) throw new Error(runtimeBlock);
   if (options.queue && !parent) throw new Error("A queued follow-up requires a parent Run.");
   const sessionId = parent?.copilotSessionId ?? randomUUID();
   const executionPath = parent?.executionPath ?? work.directoryPath;
@@ -111,6 +129,7 @@ export async function createPendingFollowUpRun(options: {
       status: "PENDING",
       trigger: "FOLLOW_UP",
       engine: settings.engine,
+      ...(settings.engine === "CASEIQ" ? { providerId: "caseiq" } : {}),
       executionPath,
       promptSnapshot: options.prompt,
       attachmentsJson: options.attachments?.length ? JSON.stringify(options.attachments) : null,
@@ -131,8 +150,8 @@ export async function createPendingFollowUpRun(options: {
 }
 
 interface FollowUpSettingsSource {
-  defaultEngine?: "CLI" | "SDK";
-  engine?: "CLI" | "SDK" | null;
+  defaultEngine?: "CLI" | "SDK" | "CASEIQ";
+  engine?: "CLI" | "SDK" | "CASEIQ" | null;
   agent: string | null;
   model: string | null;
   fallbackModel: string | null;
@@ -148,15 +167,16 @@ export function resolveFollowUpExecutionSettings(
   parent: FollowUpSettingsSource | null
 ) {
   const source = parent ?? work;
+  const engine = parent?.engine ?? work.defaultEngine ?? "CLI";
   return {
-    engine: parent?.engine ?? work.defaultEngine ?? "CLI",
+    engine,
     agent: source.agent,
     model: source.model,
     fallbackModel: source.fallbackModel,
     contextTier: source.contextTier,
     reasoningEffort: source.reasoningEffort,
-    permissionMode: source.permissionMode ?? work.permissionMode ?? "default",
-    outputFormat: source.outputFormat ?? work.outputFormat ?? "text",
+    permissionMode: engine === "CASEIQ" ? "default" : source.permissionMode ?? work.permissionMode ?? "default",
+    outputFormat: engine === "CASEIQ" ? "json" : source.outputFormat ?? work.outputFormat ?? "text",
     timeoutSeconds: source.timeoutSeconds,
   };
 }
@@ -229,25 +249,59 @@ async function waitForQueuedParent(run: { id: string; resumedFromRunId: string |
 export async function executeWorkRun(runId: string): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
-    include: { work: true, experimentVariant: { include: { experiment: true } } },
+    include: { work: { include: { sessionPair: true } }, experimentVariant: { include: { experiment: true } } },
   });
   const work = run.work;
   if (!work) throw new Error(`Work run ${run.id} has no Work`);
 
+  const pair = work.sessionPair ?? null;
+  let artifactRoot: string;
+  try {
+    if (pair && (run.hostname !== hostname() || work.hostname !== hostname() || run.promptSnapshot === null ||
+        run.taskId || run.experimentVariantId || !["WORK", "FOLLOW_UP"].includes(run.trigger))) {
+      throw new WorkPairError("The paired Run does not match this host or managed Work.");
+    }
+    artifactRoot = await verifyPairedRunDirectory(work, run);
+  }
+  catch (error) {
+    console.error("[Work Board] Cannot prepare paired Run output.", error);
+    await prisma.run.updateMany({
+      where: { id: run.id, status: "PENDING" },
+      data: { status: "FAILED", finishedAt: new Date(), errorMessage: "The paired output directory is missing, redirected, or no longer matches this Run. No Prompt was sent." },
+    });
+    return;
+  }
+  const paired = Boolean(pair);
   const executionPath = run.executionPath ?? work.directoryPath;
   const prompt = run.promptSnapshot ?? work.promptCache;
   const attachments = parseWorkAttachments(run.attachmentsJson);
   const engine = run.engine ?? work.defaultEngine;
+  const caseIqWebRun = isCaseIqWebRun(run);
   const outputFormat = run.outputFormat === "json" ? "json" : "text";
   const timeoutSeconds = run.timeoutSeconds;
   const sessionId = run.copilotSessionId ?? randomUUID();
-  const artifactPaths = getWorkRunArtifactPaths(work.directoryPath, run.id);
+  const caseIqLaunchOwner = { id: run.id, hostname: hostname(), copilotSessionId: sessionId, executionPath };
+  const artifactPaths = getWorkRunArtifactPaths(artifactRoot, run.id);
   let beforeTree: string | null = null;
   let afterTree: string | null = null;
   let baseCommit: string | null = null;
   let finalCommit: string | null = null;
   let startedAt: Date | null = null;
   let queueClaimed = false;
+  let runningClaimed = false;
+  let releaseCaseIqPreparation: (() => void) | undefined;
+  let caseIqPreparationStop: Promise<void> | undefined;
+  let caseIqPreparationFinalizing = false;
+  let caseIqCompletionSealed = false;
+  let preparation: ReturnType<typeof beginWorkRunPreparation> | undefined;
+  const caseIqVersions: CaseIqRunVersion[] = [];
+
+  const captureBaseline = () => {
+    preparation?.report({ phase: "snapshot" });
+    const report = preparation?.report;
+    return captureRunSourceBaseline(executionPath, artifactRoot, run.id,
+      report && ((progress) => report({ phase: "snapshot", progress })), paired);
+  };
 
   const snapshot = (overrides: Partial<WorkRunSnapshot> = {}): WorkRunSnapshot => ({
     schemaVersion: 1,
@@ -259,6 +313,8 @@ export async function executeWorkRun(runId: string): Promise<void> {
     attachments,
     promptHash: hashWorkContent(prompt),
     engine,
+    ...(run.providerId ? { providerId: run.providerId } : {}),
+    ...(caseIqVersions.length ? { caseIqVersions: [...caseIqVersions] } : {}),
     sessionId,
     executionPath,
     concurrencyMode: run.concurrencyMode ?? "DIRECT",
@@ -285,16 +341,50 @@ export async function executeWorkRun(runId: string): Promise<void> {
     ...overrides,
   });
 
+  const deferCaseIqRecovery = async (message: string, error: unknown) => {
+    trackInterruptedCaseIqRun({ id: run.id, copilotSessionId: sessionId });
+    console.error("[CaseIQ] Work remains reserved pending recovery.", error);
+    try {
+      await prisma.run.updateMany({ where: { id: run.id, status: "RUNNING" }, data: { errorMessage: message } });
+    } catch (writeError) {
+      console.error("[CaseIQ] Could not publish the Run recovery status.", run.id, writeError);
+    }
+  };
+
+  const finishCaseIqPreparationStop = async (decision: Promise<void>) => {
+    let message = "CaseIQ is checking its prelaunch cancellation. No Prompt was sent.";
+    try {
+      await decision;
+      message = "CaseIQ is reconciling its saved cancellation. No Prompt was sent.";
+      await settlePrelaunchCaseIqCancellation({ ...run, startedAt }, work, "CaseIQ was cancelled before launch. No Prompt was sent.", "RUNNING");
+    } catch (error) {
+      await deferCaseIqRecovery(message, error);
+    }
+  };
+
   try {
+    if (run.providerId && (run.providerId !== "caseiq" || engine !== "CASEIQ") ||
+        engine === "CASEIQ" && run.providerId !== "caseiq") {
+      throw new Error("This Run does not have a supported web runtime binding. Native Terminal sessions cannot be executed as ordinary CLI.");
+    }
     const pendingRun = await prisma.run.findUnique({
       where: { id: run.id },
       select: { status: true },
     });
     if (pendingRun?.status !== "PENDING") {
-      if (pendingRun?.status === "CANCELLED") {
+      if (!caseIqWebRun && pendingRun?.status === "CANCELLED") {
         await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
       }
       return;
+    }
+    if (engine === "CASEIQ") {
+      releaseCaseIqPreparation = registerNativeRunControl(run.id, async () => {
+        if (caseIqPreparationFinalizing && !caseIqPreparationStop) throw caseIqRunAlreadyFinalizing();
+        caseIqPreparationStop ??= persistCaseIqPrelaunchCancellation(caseIqLaunchOwner);
+        await caseIqPreparationStop;
+        return true;
+      });
+      await prepareCaseIqRunLaunch(caseIqLaunchOwner, ensurePrivateRuntimeDirectory);
     }
     if (run.concurrencyMode === QUEUED_FOLLOW_UP_MODE) {
       await waitForQueuedParent(run);
@@ -306,33 +396,64 @@ export async function executeWorkRun(runId: string): Promise<void> {
       });
       if (claimed.count === 0) {
         const current = await prisma.run.findUnique({ where: { id: run.id }, select: { status: true } });
-        if (current?.status === "CANCELLED") await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
+        if (!caseIqWebRun && current?.status === "CANCELLED") await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
         return;
       }
       queueClaimed = true;
+      runningClaimed = true;
     }
-    await prepareWorkRunArtifacts(work.directoryPath, run.id, snapshot({ status: queueClaimed ? "RUNNING" : run.status }));
-    if (run.trigger === "FOLLOW_UP") {
+    if (!queueClaimed) preparation = beginWorkRunPreparation(run.id);
+    const prepareArtifacts = () => prepareWorkRunArtifacts(artifactRoot, run.id, snapshot({ status: queueClaimed ? "RUNNING" : run.status }));
+    if (caseIqWebRun && !queueClaimed) {
+      // Do not truncate a cancellation snapshot published while the job was preparing.
+      const prepared = await serializeRunFinalization(run.id, async () => {
+        const current = await prisma.run.findUnique({ where: { id: run.id }, select: { status: true } });
+        if (current?.status !== "PENDING") return false;
+        await prepareArtifacts();
+        return true;
+      });
+      if (!prepared) return;
+    } else {
+      await prepareArtifacts();
+    }
+    if (run.trigger === "FOLLOW_UP" && !paired) {
       await ensureFollowUpPrompt(work, run);
     }
 
     if (run.resumedFromRunId) {
-      const parentPaths = getWorkRunArtifactPaths(work.directoryPath, run.resumedFromRunId);
+      preparation?.report({ phase: "resume" });
+      if (pair) {
+        const parent = await prisma.run.findUnique({ where: { id: run.resumedFromRunId } });
+        if (!parent || parent.workId !== work.id || parent.hostname !== hostname() ||
+            parent.copilotSessionId !== sessionId || !matchesPairedWorkspace({ ...work, sessionPair: pair }, parent)) {
+          throw new WorkPairError("The paired Follow Up no longer has its original parent Run. No Prompt was sent.");
+        }
+        await verifyPairedRunDirectory(work, parent);
+        if (engine === "CLI" && readNativeSessionBindingSync(sessionId) || !await copilotSessionHasHistory(sessionId)) {
+          throw new WorkPairError("The original paired Session has no usable history to resume. No Prompt was sent.");
+        }
+      }
+      const parentPaths = getWorkRunArtifactPaths(artifactRoot, run.resumedFromRunId);
       const parentSnapshot = await readWorkRunSnapshot(parentPaths.snapshot).catch(() => null);
-      beforeTree = parentSnapshot
+      // Older directory snapshots can contain only the parent's pre-run baseline.
+      beforeTree = parentSnapshot && (!caseIqWebRun ||
+        (parentSnapshot.finishedAt && (parentSnapshot.sourceAfterCaptured === true ||
+          (parentSnapshot.sourceAfterCaptured === undefined && parentSnapshot.gitAfterTree))))
         ? await inheritRunSourceBaseline({
-            sourceWorkDirectory: work.directoryPath,
+            sourceWorkDirectory: artifactRoot,
             sourceRunId: run.resumedFromRunId,
             sourceGitTree: parentSnapshot.gitAfterTree,
-            targetWorkDirectory: work.directoryPath,
+            targetWorkDirectory: artifactRoot,
             targetRunId: run.id,
-          }).catch(() => captureRunSourceBaseline(executionPath, work.directoryPath, run.id))
-        : await captureRunSourceBaseline(executionPath, work.directoryPath, run.id);
+          }).catch(captureBaseline)
+        : await captureBaseline();
+      preparation?.report({ phase: "resume" });
       await repairLegacyCopilotSessionEvents(sessionId);
     } else {
-      beforeTree = await captureRunSourceBaseline(executionPath, work.directoryPath, run.id);
+      beforeTree = await captureBaseline();
     }
-    baseCommit = await getHeadCommit(executionPath).catch(() => null);
+    preparation?.report({ phase: "startup" });
+    baseCommit = paired ? null : await getHeadCommit(executionPath).catch(() => null);
     startedAt ??= new Date();
     const claimed = await prisma.run.updateMany({
       where: { id: run.id, status: queueClaimed ? "RUNNING" : "PENDING" },
@@ -348,11 +469,13 @@ export async function executeWorkRun(runId: string): Promise<void> {
     if (claimed.count === 0) {
       const current = await prisma.run.findUnique({ where: { id: run.id }, select: { status: true } });
       if (current?.status === "CANCELLED") {
-        await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
+        if (!caseIqWebRun) await finalizeCancelledWorkRun(run.id, "Run was cancelled before it started.");
         return;
       }
       throw new Error(`Run ${run.id} could not be claimed from PENDING state`);
     }
+    runningClaimed = true;
+    preparation?.finish();
     if (run.experimentVariantId) {
       await prisma.experimentVariant.update({
         where: { id: run.experimentVariantId },
@@ -360,7 +483,7 @@ export async function executeWorkRun(runId: string): Promise<void> {
       });
     }
 
-    const onSpawn = ({
+    const onSpawn = async ({
       pid,
       command,
       model,
@@ -369,30 +492,66 @@ export async function executeWorkRun(runId: string): Promise<void> {
       command: string;
       model: string | null;
     }) => {
-      void prisma.run.update({ where: { id: run.id }, data: { pid, command, model } }).catch(() => {});
+      try {
+        await prisma.run.update({ where: { id: run.id }, data: { pid, command, model } });
+      } catch (error) {
+        console.error("[Work Board] Run process metadata could not be saved.", error);
+      }
     };
 
     const currentStatus = await prisma.run.findUnique({
       where: { id: run.id },
       select: { status: true },
     });
+    if (caseIqPreparationStop) {
+      await finishCaseIqPreparationStop(caseIqPreparationStop);
+      return;
+    }
     if (currentStatus?.status === "CANCELLED") {
-      await finalizeCancelledWorkRun(run.id);
+      if (!caseIqWebRun) await finalizeCancelledWorkRun(run.id);
       return;
     }
 
+    if (pair) await verifyPairedRunDirectory(work, run);
     const messageAttachments = await runtimeWorkAttachments(work, attachments);
+    const pairedWorkspace = paired
+      ? await writePairedWorkspaceInstructions(work.directoryPath, artifactRoot, run.id, ensurePrivateRuntimeDirectory)
+      : undefined;
+    const deliveryPrompt = paired && !prompt.trim() && messageAttachments.length ? "Please review the attached files." : prompt;
     const sdkUsageBaseline = engine === "SDK"
       ? await readCopilotSessionInsights(sessionId).catch(() => null)
       : null;
 
+    if (caseIqPreparationStop) {
+      await finishCaseIqPreparationStop(caseIqPreparationStop);
+      return;
+    }
+    // The runner registers its cancellation control synchronously, with no await between owners.
+    releaseCaseIqPreparation?.();
     const result =
-      engine === "SDK"
+      engine === "CASEIQ"
+        ? await startCaseIqRun({
+            userId: work.userId, workId: work.id, runId: run.id, sessionId,
+            authorizeLaunch: () => authorizeCaseIqRunLaunch(caseIqLaunchOwner),
+            persistPrelaunchCancellation: (attempt) => persistCaseIqPrelaunchCancellation(caseIqLaunchOwner, attempt),
+            repoPath: executionPath, prompt: deliveryPrompt, pairedWorkspace,
+            attachmentPaths: messageAttachments.map((attachment) => attachment.path),
+            resumeSession: Boolean(run.resumedFromRunId),
+            agent: run.agent, model: run.model, fallbackModel: run.fallbackModel,
+            contextTier: run.contextTier, reasoningEffort: run.reasoningEffort,
+            ...resolveWorkCliOutputOptions("json"), timeoutSeconds,
+            stdoutLogPath: artifactPaths.stdout, stderrLogPath: artifactPaths.stderr, onSpawn,
+            onVersion: async (version) => {
+              caseIqVersions.push(version);
+              await writeRunSnapshot(artifactPaths.snapshot, snapshot({ status: "RUNNING" }));
+            },
+          })
+      : engine === "SDK"
         ? await startCopilotSdkRun({
             runId: run.id,
             sessionId,
             workPath: executionPath,
-            prompt,
+            prompt: deliveryPrompt,
             attachments: messageAttachments,
             resumeSession: Boolean(run.resumedFromRunId),
             model: run.model,
@@ -407,7 +566,8 @@ export async function executeWorkRun(runId: string): Promise<void> {
             runId: run.id,
             sessionId,
             repoPath: executionPath,
-            prompt,
+            prompt: deliveryPrompt,
+            pairedWorkspace,
             attachmentPaths: messageAttachments.map((attachment) => attachment.path),
             resumeSession: Boolean(run.resumedFromRunId),
             agent: run.agent,
@@ -431,14 +591,20 @@ export async function executeWorkRun(runId: string): Promise<void> {
         );
     const usageData = serializeCopilotTokenUsage(usage);
 
+    if (pair) await verifyPairedRunDirectory(work, run);
     const sourceDiff = await captureRunSourceDiff({
       executionPath,
-      workDirectory: work.directoryPath,
+      workDirectory: artifactRoot,
       runId: run.id,
       beforeGitTree: beforeTree,
+    }).catch((error: unknown) => {
+      if (!caseIqWebRun) throw error;
+      const warning = "Workspace diff could not be collected.";
+      console.warn("[CaseIQ] " + warning, run.id, error instanceof Error ? error.name : error);
+      return { afterGitTree: null, diff: "", warning };
     });
     afterTree = sourceDiff.afterGitTree;
-    finalCommit = await getHeadCommit(executionPath).catch(() => null);
+    finalCommit = paired ? null : await getHeadCommit(executionPath).catch(() => null);
     const diff = sourceDiff.diff;
     const stdout = await readFile(artifactPaths.stdout, "utf8").catch(() => "");
     const skillInvoked = detectSkillInvocation(stdout, run.experimentVariant?.skillName ?? null);
@@ -465,27 +631,42 @@ export async function executeWorkRun(runId: string): Promise<void> {
         finishedAt: finishedAt.toISOString(),
         exitCode: result.exitCode,
         errorMessage,
+        ...("warning" in sourceDiff ? { artifactWarnings: [sourceDiff.warning] } : {}),
         gitBeforeTree: beforeTree,
         gitAfterTree: afterTree,
+        ...(caseIqWebRun ? { sourceAfterCaptured: !("warning" in sourceDiff) && (!beforeTree || afterTree !== null) } : {}),
+        ...(engine === "CASEIQ" ? { model: result.model } : {}),
         ...usageData,
       }),
       finalOutput,
       diff,
+      ...(engine === "CASEIQ" ? {
+        seal: async (artifacts) => {
+          await sealCaseIqRunCompletion({ ...caseIqLaunchOwner, workId: work.id }, {
+            hasOutput: Boolean(finalOutput?.trim()), finalCommit, skillInvoked, artifacts,
+          });
+          caseIqCompletionSealed = true;
+        },
+      } : {}),
     });
-    await prisma.run.update({
-      where: { id: run.id },
-      data: {
-        status,
-        finalCommit,
-        finalOutput,
-        errorMessage,
-        exitCode: result.exitCode,
-        finishedAt,
-        cpuTimeMs: result.cpuTimeMs,
-        peakMemoryMb: result.peakMemoryMb,
-        ...usageData,
-      },
-    });
+    const outcome = {
+      status,
+      finalCommit,
+      finalOutput,
+      errorMessage,
+      exitCode: result.exitCode,
+      finishedAt,
+      cpuTimeMs: result.cpuTimeMs,
+      peakMemoryMb: result.peakMemoryMb,
+      ...(engine === "CASEIQ" ? { model: result.model } : {}),
+      ...usageData,
+    } satisfies CaseIqWorkOutcome;
+    if (engine === "CASEIQ") {
+      await settleCaseIqWorkRun(run, outcome, { skillInvoked });
+      return;
+    }
+
+    await prisma.run.update({ where: { id: run.id }, data: outcome });
     if (run.experimentVariantId) {
       await prisma.experimentVariant.update({
         where: { id: run.experimentVariantId },
@@ -508,29 +689,50 @@ export async function executeWorkRun(runId: string): Promise<void> {
       });
     }
   } catch (error) {
+    caseIqPreparationFinalizing = true;
     const errorMessage = error instanceof Error ? error.message : String(error);
+    if (error instanceof CaseIqRunUnconfirmedError || caseIqCompletionSealed) {
+      const message = caseIqCompletionSealed
+        ? "CaseIQ is reconciling its saved completion receipt after a finalization error."
+        : errorMessage;
+      await deferCaseIqRecovery(message, error);
+      return;
+    }
+    if (caseIqPreparationStop && runningClaimed) {
+      await finishCaseIqPreparationStop(caseIqPreparationStop);
+      return;
+    }
+    if (engine === "CASEIQ" &&
+        (await prisma.run.findUnique({ where: { id: run.id }, select: { status: true } }))?.status === "CANCELLED") {
+      if (!caseIqWebRun) await finalizeCancelledWorkRun(run.id);
+      return;
+    }
     const finishedAt = new Date();
-    const sourceDiff = await captureRunSourceDiff({
-      executionPath,
-      workDirectory: work.directoryPath,
-      runId: run.id,
-      beforeGitTree: beforeTree,
-    }).catch(() => ({ afterGitTree: null, diff: "" }));
-    afterTree = sourceDiff.afterGitTree;
-    finalCommit = await getHeadCommit(executionPath).catch(() => null);
-    const diff = sourceDiff.diff;
-    await finalizeWorkRunArtifacts({
-      paths: artifactPaths,
-      snapshot: snapshot({
-        status: "FAILED",
-        finishedAt: finishedAt.toISOString(),
-        errorMessage,
-        gitBeforeTree: beforeTree,
-        gitAfterTree: afterTree,
-      }),
-      finalOutput: null,
-      diff,
-    }).catch(() => {});
+    const publishFailureArtifacts = async (beforeLaunch = false) => {
+      try {
+        if (pair) await verifyPairedRunDirectory(work, run);
+        const { afterGitTree, diff } = beforeLaunch ? { afterGitTree: null, diff: "" }
+          : await captureRunSourceDiff({ executionPath, workDirectory: artifactRoot,
+            runId: run.id, beforeGitTree: beforeTree }).catch(() => ({ afterGitTree: null, diff: "" }));
+        afterTree = afterGitTree;
+        finalCommit = paired || beforeLaunch ? null : await getHeadCommit(executionPath).catch(() => null);
+        await finalizeWorkRunArtifacts({
+          paths: artifactPaths, snapshot: snapshot({ status: "FAILED", finishedAt: finishedAt.toISOString(),
+            errorMessage, gitBeforeTree: beforeTree, gitAfterTree: afterTree }),
+          finalOutput: null, diff,
+        });
+      } catch (artifactError) {
+        console.error("[Work Board] Could not finalize failed Run artifacts.", artifactError);
+      }
+    };
+    if (caseIqWebRun && !runningClaimed) {
+      await serializeRunFinalization(run.id, async () => {
+        const settled = await settleCaseIqWorkRun(run, { status: "FAILED", errorMessage, finishedAt }, { expectedStatus: "PENDING" });
+        if (settled) await publishFailureArtifacts(true);
+      });
+      return;
+    }
+    await publishFailureArtifacts();
     await prisma.$transaction([
       prisma.run.update({
         where: { id: run.id },
@@ -545,11 +747,63 @@ export async function executeWorkRun(runId: string): Promise<void> {
       });
       await refreshExperimentStatus(run.experimentVariant!.experimentId);
     }
+  } finally {
+    releaseCaseIqPreparation?.();
+    preparation?.finish();
   }
 }
 
-export async function refreshExperimentStatus(experimentId: string): Promise<void> {
-  const variants = await prisma.experimentVariant.findMany({
+type CaseIqWorkOutcome = Prisma.RunUpdateManyMutationInput & {
+  status: "SUCCESS" | "FAILED" | "CANCELLED" | "TIMED_OUT";
+  errorMessage: string | null;
+  finishedAt: Date;
+};
+
+export async function settleCaseIqWorkRun(
+  run: Pick<Run, "id" | "workId" | "experimentVariantId">,
+  outcome: CaseIqWorkOutcome,
+  { skillInvoked, expectedStatus = "RUNNING" }: { skillInvoked?: boolean | null; expectedStatus?: "PENDING" | "RUNNING" } = {},
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const settled = await tx.run.updateMany({ where: { id: run.id, status: expectedStatus }, data: outcome });
+    if (!settled.count) return false;
+
+    const { status, errorMessage } = outcome;
+    if (run.experimentVariantId) {
+      const { experimentId } = await tx.experimentVariant.update({
+        where: { id: run.experimentVariantId },
+        data: {
+          status: status === "SUCCESS" || status === "CANCELLED" ? status : "FAILED",
+          ...(skillInvoked === undefined ? {} : { skillInvoked }),
+          errorMessage: status === "SUCCESS" ? null : errorMessage ?? (status === "CANCELLED" ? null : `Run finished with status ${status}`),
+        },
+        select: { experimentId: true },
+      });
+      await refreshExperimentStatus(experimentId, tx);
+    }
+    if (run.workId) {
+      await projectSettledWorkState(tx, run.workId, status === "SUCCESS" ? "REVIEW" : "ACTIVE");
+    }
+    return true;
+  });
+}
+
+async function projectSettledWorkState(database: Pick<Prisma.TransactionClient, "work">, workId: string, status: "REVIEW" | "ACTIVE") {
+  await database.work.updateMany({
+    where: {
+      id: workId,
+      status: { not: "ARCHIVED" },
+      runs: { none: { status: { in: ["PENDING", "RUNNING"] } } },
+    },
+    data: { status },
+  });
+}
+
+export async function refreshExperimentStatus(
+  experimentId: string,
+  database: Pick<Prisma.TransactionClient, "experimentVariant" | "experiment"> = prisma,
+): Promise<void> {
+  const variants = await database.experimentVariant.findMany({
     where: { experimentId },
     select: { status: true },
   });
@@ -557,16 +811,47 @@ export async function refreshExperimentStatus(experimentId: string): Promise<voi
     ["COPYING", "READY", "RUNNING"].includes(variant.status)
   );
   if (active) {
-    await prisma.experiment.updateMany({
+    await database.experiment.updateMany({
       where: { id: experimentId, status: { in: ["PROVISIONING", "RUNNING"] } },
       data: { status: "RUNNING" },
     });
     return;
   }
-  await prisma.experiment.updateMany({
+  await database.experiment.updateMany({
     where: { id: experimentId, status: { in: ["PROVISIONING", "RUNNING"] } },
     data: { status: "COMPLETED", finishedAt: new Date() },
   });
+}
+
+const cancellationRelations = { work: { include: { sessionPair: true } }, experimentVariant: true } satisfies Prisma.RunInclude;
+type CancellationRun = Prisma.RunGetPayload<{ include: typeof cancellationRelations }>;
+
+export async function cancelPendingCaseIqWorkRun(runId: string, message: string): Promise<boolean> {
+  return serializeRunFinalization(runId, async () => {
+    const run = await prisma.run.findUnique({ where: { id: runId }, include: cancellationRelations });
+    if (!run?.work || run.status !== "PENDING" || !isCaseIqWebRun(run)) return false;
+    return settlePrelaunchCaseIqCancellation(run, run.work, message, "PENDING");
+  });
+}
+
+async function settlePrelaunchCaseIqCancellation(
+  run: CancellationRun,
+  work: NonNullable<CancellationRun["work"]>,
+  message: string,
+  expectedStatus: "PENDING" | "RUNNING",
+): Promise<boolean> {
+  const finishedAt = new Date();
+  const cancelled = await settleCaseIqWorkRun(run, {
+    status: "CANCELLED", finishedAt, finalOutput: message, errorMessage: null,
+  }, { expectedStatus });
+  if (!cancelled) return false;
+  try {
+    const artifactRoot = await verifyPairedRunDirectory(work, run);
+    await writeCancelledWorkRunArtifacts(run, work, artifactRoot, message, finishedAt, true);
+  } catch (error) {
+    console.error("[CaseIQ] Run was cancelled before launch, but cancellation artifacts could not be saved.", run.id, error);
+  }
+  return true;
 }
 
 export async function finalizeCancelledWorkRun(
@@ -582,7 +867,7 @@ async function finalizeCancelledWorkRunUnlocked(
 ): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
-    include: { work: true, experimentVariant: true },
+    include: cancellationRelations,
   });
   if (run.finishedAt && run.outputDir) return;
   if (!run.work) {
@@ -592,10 +877,44 @@ async function finalizeCancelledWorkRunUnlocked(
     });
     return;
   }
-
   const work = run.work;
+  let artifactRoot: string;
+  try { artifactRoot = await verifyPairedRunDirectory(work, run); }
+  catch (error) {
+    console.error("[Work Board] Could not write cancellation artifacts to the paired directory.", error);
+    await prisma.run.update({
+      where: { id: run.id },
+      data: { status: "CANCELLED", finishedAt: new Date(), errorMessage: "Run was cancelled. Its original output directory could not be verified." },
+    });
+    return;
+  }
+  const finishedAt = new Date();
+  await writeCancelledWorkRunArtifacts(run, work, artifactRoot, message, finishedAt);
+
+  await prisma.run.update({
+    where: { id: run.id },
+    data: { status: "CANCELLED", finishedAt, finalOutput: message },
+  });
+  if (run.experimentVariantId) {
+    await prisma.experimentVariant.update({
+      where: { id: run.experimentVariantId },
+      data: { status: "CANCELLED", errorMessage: null },
+    });
+    await refreshExperimentStatus(run.experimentVariant!.experimentId);
+  }
+  await projectSettledWorkState(prisma, work.id, "ACTIVE");
+}
+
+async function writeCancelledWorkRunArtifacts(
+  run: CancellationRun,
+  work: NonNullable<CancellationRun["work"]>,
+  artifactRoot: string,
+  message: string,
+  finishedAt: Date,
+  beforeLaunch = false,
+) {
   const executionPath = run.executionPath ?? work.directoryPath;
-  const paths = getWorkRunArtifactPaths(work.directoryPath, run.id);
+  const paths = getWorkRunArtifactPaths(artifactRoot, run.id);
   let snapshot = await readWorkRunSnapshot(paths.snapshot).catch(() => null);
   if (!snapshot) {
     snapshot = {
@@ -607,6 +926,7 @@ async function finalizeCancelledWorkRunUnlocked(
       prompt: run.promptSnapshot ?? work.promptCache,
       promptHash: hashWorkContent(run.promptSnapshot ?? work.promptCache),
       engine: run.engine ?? work.defaultEngine,
+      ...(run.providerId ? { providerId: run.providerId } : {}),
       sessionId: run.copilotSessionId ?? "unknown",
       executionPath,
       concurrencyMode: run.concurrencyMode ?? "DIRECT",
@@ -637,44 +957,24 @@ async function finalizeCancelledWorkRunUnlocked(
       reasoningTokens: run.reasoningTokens,
       modelsUsed: run.modelsUsed,
     } satisfies WorkRunSnapshot;
-    await prepareWorkRunArtifacts(work.directoryPath, run.id, snapshot);
+    await prepareWorkRunArtifacts(artifactRoot, run.id, snapshot);
   }
-  const sourceDiff = await captureRunSourceDiff({
+  const { afterGitTree, diff } = beforeLaunch ? { afterGitTree: null, diff: "" } : await captureRunSourceDiff({
     executionPath,
-    workDirectory: work.directoryPath,
+    workDirectory: artifactRoot,
     runId: run.id,
     beforeGitTree: snapshot.gitBeforeTree,
   }).catch(() => ({ afterGitTree: null, diff: "" }));
-  const afterTree = sourceDiff.afterGitTree;
-  const diff = sourceDiff.diff;
-  const finishedAt = new Date();
   await finalizeWorkRunArtifacts({
     paths,
     snapshot: {
       ...snapshot,
       status: "CANCELLED",
+      ...(beforeLaunch ? { startedAt: run.startedAt?.toISOString() ?? null } : {}),
       finishedAt: finishedAt.toISOString(),
-      gitAfterTree: afterTree,
+      gitAfterTree: afterGitTree,
     },
     finalOutput: message,
     diff,
   });
-
-  await prisma.run.update({
-    where: { id: run.id },
-    data: { status: "CANCELLED", finishedAt, finalOutput: message },
-  });
-  if (run.experimentVariantId) {
-    await prisma.experimentVariant.update({
-      where: { id: run.experimentVariantId },
-      data: { status: "CANCELLED", errorMessage: null },
-    });
-    await refreshExperimentStatus(run.experimentVariant!.experimentId);
-  }
-  const otherLiveRuns = await prisma.run.count({
-    where: { workId: work.id, id: { not: run.id }, status: { in: ["PENDING", "RUNNING"] } },
-  });
-  if (otherLiveRuns === 0) {
-    await prisma.work.update({ where: { id: work.id }, data: { status: "ACTIVE" } });
-  }
 }

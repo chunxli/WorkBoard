@@ -1,12 +1,18 @@
+import { createHash, randomUUID } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { caseIqAuthenticationDirectory, type StoredCaseIqAuthentication } from "./caseiq-authentication-state";
 import { withRunStartLock } from "./run-start-lock";
 
 const mocks = vi.hoisted(() => ({
   lstat: vi.fn(), stat: vi.fn(), list: vi.fn(), update: vi.fn(), activity: vi.fn(),
+  readdir: vi.fn<(directory: string) => Promise<string[]>>(),
+  readFile: vi.fn<(file: string, encoding: BufferEncoding) => Promise<string>>(),
 }));
-vi.mock("node:fs/promises", () => ({ lstat: mocks.lstat, stat: mocks.stat }));
+vi.mock("node:fs/promises", () => ({
+  lstat: mocks.lstat, stat: mocks.stat, readdir: mocks.readdir, readFile: mocks.readFile,
+}));
 vi.mock("@/lib/prisma", () => ({ prisma: { work: { findMany: mocks.list, updateMany: mocks.update } } }));
 vi.mock("@/lib/terminal-resume", () => ({ getTerminalSessionActivity: mocks.activity }));
 import { reconcileMissingWorkDirectories, startWorkDirectoryReconciliation } from "./work-directory-reconciler";
@@ -26,11 +32,13 @@ const timerState = globalThis as typeof globalThis & {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.stubEnv("WORKBOARD_CASEIQ_STATE_ROOT", path.join(tmpdir(), "work-directory-reconcile-auth"));
   mocks.list.mockResolvedValue([work]);
   mocks.update.mockResolvedValue({ count: 1 });
   mocks.activity.mockResolvedValue({ active: false, starting: false });
   mocks.lstat.mockRejectedValue(missing());
   mocks.stat.mockResolvedValue({ isDirectory: () => true });
+  mocks.readdir.mockResolvedValue([]);
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -40,6 +48,7 @@ afterEach(() => {
   delete timerState.workDirectoryTimer;
   delete timerState.workDirectoryPending;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 
@@ -125,13 +134,61 @@ describe("missing Work directory reconciliation", () => {
     expect(mocks.update).not.toHaveBeenCalled();
   });
 
+  it("preserves a Work while an older CaseIQ Session is reserved and archives it once the reservation clears", async () => {
+    const operation = {
+      id: randomUUID(), sessionId: randomUUID(), sourceRunId: "auth-run", startedAt: new Date().toISOString(),
+      userId: "owner", workId: "auth-work", hostname: hostname(), launchRejected: false,
+      errorMessage: null, trustWorkFolder: false,
+    } satisfies StoredCaseIqAuthentication;
+    const name = `${createHash("sha256").update(operation.workId).digest("hex")}.json`;
+    const metadataPath = path.join(caseIqAuthenticationDirectory(), name);
+    let metadata = JSON.stringify(operation);
+    mocks.list.mockResolvedValue([{ ...work, runs: [
+      ...work.runs, { copilotSessionId: operation.sessionId, terminalLaunches: [] },
+    ] }]);
+    mocks.readdir.mockResolvedValue([name]);
+    mocks.lstat.mockImplementation(async (file: string) => {
+      if (file !== metadataPath) throw missing();
+      return { isFile: () => true, isSymbolicLink: () => false, size: Buffer.byteLength(metadata) };
+    });
+    mocks.readFile.mockImplementation(async () => metadata);
+
+    await reconcileMissingWorkDirectories("owner");
+    expect(mocks.readFile).toHaveBeenCalledExactlyOnceWith(metadataPath, "utf8");
+    expect(mocks.activity).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+
+    metadata = JSON.stringify({ ...operation, launchRejected: true, errorMessage: "Fixture authentication launch failed." });
+    await reconcileMissingWorkDirectories("owner");
+    expect(mocks.activity).toHaveBeenCalledWith(operation.sessionId, null);
+    expect(mocks.update).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      where: expect.objectContaining({ id: work.id }), data: expect.objectContaining({ status: "ARCHIVED" }),
+    }));
+  });
+
+  it("does not archive when the authentication directory is unreadable and retries once it is available", async () => {
+    const failedCheck = Object.assign(new Error("Fixture authentication directory is unreadable"), { code: "EACCES" });
+    mocks.readdir.mockRejectedValueOnce(failedCheck);
+
+    await reconcileMissingWorkDirectories("owner");
+    expect(mocks.activity).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledExactlyOnceWith(
+      `[work-directory] Could not verify or archive Work ${work.id}:`, failedCheck,
+    );
+
+    await reconcileMissingWorkDirectories("owner");
+    expect(mocks.update).toHaveBeenCalledOnce();
+  });
+
   it("rechecks the root before updating in case the folder has returned", async () => {
     let checks = 0;
-    mocks.lstat.mockImplementation(async () => {
-      if (++checks > 1) return { isDirectory: () => true };
+    mocks.lstat.mockImplementation(async (file: string) => {
+      if (file === directoryPath && ++checks > 1) return { isDirectory: () => true };
       throw missing();
     });
     await reconcileMissingWorkDirectories("owner");
+    expect(checks).toBe(2);
     expect(mocks.update).not.toHaveBeenCalled();
   });
 

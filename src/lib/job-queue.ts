@@ -8,6 +8,7 @@ type QueueEntry = { key: string; job: Job; waitForPreviousRuns: boolean };
 export class JobQueue {
   private queue: QueueEntry[] = [];
   private activeKeys = new Set<string>();
+  private heldKeys = new Map<string, number>();
   private globalRunning = 0;
   private exclusiveRunning = false;
   private readonly concurrency: number;
@@ -21,11 +22,29 @@ export class JobQueue {
     this.drain();
   }
 
+  /** Pause a session without spending a concurrency slot while its prior process is still being verified. */
+  hold(key: string): () => void {
+    this.heldKeys.set(key, (this.heldKeys.get(key) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = this.heldKeys.get(key) ?? 1;
+      if (count === 1) this.heldKeys.delete(key);
+      else this.heldKeys.set(key, count - 1);
+      this.drain();
+    };
+  }
+
   private drain() {
     if (this.exclusiveRunning || this.globalRunning >= this.concurrency) return;
 
     for (let index = 0; index < this.queue.length && this.globalRunning < this.concurrency; ) {
       const entry = this.queue[index];
+      if (this.heldKeys.has(entry.key)) {
+        index++;
+        continue;
+      }
 
       if (entry.waitForPreviousRuns) {
         // Do not let later jobs overtake this barrier or let it start before earlier blocked jobs.

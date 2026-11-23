@@ -15,6 +15,7 @@ export default function WorkActions({
   canOpenLocal,
   terminalRunId,
   terminalState,
+  paired = false,
 }: {
   workId: string;
   name: string;
@@ -25,17 +26,18 @@ export default function WorkActions({
   canOpenLocal: boolean;
   terminalRunId: string | null;
   terminalState: "ready" | "active" | "unavailable";
+  paired?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
 
   return (
     <div className="work-detail-actions ml-auto flex min-w-0 flex-wrap items-center gap-1">
-      <FollowUpDialog
+      {!paired && <FollowUpDialog
         workId={workId}
         mode={followUpMode}
         disabledReason={followUpDisabledReason}
         inline
-      />
+      />}
       <button
         type="button"
         title={copied ? "Copied" : "Copy path"}

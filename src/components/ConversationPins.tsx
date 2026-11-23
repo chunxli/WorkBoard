@@ -135,9 +135,9 @@ export function ConversationLinePin({ eventId, line }: { eventId: string; line: 
   </button>;
 }
 
-export function ConversationPinsPanel() {
+export function ConversationPinsPanel({ disclosureGroup }: { disclosureGroup?: string } = {}) {
   const context = useContext(ConversationPinsContext);
-  return <section aria-label="Conversation Pins" className={`conversation-pins-panel ${context?.pins.length ? "has-pins" : ""}`}>
+  const panel = <section aria-label="Conversation Pins" className={`conversation-pins-panel ${context?.pins.length ? "has-pins" : ""}`}>
     <div className="flex shrink-0 items-center justify-between gap-2">
       <h2 className="flex items-center gap-1 text-xs font-semibold text-neutral-300"><Pin size={13} aria-hidden="true" />Pins</h2>
       {context && <button type="button" title="Refresh Pins" aria-label="Refresh Pins" disabled={context.loading || context.busy}
@@ -147,7 +147,7 @@ export function ConversationPinsPanel() {
     </div>
     {context?.loading && <p role="status" className="flex items-center gap-1 text-xs text-neutral-500"><LoaderCircle size={12} className="animate-spin" aria-hidden="true" />Loading Pins...</p>}
     {context?.error && <p role="alert" className="shrink-0 text-xs text-red-400">{context.error}</p>}
-    {context?.notice && <p role="status" className="sr-only">{context.notice}</p>}
+    {!disclosureGroup && context?.notice && <p role="status" className="sr-only">{context.notice}</p>}
     {!context?.loading && !context?.pins.length && <p className="text-[10px] text-neutral-500">Pin a paragraph or code line to return here later.</p>}
     <ol className="min-h-0 space-y-1 overflow-y-auto">
       {context?.pins.map((pin) => <li key={pin.id} className="flex min-w-0 items-start gap-1 rounded hover:bg-neutral-800">
@@ -163,4 +163,13 @@ export function ConversationPinsPanel() {
       </li>)}
     </ol>
   </section>;
+  if (!disclosureGroup) return panel;
+  return <details name={disclosureGroup} className="work-paired-resource">
+    <summary className="work-paired-resource-toggle"><Pin size={13} aria-hidden="true" /> Pins
+      {context && <span className="work-paired-count">{context.pins.length}</span>}
+      {context?.error && <span className="text-amber-300" title={context.error}>!</span>}
+    </summary>
+    {context?.notice && <span role="status" className="sr-only">{context.notice}</span>}
+    {panel}
+  </details>;
 }

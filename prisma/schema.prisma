@@ -82,6 +82,7 @@ enum WorkStatus {
 enum WorkEngine {
   CLI
   SDK
+  CASEIQ
 }
 
 enum SteeringDeliveryState {
@@ -192,11 +193,19 @@ model Work {
   steeringMessages WorkSteeringMessage[]
   conversationPins WorkConversationPin[]
   experiments    Experiment[]
+  sessionPair    WorkSessionPair?
 
   @@unique([userId, canonicalPath, promptFileName])
   @@index([userId, status, updatedAt])
   @@index([userId, status, position])
   @@index([sourceRepoId])
+}
+
+model WorkSessionPair {
+  workId          String @id
+  work            Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+  cliSessionId    String @unique
+  caseIqSessionId String @unique
 }
 
 model WorkConversationPin {
@@ -248,6 +257,7 @@ model PromptTemplate {
 
 model Run {
   id           String     @id @default(cuid())
+  providerId   String?
   taskId       String?
   task         Task?      @relation(fields: [taskId], references: [id], onDelete: Cascade)
   workId       String?

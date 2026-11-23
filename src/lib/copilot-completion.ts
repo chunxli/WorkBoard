@@ -32,6 +32,11 @@ export class CopilotCompletionTracker {
   private taskComplete = false;
   private sessionIdle = false;
   private aborted = false;
+  private responseActivity = false;
+
+  get hasResponseActivity(): boolean {
+    return this.responseActivity;
+  }
 
   push(text: string): void {
     this.buffer += text;
@@ -61,6 +66,10 @@ export class CopilotCompletionTracker {
       event = JSON.parse(line) as CopilotJsonEvent;
     } catch {
       return;
+    }
+    if (event.type === "assistant.turn_start" || event.type === "assistant.message" ||
+        event.type === "assistant.message_delta" || event.type === "tool.execution_start") {
+      this.responseActivity = true;
     }
     const agentId =
       typeof event.agentId === "string"

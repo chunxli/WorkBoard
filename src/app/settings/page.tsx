@@ -11,6 +11,7 @@ import ExecutionDefaultsSettings from "@/components/ExecutionDefaultsSettings";
 import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
 import SystemNotificationSettings from "@/components/SystemNotificationSettings";
 import { getSystemNotificationSettings } from "@/lib/notification-settings";
+import CaseIqMcpDefaultsSettings from "@/components/CaseIqMcpDefaultsSettings";
 
 function SettingsSection({
   id,
@@ -70,6 +71,10 @@ export default async function SettingsPage() {
 
       <SettingsSection id="notifications" title="Notifications">
         <SystemNotificationSettings initialEnabled={notificationSettings.enabled} />
+      </SettingsSection>
+
+      <SettingsSection id="mcp-defaults" title="CaseIQ MCP defaults">
+        <CaseIqMcpDefaultsSettings />
       </SettingsSection>
 
       <SettingsSection title="Work directories">

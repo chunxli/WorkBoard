@@ -83,6 +83,15 @@ describe("Work Card quick renaming", () => {
     terminalResumeState: "unavailable",
   };
 
+  it("uses the global CaseIQ brand for a Work's default runtime badge", () => {
+    const markup = renderToStaticMarkup(<WorkBoard
+      userId="synthetic-user" works={[{ ...work, defaultEngine: "CASEIQ" }]} resources={[]} shortcuts={[]}
+      executionDefaults={BUILT_IN_EXECUTION_DEFAULTS} canOpenExplorer={false}
+    />);
+    expect(markup).toContain('class="caseiq-runtime-tag"');
+    expect(markup).toContain('title="Default runtime: CaseIQ"');
+  });
+
   it.each([true, false])("offers an accessible rename control with local actions available=%s", (canOpenExplorer) => {
     const markup = renderToStaticMarkup(<WorkBoard
       userId="synthetic-user" works={[work]} resources={[]} shortcuts={[]}

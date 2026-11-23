@@ -10,7 +10,7 @@ export type ExecutionReasoningEffort =
   | "max";
 
 export interface ExecutionDefaultsValue {
-  defaultEngine: "CLI" | "SDK";
+  defaultEngine: "CLI" | "SDK" | "CASEIQ";
   agent: string;
   model: string;
   fallbackModel: string;
@@ -54,7 +54,7 @@ export const BUILT_IN_EXECUTION_DEFAULTS: ExecutionDefaultsValue = {
 };
 
 interface StoredExecutionDefaults {
-  defaultEngine?: "CLI" | "SDK" | null;
+  defaultEngine?: "CLI" | "SDK" | "CASEIQ" | null;
   agent?: string | null;
   model?: string | null;
   fallbackModel?: string | null;
@@ -73,7 +73,7 @@ export function normalizeExecutionDefaults(
 ): ExecutionDefaultsValue {
   if (!stored) return { ...BUILT_IN_EXECUTION_DEFAULTS };
   return {
-    defaultEngine: stored.defaultEngine === "SDK" ? "SDK" : "CLI",
+    defaultEngine: stored.defaultEngine === "SDK" || stored.defaultEngine === "CASEIQ" ? stored.defaultEngine : "CLI",
     agent: stored.agent ?? "",
     model: stored.model ?? "",
     fallbackModel: stored.fallbackModel ?? "",

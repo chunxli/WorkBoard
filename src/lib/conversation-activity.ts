@@ -54,6 +54,10 @@ export function isConversationMessage(event: ConversationEvent): boolean {
   return !isAuxiliaryEvent(event) && Boolean(event.text.trim() || event.attachments?.length);
 }
 
+export function conversationToolActivityAt(events: readonly ConversationEvent[]): string[] {
+  return events.flatMap((event) => event.role === "tool" && event.timestamp !== null ? [event.timestamp] : []);
+}
+
 export function conversationTimeline(events: ConversationEvent[]): ConversationTimelineItem[] {
   const timeline: ConversationTimelineItem[] = [];
   let activity: ConversationActivity | null = null;

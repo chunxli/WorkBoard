@@ -8,6 +8,7 @@ const services = vi.hoisted(() => ({
   conflicts: vi.fn(), activity: vi.fn(), reconcile: vi.fn(), exists: vi.fn(), repair: vi.fn(),
   history: vi.fn(), create: vi.fn(), append: vi.fn(), execute: vi.fn(), enqueue: vi.fn(),
   nativeActive: vi.fn(),
+  binding: vi.fn(),
   pins: { findFirst: vi.fn() },
 }));
 vi.mock("@/lib/prisma", () => ({
@@ -30,6 +31,10 @@ vi.mock("@/lib/work-executor", () => ({
 }));
 vi.mock("@/lib/job-queue", () => ({ jobQueue: { enqueue: services.enqueue } }));
 vi.mock("@/lib/copilot-runner", () => ({ isNativeCopilotRunActive: services.nativeActive }));
+vi.mock("@/lib/native-session-bindings", async (original) => ({
+  ...await original<typeof import("./native-session-bindings")>(),
+  readNativeSessionBindingSync: services.binding,
+}));
 
 import { GET } from "../app/api/works/[id]/conversation/route";
 import { POST } from "../app/api/works/[id]/follow-up/route";
@@ -43,7 +48,8 @@ let parent: {
   id: string; workId: string; status: string; trigger: string; hostname: string | null;
   copilotSessionId: string; executionPath: string; createdAt: Date; startedAt: Date | null;
   finishedAt: Date | null; terminalLaunches: { id: string }[];
-  engine: "CLI" | "SDK";
+  engine: "CLI" | "SDK" | "CASEIQ";
+  providerId?: string | null;
   concurrencyMode: string | null; resumedFromRunId: string | null; promptSnapshot: string | null; attachmentsJson: string | null;
 };
 let sessionRuns: typeof parent[];
@@ -89,6 +95,49 @@ beforeEach(() => {
 });
 
 describe("owned session conversation API", () => {
+  it("identifies CaseIQ native preparation without misclassifying its owned process as Terminal", async () => {
+    parent.engine = "CASEIQ";
+    parent.providerId = "caseiq";
+    parent.status = "RUNNING";
+    services.binding.mockReturnValue({ home: null, userId: "owner", workId: "work-1" });
+    services.nativeActive.mockReturnValue(true);
+    services.activity.mockResolvedValue({ active: true, starting: false });
+    services.history.mockRejectedValueOnce(Object.assign(new Error("No native session yet"), { code: "ENOENT" }));
+    const body = await (await GET(request("?runId=run-1"), context)).json();
+    expect(body).toMatchObject({ historyAvailable: false, terminalActive: false, canFollowUp: false, canQueue: true });
+    expect(body.sessionUsage).toBeNull();
+    expect(body.historyUnavailableReason).toContain("CaseIQ is preparing");
+    expect(body.historyUnavailableReason).toContain("native Prompt process has not started");
+    expect(services.activity).not.toHaveBeenCalled();
+  });
+
+  it("explains that a failed CaseIQ preparation has no recorded native session messages", async () => {
+    parent.engine = "CASEIQ";
+    parent.providerId = "caseiq";
+    parent.status = "FAILED";
+    services.binding.mockReturnValue({ home: null, userId: "owner", workId: "work-1" });
+    services.history.mockRejectedValueOnce(Object.assign(new Error("No native session"), { code: "ENOENT" }));
+    const body = await (await GET(request("?runId=run-1"), context)).json();
+    expect(body).toMatchObject({ historyAvailable: false, canFollowUp: false, canQueue: false });
+    expect(body.historyUnavailableReason).toContain("CaseIQ stopped before");
+    expect(body.historyUnavailableReason).not.toContain("Waiting for this Run");
+    expect(services.activity).not.toHaveBeenCalled();
+  });
+
+  it("keeps CaseIQ history readable but refuses web Follow Up instead of changing its provider", async () => {
+    parent.providerId = "caseiq";
+    parent.trigger = "TERMINAL_START";
+    services.binding.mockReturnValue({ home: "C:\\synthetic", userId: "owner", workId: "work-1" });
+    const response = await GET(request("?runId=run-1"), context);
+    expect(await response.json()).toMatchObject({
+      historyAvailable: true, canFollowUp: false, canQueue: false,
+      blockedReason: expect.stringContaining("CaseIQ"),
+    });
+    const followUpResponse = await followUp({ prompt: "Continue", expectedParentRunId: "run-1" });
+    expect(followUpResponse.status).toBe(409);
+    expect(services.create).not.toHaveBeenCalled();
+    expect(services.execute).not.toHaveBeenCalled();
+  });
   it("loads and verifies a Pin in the same owned session while retaining normal conversation metadata", async () => {
     const event = normalizeConversationEvent({ type: "assistant.message", data: { content: "Older output\n\n```text\nPinned code\n```" } }, "a".repeat(64), 1200)!;
     const pin = { id: "pin", workId: "work-1", sessionId, eventId: event.id, eventOffset: event.offset, line: 4, contentHash: pinContentHash(event) };
@@ -97,7 +146,9 @@ describe("owned session conversation API", () => {
       hasEarlier: true, hasMore: true, incompleteTail: false });
     const response = await GET(request("?runId=run-1&pin=pin"), context);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ sessionId, anchorRunId: "run-1", events: [event], nextCursor: "after-pin", canFollowUp: true });
+    expect(await response.json()).toMatchObject({
+      sessionId, anchorRunId: "run-1", events: [event], nextCursor: "after-pin", canFollowUp: true, sessionUsage: null,
+    });
     expect(services.pins.findFirst).toHaveBeenCalledWith({ where: { id: "pin", workId: "work-1", sessionId } });
     expect(services.history).toHaveBeenCalledWith(sessionId, { atOffset: 1200 });
   });
@@ -168,9 +219,22 @@ describe("owned session conversation API", () => {
     expect(body.historyAvailable).toBe(true);
     expect(body.canFollowUp).toBe(true);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-    expect(services.history).toHaveBeenCalledWith(sessionId, { cursor: undefined, before: undefined });
+    expect(services.history).toHaveBeenCalledWith(sessionId, { cursor: undefined, before: undefined, includeUsage: true });
     expect(services.repair).not.toHaveBeenCalled();
     expect(services.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("includes the selected Session's usage in latest and forward reads, not in older pages", async () => {
+    const sessionUsage = { mcp: [{ name: "Example", count: 4, failedCount: 2 }], skills: [{ name: "review", count: 1 }], partial: false };
+    services.history.mockImplementation(async (_sessionId, options) => ({
+      events: [], nextCursor: "next", previousCursor: null, hasEarlier: false,
+      ...(options.includeUsage ? { sessionUsage } : {}),
+    }));
+    expect(await (await GET(request("?runId=run-1"), context)).json()).toMatchObject({ sessionId, sessionUsage });
+    expect(await (await GET(request("?runId=run-1&cursor=next"), context)).json()).toMatchObject({ sessionId, sessionUsage });
+    expect(services.history).toHaveBeenLastCalledWith(sessionId, { cursor: "next", before: undefined, includeUsage: true });
+    expect(await (await GET(request("?runId=run-1&before=earlier"), context)).json()).toMatchObject({ sessionId, sessionUsage: null });
+    expect(services.history).toHaveBeenLastCalledWith(sessionId, { cursor: undefined, before: "earlier", includeUsage: false });
   });
 
   it("reads active history but blocks sending while Terminal owns the session", async () => {

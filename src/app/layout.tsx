@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono, Manrope } from "next/font/google";
 import { THEME_INITIALIZER } from "@/lib/theme";
+import { PAIRED_SESSION_SPLIT_INITIALIZER, WORK_PANE_WIDTHS_INITIALIZER } from "@/lib/work-pane-layout";
 import "./globals.css";
 
 const manrope = Manrope({
@@ -33,6 +34,8 @@ export default function RootLayout({
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INITIALIZER }} />
+        <script dangerouslySetInnerHTML={{ __html: WORK_PANE_WIDTHS_INITIALIZER }} />
+        <script dangerouslySetInnerHTML={{ __html: PAIRED_SESSION_SPLIT_INITIALIZER }} />
       </head>
       <body className="flex min-h-full flex-col text-neutral-100">
         <NavBar />

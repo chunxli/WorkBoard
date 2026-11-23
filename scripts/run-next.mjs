@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { nextHostnameArgs, resolveRuntimeAuthMode } from "./auth-mode.mjs";
+import { protectRuntimeTraces } from "./protect-runtime-traces.mjs";
 
 const action = process.argv[2]?.toLowerCase();
 if (action !== "dev" && action !== "start") {
@@ -14,6 +15,7 @@ if (action !== "dev" && action !== "start") {
 
 const root = path.resolve(import.meta.dirname, "..");
 const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
+if (action === "start") await protectRuntimeTraces(root);
 const mode = resolveRuntimeAuthMode();
 if (mode === "local") {
   console.log(

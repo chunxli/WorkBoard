@@ -16,7 +16,92 @@ async function fixture(content: string | Buffer) {
   return { baseDirectory, file };
 }
 const message = (content: string) => JSON.stringify({ type: "user.message", data: { content } }) + "\n";
+const mcpCall = (id: string, mcpServerName: string) => JSON.stringify({
+  type: "tool.execution_start", id, data: { toolCallId: id, mcpServerName, arguments: { secret: "not usage metadata" } },
+}) + "\n";
+const mcpFailure = (toolCallId: string) => JSON.stringify({
+  type: "tool.execution_complete", data: { toolCallId, success: false },
+}) + "\n";
+const skill = (id: string, name: string) => JSON.stringify({ type: "skill.invoked", id, data: { name, content: "Not usage metadata" } }) + "\n";
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+
+describe("full-session usage alongside paged history", () => {
+  it("counts calls outside the visible page and preserves a distinct summary per session file", async () => {
+    const state = await fixture(mcpCall("first", "Example") + skill("one", "review") + message("x".repeat(512)) +
+      message("Next Follow Up") + mcpCall("second", "Example") + mcpFailure("first") + message("latest"));
+    const other = await fixture(mcpCall("first", "Other session"));
+    const first = await readSessionConversationPage(sessionId, { ...state, includeUsage: true, pageBytes: 64 });
+    expect(first.hasEarlier).toBe(true);
+    expect(first.events.some((event) => event.sourceId === "first")).toBe(false);
+    expect(first.sessionUsage).toEqual({ mcp: [{ name: "Example", count: 2, failedCount: 1 }], skills: [{ name: "review", count: 1 }], partial: false });
+    expect((await readSessionConversationPage(sessionId, { ...other, includeUsage: true })).sessionUsage)
+      .toEqual({ mcp: [{ name: "Other session", count: 1, failedCount: 0 }], skills: [], partial: false });
+    const earlier = await readSessionConversationPage(sessionId, { ...state, before: first.previousCursor! });
+    expect(earlier).not.toHaveProperty("sessionUsage");
+  });
+
+  it("reuses unchanged summaries and updates an append only once even with concurrent polls", async () => {
+    const state = await fixture(mcpCall("first", "Example"));
+    const options = { ...state, includeUsage: true };
+    const first = await readSessionConversationPage(sessionId, options);
+    expect((await readSessionConversationPage(sessionId, options)).sessionUsage).toBe(first.sessionUsage);
+    await appendFile(state.file, mcpCall("second", "Example") + mcpCall("first", "Example") + skill("one", "review"));
+    const pages = await Promise.all(Array.from({ length: 4 }, () =>
+      readSessionConversationPage(sessionId, { ...options, cursor: first.nextCursor })));
+    for (const page of pages) {
+      expect(page.sessionUsage).toEqual({ mcp: [{ name: "Example", count: 2, failedCount: 0 }], skills: [{ name: "review", count: 1 }], partial: false });
+      expect(page.sessionUsage).toBe(pages[0].sessionUsage);
+    }
+    expect(first.sessionUsage?.mcp[0].count).toBe(1);
+  });
+
+  it("updates the cached failure count on an appended completion without changing totals or older snapshots", async () => {
+    const state = await fixture(mcpCall("pending", "Example"));
+    const options = { ...state, includeUsage: true };
+    const first = await readSessionConversationPage(sessionId, options);
+    await appendFile(state.file, mcpFailure("pending") + mcpFailure("pending"));
+    const later = await readSessionConversationPage(sessionId, { ...options, cursor: first.nextCursor });
+    expect(later.sessionUsage?.mcp).toEqual([{ name: "Example", count: 1, failedCount: 1 }]);
+    expect(first.sessionUsage?.mcp).toEqual([{ name: "Example", count: 1, failedCount: 0 }]);
+  });
+
+  it("does not count a partial tail or count a completed record twice once its newline is appended", async () => {
+    const pending = Buffer.from(skill("invoked", "测试"));
+    const split = pending.indexOf(Buffer.from("试")) + 1;
+    const state = await fixture(Buffer.concat([Buffer.from(mcpCall("first", "Example")), pending.subarray(0, split)]));
+    const options = { ...state, includeUsage: true };
+    const partial = await readSessionConversationPage(sessionId, options);
+    expect(partial.incompleteTail).toBe(true);
+    expect(partial.sessionUsage).toMatchObject({ skills: [] });
+    await appendFile(state.file, pending.subarray(split, -1));
+    expect((await readSessionConversationPage(sessionId, options)).sessionUsage?.skills).toEqual([{ name: "测试", count: 1 }]);
+    await appendFile(state.file, "\n" + skill("more", "测试"));
+    expect((await readSessionConversationPage(sessionId, options)).sessionUsage?.skills).toEqual([{ name: "测试", count: 2 }]);
+  });
+
+  it("rebuilds counts when history is rewritten, truncated, or replaced", async () => {
+    const initial = mcpCall("first", "McpOne") + skill("one", "review");
+    const state = await fixture(initial);
+    const options = { ...state, includeUsage: true };
+    expect((await readSessionConversationPage(sessionId, options)).sessionUsage?.mcp).toEqual([{ name: "McpOne", count: 1, failedCount: 0 }]);
+    await writeFile(state.file, initial.replace("McpOne", "McpTwo"));
+    await utimes(state.file, new Date(), new Date(Date.now() + 1000));
+    expect((await readSessionConversationPage(sessionId, options)).sessionUsage?.mcp).toEqual([{ name: "McpTwo", count: 1, failedCount: 0 }]);
+    await writeFile(state.file, "");
+    expect((await readSessionConversationPage(sessionId, options)).sessionUsage).toEqual({ mcp: [], skills: [], partial: false });
+    await rename(state.file, state.file + ".old");
+    await writeFile(state.file, mcpCall("third", "Replacement"));
+    expect((await readSessionConversationPage(sessionId, options)).sessionUsage?.mcp).toEqual([{ name: "Replacement", count: 1, failedCount: 0 }]);
+  });
+
+  it("labels incomplete older usage evidence without damaging a readable latest page", async () => {
+    const latest = "latest " + ".".repeat(64);
+    const state = await fixture("{invalid}\n" + mcpCall("first", "Example") + message(latest));
+    const page = await readSessionConversationPage(sessionId, { ...state, includeUsage: true, pageBytes: 64 });
+    expect(page.events.map((event) => event.text)).toEqual([latest]);
+    expect(page.sessionUsage).toEqual({ mcp: [{ name: "Example", count: 1, failedCount: 0 }], skills: [], partial: true });
+  });
+});
 
 describe("session conversation history", () => {
   it("retains native attachment references without trusting them as registered Work files", () => {

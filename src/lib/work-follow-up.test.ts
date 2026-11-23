@@ -25,18 +25,27 @@ const work = {
 
 describe("Follow Up Run settings", () => {
   beforeEach(() => { vi.clearAllMocks(); });
-  it.each(["SDK", "CLI"] as const)("persists attachments and immutable request identity for queued %s Runs", async (engine) => {
+  it.each(["SDK", "CLI", "CASEIQ"] as const)("persists attachments and immutable request identity for queued %s Runs", async (engine) => {
     const requestId = randomUUID(); const id = randomUUID();
     const attachments = [{ id, requestId, uploadId: randomUUID(), name: "reference.png", storedName: `${id}-reference.png`,
       size: 12, mediaType: "image/png", sha256: "0".repeat(64) }];
     db.work.mockResolvedValue({ ...work, id: "owning-work", directoryPath: "C:\\owning-work" });
-    db.parent.mockResolvedValue({ ...work, engine, id: "parent-run", copilotSessionId: "same-session", executionPath: "C:\\other-execution-directory" });
+    db.parent.mockResolvedValue({ ...work, engine, ...(engine === "CASEIQ" ? { providerId: "caseiq" } : {}),
+      id: "parent-run", copilotSessionId: "same-session", executionPath: "C:\\other-execution-directory" });
     db.create.mockImplementation(async ({ data }) => data);
     const run = await createPendingFollowUpRun({ workId: "owning-work", parentRunId: "parent-run", requestId, prompt: "", attachments, queue: true });
     expect(run).toMatchObject({ id: requestId, status: "PENDING", trigger: "FOLLOW_UP", engine,
       promptSnapshot: "", attachmentsJson: JSON.stringify(attachments), executionPath: "C:\\other-execution-directory", copilotSessionId: "same-session",
       concurrencyMode: "FOLLOW_UP_QUEUED", resumedFromRunId: "parent-run" });
     expect(run.outputDir).toContain("owning-work");
+    if (engine === "CASEIQ") expect(run).toMatchObject({ providerId: "caseiq", outputFormat: "json", permissionMode: "default" });
+  });
+  it("does not convert a legacy CaseIQ Terminal session into a web or ordinary CLI session", async () => {
+    db.work.mockResolvedValue({ ...work, id: "owning-work", directoryPath: "C:\\owning-work" });
+    db.parent.mockResolvedValue({ ...work, engine: "CLI", providerId: "caseiq", copilotSessionId: "legacy" });
+    await expect(createPendingFollowUpRun({ workId: "owning-work", parentRunId: "legacy", prompt: "Next" }))
+      .rejects.toThrow("native Terminal");
+    expect(db.create).not.toHaveBeenCalled();
   });
   it("does not create a queued message without a parent Run", async () => {
     db.work.mockResolvedValue({ ...work, id: "owning-work", directoryPath: "C:\\owning-work" });

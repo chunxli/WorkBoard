@@ -10,6 +10,7 @@ import { canonicalizeWorkPath } from "@/lib/work-files";
 import { getUserExecutionDefaults } from "@/lib/user-execution-defaults";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { getRunStatusSnapshot } from "@/lib/run-status";
+import { pendingRunTitle } from "@/lib/work-run-status";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { reconcileMissingWorkDirectories } from "@/lib/work-directory-reconciler";
@@ -24,6 +25,7 @@ export default async function WorkBoardPage() {
       where: { userId },
       orderBy: [{ position: "asc" }, { updatedAt: "desc" }],
       include: {
+        sessionPair: { select: { workId: true } },
         _count: { select: { tasks: true } },
         runs: {
           where: { experimentVariantId: null },
@@ -98,7 +100,7 @@ export default async function WorkBoardPage() {
     const runState = latestRun ? await getRunStatusSnapshot(latestRun) : null;
     let terminalResumeState: "ready" | "active" | "unavailable" = "unavailable";
     if (
-      latestRun?.copilotSessionId &&
+      !work.sessionPair && latestRun?.copilotSessionId &&
       canUseLocalActions &&
       (!latestRun.hostname || latestRun.hostname === localHostname) &&
       work.status !== "ARCHIVED"
@@ -122,10 +124,12 @@ export default async function WorkBoardPage() {
       promptFileName: work.promptFileName,
       status: work.status,
       defaultEngine: work.defaultEngine,
+      paired: Boolean(work.sessionPair),
       updatedAt: work.updatedAt.toISOString(),
       updatedAtLabel: work.updatedAt.toLocaleString("zh-CN", { hour12: false }),
       automationCount: work._count.tasks,
       latestRunStatus: runState?.displayStatus ?? null,
+      latestRunPendingLabel: runState?.displayStatus === "PENDING" ? pendingRunTitle(runState.preparation) : undefined,
       latestRunStatusError: runState?.observationError ?? null,
       latestRunId: latestRun?.id ?? null,
       latestModels,

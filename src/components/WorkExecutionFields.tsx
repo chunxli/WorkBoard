@@ -36,7 +36,8 @@ export default function WorkExecutionFields({
   keepCliFieldsEnabled?: boolean;
 }) {
   const modelCatalog = useCopilotModelCatalog();
-  const cli = value.defaultEngine === "CLI" || keepCliFieldsEnabled;
+  const caseIq = value.defaultEngine === "CASEIQ";
+  const cli = value.defaultEngine !== "SDK" || keepCliFieldsEnabled;
 
   function update<Key extends keyof WorkExecutionSettingsValue>(
     key: Key,
@@ -57,6 +58,7 @@ export default function WorkExecutionFields({
         >
           <option value="CLI">Copilot CLI</option>
           <option value="SDK">Copilot SDK</option>
+          <option value="CASEIQ">CaseIQ</option>
         </select>
       </label>
 
@@ -74,7 +76,7 @@ export default function WorkExecutionFields({
           }}
           className="ui-input mt-1.5 w-full px-3 py-2 text-sm"
         >
-          <option value="">Auto</option>
+          <option value="">{caseIq ? "Auto (CaseIQ default)" : "Auto"}</option>
           <CopilotModelOptions catalog={modelCatalog.catalog} value={value.model} />
         </select>
       </label>
@@ -99,7 +101,7 @@ export default function WorkExecutionFields({
           onChange={(event) => update("agent", event.target.value)}
           disabled={!cli}
           maxLength={200}
-          placeholder="Default agent"
+          placeholder={caseIq ? "CaseIQ default agent" : "Default agent"}
           className="ui-input mt-1.5 w-full px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         />
       </label>
@@ -132,14 +134,14 @@ export default function WorkExecutionFields({
       </label>
 
       <label className={`text-xs ${cli ? "text-neutral-400" : "text-neutral-600"}`}>
-        Permissions{value.defaultEngine === "SDK" ? " (CLI only)" : ""}
+        Permissions{caseIq ? " (CaseIQ managed)" : value.defaultEngine === "SDK" ? " (CLI only)" : ""}
         <select
-          value={value.permissionMode}
+          value={caseIq ? "default" : value.permissionMode}
           onChange={(event) => update("permissionMode", event.target.value as "default" | "full")}
-          disabled={!cli}
+          disabled={!cli || caseIq}
           className="ui-input mt-1.5 w-full px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <option value="default">Standard tools</option>
+          <option value="default">{caseIq ? "Original CaseIQ policy + explicit tool approvals" : "Standard tools"}</option>
           <option value="full">Full access</option>
         </select>
       </label>
@@ -147,8 +149,9 @@ export default function WorkExecutionFields({
       <label className="text-xs text-neutral-400">
         Output
         <select
-          value={value.outputFormat}
+          value={caseIq ? "json" : value.outputFormat}
           onChange={(event) => update("outputFormat", event.target.value as "text" | "json")}
+          disabled={caseIq}
           className="ui-input mt-1.5 w-full px-3 py-2 text-sm"
         >
           <option value="text">Readable text</option>
@@ -156,6 +159,12 @@ export default function WorkExecutionFields({
         </select>
       </label>
 
+      {caseIq && <p className="text-xs text-neutral-400 sm:col-span-2 lg:col-span-4">
+        CaseIQ runs your Prompt here through its original launcher, with streaming output and Follow Up.
+        No Terminal opens. CaseIQ keeps its own plugins and permissions.
+        Your CLI/SDK output and permission preferences are kept when switching Runtime.
+        {" "}<a href="/docs/caseiq" className="text-emerald-400 hover:underline">CaseIQ setup guide</a>
+      </p>}
       <label className="text-xs text-neutral-400">
         Timeout
         <div className="mt-1.5 grid grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)] gap-2">

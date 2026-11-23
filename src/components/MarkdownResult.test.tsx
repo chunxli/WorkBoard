@@ -49,4 +49,27 @@ describe("MarkdownResult", () => {
     expect(markup).not.toContain('aria-label="Copy code"');
     expect(markup).not.toContain("<script>");
   });
+
+  it("adds documentation heading IDs only when requested, including inline text and duplicate names", () => {
+    const content = "## 当前状态摘要\n\n## **Setup** `CLI`\n\n## Setup CLI\n\n```md\n## Not a heading\n```";
+    const plain = renderToStaticMarkup(<MarkdownResult content={content} />);
+    expect(plain).not.toContain('id="当前状态摘要"');
+    const docs = renderToStaticMarkup(<MarkdownResult content={content} headingIds />);
+    expect(docs).toContain('id="当前状态摘要"');
+    expect(docs).toContain('id="setup-cli"');
+    expect(docs).toContain('id="setup-cli-1"');
+    expect(docs).not.toContain('id="not-a-heading"');
+  });
+
+  it("composes documentation link rendering with code-copy controls and safe URLs", () => {
+    const markup = renderToStaticMarkup(<MarkdownResult
+      content={'[Guide](caseiq-integration.md)\n\n[unsafe](javascript:alert(1))\n\n```powershell\nGet-Command gh\n```'}
+      headingIds copyCodeBlocks components={{
+        a: ({ children, href }) => <a href={href === "caseiq-integration.md" ? "/docs/caseiq" : href}>{children}</a>,
+      }}
+    />);
+    expect(markup).toContain('href="/docs/caseiq"');
+    expect(markup.match(/aria-label="Copy code"/g)).toHaveLength(1);
+    expect(markup).not.toContain("javascript:");
+  });
 });

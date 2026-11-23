@@ -15,6 +15,7 @@ const { workQuery, runQuery, terminalActivity, skillDiscovery, experimentBuilder
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
   redirect: vi.fn(),
   notFound: vi.fn(),
 }));
@@ -73,7 +74,7 @@ function makeWork(overrides: Partial<Work> = {}): Work {
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
-    id: "latest01-layout-run", workId: "layout-work", taskId: null,
+    id: "latest01-layout-run", workId: "layout-work", taskId: null, providerId: null,
     experimentVariantId: null, attachmentsJson: null, status: "SUCCESS", trigger: "FOLLOW_UP", engine: "SDK",
     executionPath: null, promptSnapshot: "Synthetic prompt", finalOutput: "Synthetic result",
     outputDir: "C:\\layout\\artifacts", copilotSessionId: "layout-session",
@@ -280,6 +281,38 @@ describe("optional Skill comparison builder", () => {
 });
 
 describe("compact Work details", () => {
+  it.each(["CASEIQ", "CLI"] as const)("identifies actual %s CaseIQ execution in the Work status bar", async (engine) => {
+    const markup = await renderWork(makeWorkPage([makeRun({ engine, providerId: "caseiq" })], { defaultEngine: "SDK" }));
+    expect(header(markup)).toContain('data-runtime="caseiq"');
+    expect(header(markup)).toContain('class="caseiq-runtime-tag"');
+    expect(header(markup)).toContain(">CaseIQ</span>");
+  });
+  it("does not mislabel a Copilot Run when only the Work default is CaseIQ", async () => {
+    const markup = await renderWork(makeWorkPage([makeRun({ engine: "SDK", providerId: null })], { defaultEngine: "CASEIQ" }));
+    expect(header(markup)).not.toContain('data-runtime="caseiq"');
+  });
+  it("uses the same CaseIQ tag on Run details", async () => {
+    const markup = await renderRun(makeRunPage({ engine: "CASEIQ", providerId: "caseiq" }));
+    expect(markup).toContain('data-runtime="caseiq"');
+    expect(markup).toContain('class="caseiq-runtime-tag"');
+  });
+
+  it("places MCP configuration in the CaseIQ Work's own sidebar panel", async () => {
+    const markup = await renderWork(makeWorkPage([
+      makeRun({ engine: "CASEIQ", providerId: "caseiq" }),
+    ], { defaultEngine: "CASEIQ" }));
+    const panel = workPanel(markup, "MCP configuration");
+    expect(panel).toContain('aria-label="Work MCP configuration"');
+    expect(panel).toContain("only this Work/session");
+    expect(panel).toContain("/settings#mcp-defaults");
+    expect(markup).not.toContain('aria-label="MCP Work/session selection"');
+  });
+
+  it("does not add a CaseIQ MCP panel to an unrelated CLI Work", async () => {
+    const markup = await renderWork();
+    expect(markup).not.toContain('aria-label="Work MCP configuration"');
+  });
+
   it("moves secondary context into hidden sidebar panels while keeping conversation actions available", async () => {
     const markup = await renderWork();
     const details = disclosure(markup, "Work details");
@@ -298,6 +331,9 @@ describe("compact Work details", () => {
     expect(workPanel(markup, "Execution settings").match(/<section[^>]*>/)?.[0]).toContain('hidden=""');
     expect(workPanel(markup, "Prompt")).toContain("<textarea");
     expect(workPanel(markup, "Prompt").match(/<section[^>]*>/)?.[0]).toContain('hidden=""');
+    expect(runQuery).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({ providerId: true, engine: true }),
+    }));
   });
 
   it("combines the conversation heading, tabs and Run actions into a single toolbar", async () => {
@@ -468,6 +504,7 @@ describe("Terminal activity presentation", () => {
       expect(markup).toContain(`aria-label="${state === "active" ? "IN TERMINAL" : "SYNCING"}"`);
       expect(markup).not.toContain('aria-label="RUNNING"');
       expect(markup).not.toContain("Cancel run");
+      expect(header(markup).includes('aria-label="Run elapsed time"')).toBe(state === "active");
       if (state === "stopped") {
         expect(markup).toContain("Terminal stopped. Synchronizing session history.");
         expect(markup.match(/<span[^>]*aria-label="SYNCING"[^>]*>/)?.[0]).toContain("text-emerald-200");

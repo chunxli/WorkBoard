@@ -1,14 +1,266 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage, handleConversationComposerKeyDown, handleConversationHistoryWheel, readEarlierConversationPages } from "./SessionConversation";
+import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage, ConversationTimelineEntries, handleConversationComposerKeyDown, handleConversationHistoryWheel, readEarlierConversationPages } from "./SessionConversation";
 import { normalizeConversationEvent, type ConversationEvent } from "@/lib/session-conversation";
-import { conversationTimeline, withPendingFollowUp } from "@/lib/conversation-activity";
+import { conversationTimeline, conversationToolActivityAt, withPendingFollowUp } from "@/lib/conversation-activity";
+import * as authentication from "./CaseIqAuthenticationPanel";
+import { CaseIqStartupFeedback } from "./CaseIqStartupStatus";
 
+const navigation = vi.hoisted(() => ({ query: "" }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(navigation.query),
 }));
+beforeEach(() => { navigation.query = ""; });
 
 describe("session conversation toolbar", () => {
+  const pairedLayout = {
+    lanes: {
+      CLI: { sessionId: "cli-synthetic-session", runId: "cli-fixture-run", initialLog: "", isLive: true, awaitingRunStart: true, outputFormat: "text" as const },
+      CASEIQ: { sessionId: "caseiq-synthetic-session", runId: "caseiq-fixture-run", initialLog: "", isLive: false, awaitingRunStart: false, outputFormat: "json" as const },
+    },
+    sendBlockedReason: null,
+  };
+  const pairedMarkup = (withFiles = false) => renderToStaticMarkup(<SessionConversation workId="paired-work" runId={null} runtimeEngine={null}
+    initialLog="" isLive={false} historySync={false} outputFormat="text"
+    workHeader={<h1>Paired Work</h1>} paired={pairedLayout}
+    fileBrowser={withFiles ? <p>Paired Work files</p> : undefined} />);
+
+  it("uses compact independent lane tools and one clearly targeted composer in Both mode", () => {
+    const markup = pairedMarkup();
+    expect(markup).toContain("work-detail-layout-paired");
+    expect(markup).toContain("--work-detail-viewport-height:");
+    expect(markup).toContain('data-paired-view="both"');
+    expect(markup.match(/aria-label="Raw output" aria-pressed="false"/g)).toHaveLength(2);
+    expect(markup).not.toContain('aria-label="Session view"');
+    expect(markup).toContain('aria-label="Copilot CLI conversation"');
+    expect(markup).toContain('aria-label="CaseIQ conversation"');
+    expect(markup).toContain('aria-label="Follow Up destinations"');
+    expect(markup.match(/data-state="checking"/g)).toHaveLength(2);
+    expect(markup.match(/id="session-follow-up"/g)).toHaveLength(1);
+    expect(markup).toContain("Send to both Sessions");
+    const groups = [...markup.matchAll(/<details name="([^"]+)" class="work-paired-resource"/g)].map((match) => match[1]);
+    expect(groups).toHaveLength(2);
+    expect(new Set(groups).size).toBe(2);
+  });
+
+  it("restores a focused Session from the URL while keeping the other lane mounted and untargeted", () => {
+    navigation.query = "sessionView=caseiq";
+    const markup = pairedMarkup();
+    expect(markup).toContain('data-paired-view="CASEIQ"');
+    expect(markup).toMatch(/data-lane="CLI"[^>]+aria-label="Copilot CLI session" hidden=""/);
+    expect(markup).not.toContain("Send to both Sessions");
+    expect(markup).toContain("Send to CaseIQ");
+    expect(markup.match(/data-state="checking"/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="Copilot CLI conversation"');
+  });
+
+  it("only exposes exact paired results shortcuts when a Work files pane is wired", () => {
+    const markup = pairedMarkup(true);
+    const filesId = markup.match(/<aside id="([^"]*)" aria-label="Work files"/)?.[1];
+    expect(filesId).toBeTruthy();
+    expect(markup).toContain(`aria-label="Open Copilot CLI result files" aria-controls="${filesId}"`);
+    expect(markup).toContain(`aria-label="Open CaseIQ result files" aria-controls="${filesId}"`);
+    expect(pairedMarkup()).not.toContain('aria-label="Open CaseIQ result files"');
+  });
+
+  it("renders two keyboard-accessible dividers between the Work panes", () => {
+    const markup = renderToStaticMarkup(<SessionConversation workId="resize-work" runId={null} runtimeEngine={null}
+      initialLog="" isLive={false} historySync={false} outputFormat="text"
+      workHeader={<h1>Synthetic Work</h1>}
+      fileBrowser={<p>Synthetic Work Files</p>} />);
+    expect(markup).not.toContain("work-detail-layout-paired");
+    expect(markup).toContain('class="work-workspace-grid has-files"');
+    expect(markup).not.toMatch(/<div class="work-workspace-grid[^"]*"[^>]*style="[^"]*--work-/);
+    const left = markup.match(/aria-label="Resize Work sidebar" aria-controls="([^"]+)"/);
+    const right = markup.match(/aria-label="Resize Work files" aria-controls="([^"]+)"/);
+    expect(left).not.toBeNull();
+    expect(right).not.toBeNull();
+    expect(markup.match(/role="separator" tabindex="0"/g)).toHaveLength(2);
+    expect(markup.match(/aria-orientation="vertical"/g)).toHaveLength(2);
+    expect(markup.indexOf(`id="${left?.[1]}"`)).toBeLessThan(markup.indexOf('aria-label="Resize Work sidebar"'));
+    expect(markup.indexOf('aria-label="Resize Work sidebar"')).toBeLessThan(markup.indexOf('id="session-follow-up"'));
+    expect(markup.indexOf('id="session-follow-up"')).toBeLessThan(markup.indexOf('aria-label="Resize Work files"'));
+    expect(markup.indexOf('aria-label="Resize Work files"')).toBeLessThan(markup.indexOf(`id="${right?.[1]}"`));
+  });
+
+  it("omits dividers for embedded Conversations and keeps only the sidebar divider without a files pane", () => {
+    const props = { workId: "resize-work", runId: null, runtimeEngine: null, initialLog: "", isLive: false,
+      historySync: false, outputFormat: "text" as const };
+    expect(renderToStaticMarkup(<SessionConversation {...props} />)).not.toContain('role="separator"');
+    const markup = renderToStaticMarkup(<SessionConversation {...props} workHeader={<h1>Synthetic Work</h1>} />);
+    expect(markup.match(/role="separator"/g)).toHaveLength(1);
+    expect(markup).toContain("Resize Work sidebar");
+    expect(markup).not.toContain("Resize Work files");
+  });
+
+  it("keeps actionable sign-in guidance outside history scrolling, immediately above the Follow Up draft", () => {
+    const hook = vi.spyOn(authentication, "useCaseIqAuthentication").mockReturnValue({
+      status: { available: false, blockedReason: "Waiting for TSE.", authenticationVerified: false,
+        operation: { id: "operation", sessionId: "session", sourceRunId: "run", startedAt: "2026-11-12T00:00:00.000Z",
+          status: "active", reserved: true, phase: "native-started", message: "Waiting for TSE." } },
+      error: null, opening: false, uncertain: false, checking: false, checkedAt: null, trustWorkFolder: true,
+      commandCopied: false, clipboardError: null, reserved: true, setTrustWorkFolder: vi.fn(),
+      copyCommand: vi.fn(), refresh: vi.fn(), refreshManually: vi.fn(), start: vi.fn(), reportError: vi.fn(),
+    });
+    try {
+      const markup = renderToStaticMarkup(<SessionConversation workId="work" runId="run" runtimeEngine="CASEIQ"
+        initialLog="" isLive={false} historySync={false} outputFormat="json" />);
+      expect(markup).toContain('aria-label="SupportIQ sign-in action"');
+      expect(markup.indexOf('class="work-conversation-composer')).toBeLessThan(markup.indexOf('aria-label="SupportIQ sign-in action"'));
+      expect(markup.indexOf('aria-label="SupportIQ sign-in action"')).toBeLessThan(markup.indexOf('id="session-follow-up"'));
+      expect(markup.match(/aria-label="SupportIQ sign-in action"/g)).toHaveLength(1);
+      expect(markup).toContain("No task prompts.");
+    } finally { hook.mockRestore(); }
+  });
+
+  it("opens a linked Work MCP tab without unmounting the conversation or composer", () => {
+    navigation.query = "panel=mcp";
+    const markup = renderToStaticMarkup(<SessionConversation workId="work" runId="run" runtimeEngine="CASEIQ"
+      initialLog="" isLive={false} historySync={false} outputFormat="json"
+      workHeader={<h1>Synthetic Work</h1>}
+      panels={[{ id: "mcp", label: "MCP configuration", content: <p>Current Work MCP settings</p> }]} />);
+    expect(markup).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*>MCP configuration<\/button>/);
+    expect(markup).toMatch(/role="tabpanel"[^>]*hidden=""[^>]*>[\s\S]*aria-label="CaseIQ access controls"/);
+    expect(markup).toContain("Current Work MCP settings");
+    expect(markup).toContain('id="session-follow-up"');
+    expect(markup).toContain('type="button" class="ui-subtle-button">MCP configuration</button>');
+  });
+
+  it("ignores a panel link that is not available in the Work", () => {
+    navigation.query = "panel=unavailable";
+    const markup = renderToStaticMarkup(<SessionConversation workId="work" runId={null} runtimeEngine={null}
+      initialLog="" isLive={false} historySync={false} outputFormat="text"
+      workHeader={<h1>Synthetic Work</h1>} />);
+    expect(markup).toMatch(/aria-selected="true"[^>]*>Conversation<\/button>/);
+  });
+
+  it("places current CaseIQ initialization inside the timeline before the composer, not above history", () => {
+    const markup = renderToStaticMarkup(<SessionConversation
+      workId="startup-work" runId="current-follow-up" runtimeEngine="CASEIQ"
+      initialLog="" isLive historySync={false} outputFormat="json"
+    />);
+    expect(markup).toContain('aria-label="CaseIQ Run startup status"');
+    expect(markup).toContain("View startup logs");
+    expect(markup.indexOf('role="log"')).toBeLessThan(markup.indexOf('aria-label="CaseIQ Run startup status"'));
+    expect(markup.indexOf('aria-label="CaseIQ Run startup status"')).toBeLessThan(markup.indexOf('id="session-follow-up"'));
+    expect(markup).toContain('data-startup-run-id="current-follow-up"');
+    expect(markup.match(/aria-label="CaseIQ Run startup status"/g)).toHaveLength(1);
+    expect(markup).toContain("Earlier conversation messages do not hide its initialization");
+  });
+
+  describe("current Run progress in chronological conversation flow", () => {
+    it.each([
+      { toolAt: "2026-11-10T00:00:01.000Z", showStartup: true },
+      { toolAt: "2026-11-10T00:01:01.000Z", showStartup: false },
+    ])("hands off only when a displayed tool belongs to this startup attempt: $toolAt", ({ toolAt, showStartup }) => {
+      const startedAt = "2026-11-10T00:01:00.000Z";
+      const events = [normalizeConversationEvent({
+        type: "tool.execution_start", timestamp: toolAt,
+        data: { toolName: "synthetic-tool", toolCallId: "tool" },
+      }, "history", 0)!];
+      const markup = renderToStaticMarkup(<ConversationTimelineEntries
+        timeline={conversationTimeline(events)} workId="work" isLive
+        startup={<CaseIqStartupFeedback observation={{
+          runId: "current-run", status: "RUNNING", startedAt, unavailableReason: null,
+          startup: { phase: "processing", attempt: 1, startedAt, updatedAt: startedAt, steps: [] },
+        }} error={null} now={Date.parse(startedAt) + 10_000} onRetry={vi.fn()}
+          toolActivityAt={conversationToolActivityAt(events)} />} />);
+      expect(markup).toContain("Tools &amp; run details");
+      expect(markup.includes('aria-label="CaseIQ Run startup status"')).toBe(showStartup);
+      expect(markup.includes("CaseIQ is working on your Prompt")).toBe(showStartup);
+    });
+
+    function history() {
+      return [
+        normalizeConversationEvent({ type: "user.message", timestamp: "2026-11-10T00:00:00Z", data: { content: "Repeated synthetic request" } }, "history", 0)!,
+        normalizeConversationEvent({ type: "assistant.message", timestamp: "2026-11-10T00:00:01Z", data: { content: "Previous completed response" } }, "history", 100)!,
+      ];
+    }
+    const startup = <section aria-label="Current Run progress" data-startup-run-id="new-run">Initializing current CaseIQ Run</section>;
+
+    it("follows the exact new pending request even when its text repeats an older request", () => {
+      const timeline = conversationTimeline(withPendingFollowUp(history(), {
+        runId: "new-run", text: "Repeated synthetic request", timestamp: "2026-11-10T00:01:00Z",
+      }));
+      const markup = renderToStaticMarkup(<ConversationTimelineEntries timeline={timeline} workId="work" isLive
+        pendingRun={{ id: "new-run", status: "RUNNING" }} startup={startup} />);
+      expect(markup.indexOf("Previous completed response")).toBeLessThan(markup.indexOf('href="/runs/new-run"'));
+      expect(markup.indexOf('href="/runs/new-run"')).toBeLessThan(markup.indexOf("Initializing current CaseIQ Run"));
+      expect(markup.match(/data-startup-run-id="new-run"/g)).toHaveLength(1);
+    });
+
+    it("stays at the current Run's live position after native messages replace the pending request", () => {
+      const events = [...history(),
+        normalizeConversationEvent({ type: "user.message", timestamp: "2026-11-10T00:01:01Z", data: { content: "Native current request" } }, "history", 200)!,
+        normalizeConversationEvent({ type: "tool.execution_start", timestamp: "2026-11-10T00:01:02Z",
+          data: { toolName: "synthetic-tool", toolCallId: "current-tool" } }, "history", 300)!,
+        normalizeConversationEvent({ type: "assistant.message", timestamp: "2026-11-10T00:01:03Z",
+          data: { content: "Current visible response" } }, "history", 400)!,
+      ];
+      const markup = renderToStaticMarkup(<ConversationTimelineEntries timeline={conversationTimeline(events)} workId="work" isLive startup={startup} />);
+      expect(markup.indexOf("Previous completed response")).toBeLessThan(markup.indexOf("Native current request"));
+      expect(markup).toContain("Current visible response");
+      expect(markup.indexOf("Current visible response")).toBeLessThan(markup.indexOf("Initializing current CaseIQ Run"));
+    });
+
+    it("does not label a queued or unrelated pending request as the active Run", () => {
+      const timeline = conversationTimeline(withPendingFollowUp(history(), {
+        runId: "queued-run", text: "Queued request", timestamp: "2026-11-10T00:02:00Z",
+      }));
+      const markup = renderToStaticMarkup(<ConversationTimelineEntries timeline={timeline} workId="work" isLive
+        pendingRun={{ id: "new-run", status: "RUNNING" }} />);
+      expect(markup).not.toContain('href="/runs/new-run"');
+      expect(markup).not.toContain("Current Run progress");
+    });
+
+    it("does not synthesize startup history when no live progress is supplied, as in Pins or finished Runs", () => {
+      const events = history();
+      const before = JSON.stringify(events);
+      const markup = renderToStaticMarkup(<ConversationTimelineEntries timeline={conversationTimeline(events)} workId="work" isLive={false} />);
+      expect(markup).not.toContain("Initializing current CaseIQ Run");
+      expect(JSON.stringify(events)).toBe(before);
+    });
+  });
+
+  it.each(["CLI", "SDK", null] as const)("does not attach CaseIQ initialization to %s Runs", (runtimeEngine) => {
+    const markup = renderToStaticMarkup(<SessionConversation workId="work" runId="run" runtimeEngine={runtimeEngine}
+      initialLog="" isLive historySync={false} outputFormat="json" />);
+    expect(markup).not.toContain('aria-label="CaseIQ Run startup status"');
+  });
+
+  it("removes CaseIQ startup animation when the current Run has ended", () => {
+    const markup = renderToStaticMarkup(<SessionConversation workId="work" runId="run" runtimeEngine="CASEIQ"
+      initialLog="" isLive={false} historySync={false} outputFormat="json" />);
+    expect(markup).not.toContain('aria-label="CaseIQ Run startup status"');
+  });
+
+  it.each(["CLI", "SDK", "CASEIQ"] as const)("shows actual %s startup output in the default Conversation before messages exist", (runtimeEngine) => {
+    const markup = renderToStaticMarkup(<SessionConversation
+      workId="startup-work" runId="startup-run" runtimeEngine={runtimeEngine}
+      initialLog="[setup] Synthetic dependency and authentication preparation"
+      isLive historySync={false} outputFormat="json"
+    />);
+    expect(markup).toContain('aria-label="Run startup and output"');
+    expect(markup).toContain("[setup] Synthetic dependency and authentication preparation");
+    expect(markup).toContain("not recorded conversation messages");
+    expect(markup).toContain("Live output");
+    expect(markup).toContain('role="tab" aria-selected="true"');
+  });
+
+  it("keeps failed CaseIQ startup diagnostics visible rather than waiting for nonexistent messages", () => {
+    const markup = renderToStaticMarkup(<SessionConversation
+      workId="startup-work" runId="startup-run" runtimeEngine="CASEIQ"
+      initialLog="[setup] Synthetic package authorization required"
+      isLive={false} historySync={false} outputFormat="json"
+      runError={<p role="alert">Synthetic initialization timed out before the Prompt process started.</p>}
+    />);
+    expect(markup).toContain("[setup] Synthetic package authorization required");
+    expect(markup).toContain("Synthetic initialization timed out");
+    expect(markup).toContain('aria-label="Run startup and output"');
+    expect(markup).not.toContain("Live output");
+  });
+
   it("renders one labelled heading with its view switch and supplied Run actions above the unchanged log", () => {
     const markup = renderToStaticMarkup(<SessionConversation
       workId="layout-work" runId="layout-run" runtimeEngine="SDK" initialLog="" isLive={false}
@@ -36,6 +288,7 @@ describe("session conversation toolbar", () => {
     expect(markup).toContain("Raw output");
     expect(markup).toContain('id="session-follow-up"');
     expect(markup).not.toContain("Full details");
+    expect(markup).not.toContain('aria-label="Run startup and output"');
   });
 
   it("provides a unified workspace with mounted hidden panels and no removed record summaries", () => {

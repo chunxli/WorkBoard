@@ -6,11 +6,12 @@ import type { WorkAttachment } from "@/lib/work-attachment-types";
 const mocks = vi.hoisted(() => ({
   user: vi.fn(), work: vi.fn(), run: vi.fn(), existing: vi.fn(), create: vi.fn(), prompt: vi.fn(), enqueue: vi.fn(),
   resolve: vi.fn(), conflicts: vi.fn(),
-  runs: vi.fn(), nativeActive: vi.fn(),
+  runs: vi.fn(), nativeActive: vi.fn(), terminalActivity: vi.fn(),
 }));
 vi.mock("@/lib/session", () => ({ getSessionUserId: mocks.user }));
 vi.mock("@/lib/prisma", () => ({ prisma: { work: { findFirst: mocks.work }, run: { findFirst: mocks.run, findMany: mocks.runs, findUnique: mocks.existing } } }));
 vi.mock("@/lib/copilot-runner", () => ({ isNativeCopilotRunActive: mocks.nativeActive }));
+vi.mock("@/lib/terminal-resume", () => ({ getTerminalSessionActivity: mocks.terminalActivity, reconcileTerminalRun: vi.fn() }));
 vi.mock("@/lib/work-executor", () => ({
   createPendingFollowUpRun: mocks.create, ensureFollowUpPrompt: mocks.prompt, executeWorkRun: vi.fn(),
   getWorkRunQueueKey: (run: { id: string }) => run.id,
@@ -34,6 +35,7 @@ describe("Follow Up attachment contract", () => {
     mocks.user.mockResolvedValue("owner"); mocks.work.mockResolvedValue(work);
     mocks.run.mockResolvedValue(null); mocks.existing.mockImplementation(async () => stored);
     mocks.runs.mockResolvedValue([]); mocks.nativeActive.mockReturnValue(false);
+    mocks.terminalActivity.mockResolvedValue({ active: false, starting: false });
     mocks.conflicts.mockResolvedValue([]); mocks.resolve.mockImplementation(async () => [file]);
     mocks.prompt.mockResolvedValue(undefined);
     mocks.create.mockImplementation(async (options) => {
@@ -77,12 +79,14 @@ describe("Follow Up attachment contract", () => {
     expect((await post({ ...input, expectedParentRunId: "stale" })).status).toBe(409);
     expect(mocks.create).not.toHaveBeenCalled();
   });
-  it("persists an attachment-only queued message and its bound receipts once while the parent runs", async () => {
-    const parent = { id: "running-parent", status: "RUNNING", hostname: hostname(), trigger: "WORK", engine: "CLI",
+  it.each(["CLI", "CASEIQ"])("queues an attachment-only message once behind an owned %s process, even when the session is locked", async (engine) => {
+    const parent = { id: "running-parent", status: "RUNNING", hostname: hostname(), trigger: "WORK", engine,
+      providerId: engine === "CASEIQ" ? "caseiq" : null,
       copilotSessionId: "same-session", executionPath: work.directoryPath, createdAt: new Date(), resumedFromRunId: null, terminalLaunches: [] };
     mocks.run.mockResolvedValue(parent);
     mocks.runs.mockResolvedValue([parent]);
     mocks.nativeActive.mockReturnValue(true);
+    mocks.terminalActivity.mockResolvedValue({ active: true, starting: false });
     mocks.conflicts.mockResolvedValue([{ id: parent.id }]);
     const input = { requestId: file.requestId, prompt: "", attachmentIds: [file.id], expectedParentRunId: parent.id, queue: true };
     const response = await post(input);
@@ -91,8 +95,21 @@ describe("Follow Up attachment contract", () => {
     expect(body).toMatchObject({ runId: file.requestId, sessionId: "same-session", queued: true });
     expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ queue: true, attachments: [file], parentRunId: parent.id }));
     expect(mocks.prompt).not.toHaveBeenCalled();
+    expect(mocks.terminalActivity).not.toHaveBeenCalled();
     expect(await (await post(input)).json()).toEqual(body);
     expect(mocks.create).toHaveBeenCalledOnce();
     expect(mocks.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it("does not bypass an active external session for an untracked CaseIQ Run", async () => {
+    const parent = { id: "parent", status: "RUNNING", hostname: hostname(), trigger: "WORK", engine: "CASEIQ", providerId: "caseiq",
+      copilotSessionId: "same-session", createdAt: new Date(), resumedFromRunId: null, terminalLaunches: [] };
+    mocks.run.mockResolvedValue(parent);
+    mocks.runs.mockResolvedValue([parent]);
+    mocks.terminalActivity.mockResolvedValue({ active: true, starting: false });
+    const response = await post({ requestId: file.requestId, prompt: "Next", expectedParentRunId: parent.id, queue: true });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining("open in Terminal") });
+    expect(mocks.create).not.toHaveBeenCalled();
   });
 });

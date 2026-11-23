@@ -15,7 +15,12 @@ const database = vi.hoisted(() => ({
   work: { update: vi.fn() },
   $transaction: vi.fn(),
 }));
+const wrapperIdentity = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/prisma", () => ({ prisma: database }));
+vi.mock("@/lib/copilot-process", async (original) => ({
+  ...await original<typeof import("./copilot-process")>(),
+  windowsProcessMatchesStartTime: wrapperIdentity,
+}));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   spawn: vi.fn(),
@@ -44,6 +49,7 @@ beforeEach(async () => {
   vi.stubEnv("COPILOT_HOME", path.join(directory, "copilot"));
   database.run.findFirst.mockResolvedValue(null);
   database.work.update.mockResolvedValue({});
+  wrapperIdentity.mockResolvedValue(true);
   database.$transaction.mockImplementation(async (operations: Promise<unknown>[]) => Promise.all(operations));
 });
 
@@ -91,10 +97,11 @@ async function fixture(history: string, cursor = 0) {
 }
 
 const response = '{"type":"assistant.message","data":{"content":"Done"}}\n';
-const firstTick = new Date(start.getTime() + 60_000);
-const secondTick = new Date(start.getTime() + 120_000);
+// Legacy fixtures without a wrapper receipt are eligible after the startup grace period.
+const firstTick = new Date(start.getTime() + 120_000);
+const secondTick = new Date(firstTick.getTime() + 60_000);
 
-describe("terminal minute history reconciliation", () => {
+describe("Terminal history reconciliation", () => {
   it("creates and launches a new continuation after its previous Terminal wrapper has exited", async () => {
     const state = await fixture(response);
     state.run.createdAt = new Date();
@@ -168,6 +175,7 @@ describe("terminal minute history reconciliation", () => {
     const launchFile = path.join(launchDirectory, "launch-1.json");
     await writeFile(launchFile, JSON.stringify({ wrapperPid: process.pid }));
     await expect(getTerminalSessionActivity(sessionId, state.launch.id)).resolves.toMatchObject({ active: true });
+    expect(wrapperIdentity).not.toHaveBeenCalled();
     await writeFile(launchFile, JSON.stringify({ wrapperPid: process.pid, exitCode: 0 }));
     await expect(getTerminalSessionActivity(sessionId, state.launch.id)).resolves.toEqual({
       active: false, wrapperExited: false, exitCode: 0, starting: false,
@@ -176,7 +184,50 @@ describe("terminal minute history reconciliation", () => {
     await expect(getTerminalSessionActivity(sessionId, state.launch.id)).resolves.toMatchObject({ active: true });
   });
 
-  it.each(["{broken", "null", '{"wrapperPid":"invalid"}', '{"exitCode":"invalid"}'])(
+  it("identifies reused wrapper PIDs instead of borrowing another process's liveness", async () => {
+    const state = await fixture(response);
+    const launchDirectory = path.join(directory, "data", "terminal-launches");
+    await mkdir(launchDirectory, { recursive: true });
+    await writeFile(path.join(launchDirectory, "launch-1.json"), JSON.stringify({
+      wrapperPid: process.pid, wrapperStartTime: "1",
+    }));
+    wrapperIdentity.mockResolvedValue(false);
+    await expect(getTerminalSessionActivity(sessionId, state.launch.id, new Date())).resolves.toMatchObject({
+      active: false, wrapperExited: true, starting: false,
+    });
+    expect(wrapperIdentity).toHaveBeenCalledWith(process.pid, "1");
+    await writeFile(state.lockPath, "");
+    await expect(getTerminalSessionActivity(sessionId, state.launch.id)).resolves.toMatchObject({ active: true });
+  });
+
+  it("keeps a wrapper active when both PID and precise creation identity match", async () => {
+    const state = await fixture(response);
+    const launchDirectory = path.join(directory, "data", "terminal-launches");
+    await mkdir(launchDirectory, { recursive: true });
+    await writeFile(path.join(launchDirectory, "launch-1.json"), JSON.stringify({
+      wrapperPid: process.pid, wrapperStartTime: "134384239590492155",
+    }));
+    await expect(getTerminalSessionActivity(sessionId, state.launch.id)).resolves.toMatchObject({
+      active: true, wrapperExited: false,
+    });
+    expect(wrapperIdentity).toHaveBeenCalledWith(process.pid, "134384239590492155");
+  });
+
+  it("does not treat a failed wrapper-identity lookup as proof of a stopped process", async () => {
+    const state = await fixture(response);
+    const launchDirectory = path.join(directory, "data", "terminal-launches");
+    await mkdir(launchDirectory, { recursive: true });
+    await writeFile(path.join(launchDirectory, "launch-1.json"), JSON.stringify({
+      wrapperPid: process.pid, wrapperStartTime: "1",
+    }));
+    wrapperIdentity.mockRejectedValue(new Error("Process identity could not be read"));
+    await expect(getTerminalSessionActivity(sessionId, state.launch.id)).rejects.toThrow("could not be read");
+    expect(database.run.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["{broken", "null", '{"wrapperPid":"invalid"}', '{"exitCode":"invalid"}',
+    `{"wrapperPid":${process.pid},"wrapperStartTime":123}`, `{"wrapperPid":${process.pid},"wrapperStartTime":"0"}`,
+    `{"wrapperPid":${process.pid},"wrapperStartTime":"invalid"}`, '{"wrapperStartTime":"1"}'])(
     "does not treat unreadable launch metadata as a stopped session: %s",
     async (content) => {
       const state = await fixture(response);
@@ -283,12 +334,70 @@ describe("terminal minute history reconciliation", () => {
 
   it("waits for a stable stopped observation then recovers completion without inventing an exit code", async () => {
     const state = await fixture(response);
-    await reconcileTerminalRun(state.run.id, firstTick);
+    await reconcileTerminalRun(state.run.id, firstTick, { stoppedOnly: true });
     expect(state.run.status).toBe("RUNNING");
-    await reconcileTerminalRun(state.run.id, secondTick);
+    await reconcileTerminalRun(state.run.id, new Date(firstTick.getTime() + 1_999), { stoppedOnly: true });
+    expect(state.run.status).toBe("RUNNING");
+    expect(captureRunSourceDiff).not.toHaveBeenCalled();
+    await reconcileTerminalRun(state.run.id, new Date(firstTick.getTime() + 2_000), { stoppedOnly: true });
     expect(state.run).toMatchObject({ status: "SUCCESS", exitCode: null });
     expect(state.launch.status).toBe("COMPLETED");
     expect(captureRunSourceDiff).toHaveBeenCalledTimes(1);
+  });
+
+  it("only waits seconds for a stopped resume with no new answer or exit code, then leaves its result unconfirmed", async () => {
+    const state = await fixture(`${response}{"type":"session.resume"}\n{"type":"session.shutdown"}\n`, 1);
+    const exited = await promisify(execFile)(process.execPath, ["-p", "process.pid"]);
+    const launches = path.join(directory, "data", "terminal-launches");
+    await mkdir(launches, { recursive: true });
+    await writeFile(path.join(launches, "launch-1.json"), JSON.stringify({ wrapperPid: Number(exited.stdout.trim()) }));
+    const stoppedAt = new Date(start.getTime() + 93_000);
+    await reconcileTerminalRun(state.run.id, stoppedAt, { stoppedOnly: true });
+    expect(state.run.status).toBe("RUNNING");
+    await reconcileTerminalRun(state.run.id, new Date(stoppedAt.getTime() + 2_000), { stoppedOnly: true });
+    expect(state.run).toMatchObject({
+      status: "UNKNOWN", exitCode: null,
+      errorMessage: "Completion is unconfirmed: this Run has no reported exit status or complete response.",
+    });
+    expect(state.launch.status).toBe("FAILED");
+    expect(await readFile(state.paths.transcript, "utf8")).toContain('"type":"session.shutdown"');
+  });
+
+  it("does not read history while a fast check observes a live writer or an unconfirmed start", async () => {
+    const state = await fixture("{not yet readable}\n");
+    await reconcileTerminalRun(state.run.id, new Date(start.getTime() + 2_000), { stoppedOnly: true });
+    expect(state.launch.inactiveSince).toBeNull();
+    state.launch.inactiveSince = firstTick;
+    await writeFile(state.lockPath, "");
+    await reconcileTerminalRun(state.run.id, secondTick, { stoppedOnly: true });
+    expect(state.launch.inactiveSince).toBeNull();
+    expect(database.run.update).not.toHaveBeenCalled();
+    expect(captureRunSourceDiff).not.toHaveBeenCalled();
+  });
+
+  it("gives late history a fresh stability window and keeps partial tails unconfirmed", async () => {
+    const state = await fixture(response);
+    await reconcileTerminalRun(state.run.id, firstTick, { stoppedOnly: true });
+    await writeFile(state.eventsPath, `${response}{"type":`);
+    const changedAt = new Date(firstTick.getTime() + 2_000);
+    await reconcileTerminalRun(state.run.id, changedAt, { stoppedOnly: true });
+    expect(state.run.status).toBe("RUNNING");
+    expect(state.launch.inactiveSince).toEqual(changedAt);
+    await reconcileTerminalRun(state.run.id, new Date(changedAt.getTime() + 2_000), { stoppedOnly: true });
+    expect(state.run).toMatchObject({ status: "UNKNOWN", errorMessage: "Session history ends with an incomplete record" });
+  });
+
+  it("does not finalize if the session becomes active during source capture", async () => {
+    const state = await fixture(response);
+    await reconcileTerminalRun(state.run.id, firstTick, { stoppedOnly: true });
+    vi.mocked(captureRunSourceDiff).mockImplementationOnce(async () => {
+      await writeFile(state.lockPath, "");
+      return { afterGitTree: null, diff: "test diff" };
+    });
+    await reconcileTerminalRun(state.run.id, new Date(firstTick.getTime() + 2_000), { stoppedOnly: true });
+    expect(state.run.status).toBe("RUNNING");
+    expect(state.launch.inactiveSince).toBeNull();
+    expect(state.launch.syncToken).toBeNull();
   });
 
   it("preserves an incomplete stopped session as UNKNOWN and does not repeatedly finalize it", async () => {
@@ -296,7 +405,7 @@ describe("terminal minute history reconciliation", () => {
     await reconcileTerminalRun(state.run.id, firstTick);
     await reconcileTerminalRun(state.run.id, secondTick);
     expect(state.run.status).toBe("UNKNOWN");
-    await reconcileTerminalRun(state.run.id, new Date(start.getTime() + 180_000));
+    await reconcileTerminalRun(state.run.id, new Date(secondTick.getTime() + 60_000));
     expect(captureRunSourceDiff).toHaveBeenCalledTimes(1);
   });
 
@@ -306,8 +415,8 @@ describe("terminal minute history reconciliation", () => {
     await reconcileTerminalRun(state.run.id, secondTick);
     expect(state.run.status).toBe("UNKNOWN");
     await writeFile(state.eventsPath, `{"type":"user.message"}\n${response}`);
-    await reconcileTerminalRun(state.run.id, new Date(start.getTime() + 180_000));
-    await reconcileTerminalRun(state.run.id, new Date(start.getTime() + 240_000));
+    await reconcileTerminalRun(state.run.id, new Date(secondTick.getTime() + 60_000));
+    await reconcileTerminalRun(state.run.id, new Date(secondTick.getTime() + 120_000));
     expect(state.run.status).toBe("SUCCESS");
   });
 

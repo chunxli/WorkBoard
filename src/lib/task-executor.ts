@@ -292,7 +292,7 @@ function createAutomationSnapshot(options: {
 
 export async function finalizeAutomationRun(
   runId: string,
-  status: "CANCELLED" | "FAILED",
+  status: "CANCELLED" | "FAILED" | "TIMED_OUT",
   finalOutput: string | null,
   errorMessage: string | null = null
 ): Promise<void> {
@@ -303,7 +303,7 @@ export async function finalizeAutomationRun(
 
 async function finalizeAutomationRunUnlocked(
   runId: string,
-  status: "CANCELLED" | "FAILED",
+  status: "CANCELLED" | "FAILED" | "TIMED_OUT",
   finalOutput: string | null,
   errorMessage: string | null
 ): Promise<void> {

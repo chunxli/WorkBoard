@@ -11,6 +11,7 @@ import { getRepoWorkdirPath } from "@/lib/repo-workdir";
 import { formatDuration } from "@/lib/format";
 import RunDuration from "@/components/RunDuration";
 import StatusBadge from "@/components/StatusBadge";
+import CaseIqRuntimeTag from "@/components/CaseIqRuntimeTag";
 import LiveRunLog from "@/components/LiveRunLog";
 import CancelRunButton from "@/components/CancelRunButton";
 import RunStatusRefresher from "@/components/RunStatusRefresher";
@@ -21,6 +22,7 @@ import { ownedRunWhere } from "@/lib/run-access";
 import WorkQuickActions from "@/components/WorkQuickActions";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { isTerminalResumeReady } from "@/lib/terminal-resume";
+import { assertPairedRunArtifactLocation } from "@/lib/work-pair-directories";
 import { readRunDiffPreview, readRunLogTail } from "@/lib/run-artifacts";
 import MetaChip from "@/components/MetaChip";
 import SectionHeading from "@/components/SectionHeading";
@@ -29,6 +31,7 @@ import { ArrowLeft, ArrowUpRight, ChevronDown, Clock3, Download, FileText, GitBr
 import { isTerminalRunTrigger } from "@/lib/terminal-run";
 import { canCancelRun, getRunStatusMessage, TERMINAL_SYNCING_MESSAGE } from "@/lib/work-run-status";
 import { getRunStatusSnapshot } from "@/lib/run-status";
+import { isCaseIqRuntime, runtimeProviderLabel } from "@/lib/runtime-provider";
 
 export default async function RunDetailPage({
   params,
@@ -43,7 +46,7 @@ export default async function RunDetailPage({
     where: ownedRunWhere(userId, id),
     include: {
       task: { include: { repo: true } },
-      work: true,
+      work: { include: { sessionPair: true } },
       resumedFromRun: { select: { id: true, trigger: true, status: true } },
       resumedRuns: {
         orderBy: { createdAt: "desc" },
@@ -57,9 +60,14 @@ export default async function RunDetailPage({
   const activeContinuation = run.resumedRuns.find((child) => child.status === "RUNNING" || child.status === "PENDING");
   const statusMessage = getRunStatusMessage(run.status, run.errorMessage);
 
-  const log = run.logPath ? await readRunLogTail(run.logPath).catch(() => "") : "";
+  let pairedOutputError = false;
+  if (run.work?.sessionPair) {
+    try { await assertPairedRunArtifactLocation(run.work, run); }
+    catch { pairedOutputError = true; }
+  }
+  const log = !pairedOutputError && run.logPath ? await readRunLogTail(run.logPath).catch(() => "") : "";
 
-  const diff = run.outputDir
+  const diff = pairedOutputError ? "" : run.outputDir
     ? await readRunDiffPreview(path.join(run.outputDir, "diff.patch")).catch(() => "")
     : await getRunDiff(run);
 
@@ -75,6 +83,7 @@ export default async function RunDetailPage({
   const canOpenTerminal = localTerminalAvailable(requestHost) && sameMachine;
   const resumeReady =
     Boolean(run.copilotSessionId) &&
+    run.engine !== "CASEIQ" &&
     canOpenTerminal &&
     await isTerminalResumeReady({
       id: run.id,
@@ -105,7 +114,9 @@ export default async function RunDetailPage({
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-bold text-white sm:text-2xl">Run <span className="font-mono">{run.id.slice(0, 8)}</span></h1>
             <StatusBadge status={runState.displayStatus} />
-            {run.startedAt && (
+            {isCaseIqRuntime(run) ? <CaseIqRuntimeTag title={`Runtime: ${runtimeProviderLabel(run)}`} />
+              : run.providerId && <MetaChip icon={TerminalSquare}>{runtimeProviderLabel(run)}</MetaChip>}
+            {run.startedAt && runState.displayStatus !== "SYNCING" && (
               <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500" aria-label="Elapsed time">
                 <Clock3 size={13} aria-hidden="true" />
                 <RunDuration key={run.id} startedAt={run.startedAt.toISOString()}
@@ -248,7 +259,8 @@ export default async function RunDetailPage({
         </div>
       </details>
 
-      {run.outputDir && (
+      {pairedOutputError && <p role="alert" className="text-sm text-red-400">The original paired Run output could not be verified.</p>}
+      {run.outputDir && !pairedOutputError && (
         <section className="ui-panel p-4 sm:p-5">
           <SectionHeading icon={PackageOpen} title="Artifacts" />
           <div className="flex flex-wrap gap-2">

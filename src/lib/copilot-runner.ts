@@ -6,6 +6,7 @@ import pidusage from "pidusage";
 import { CopilotCompletionTracker } from "@/lib/copilot-completion";
 import { resolveCopilotCliExecutable } from "@/lib/copilot-cli-executable";
 import { stopCopilotProcess } from "@/lib/copilot-process";
+import { workspaceInstructionEnvironment, type PairedCopilotWorkspace } from "@/lib/work-pair-directories";
 import {
   readCopilotSessionInsights,
   subtractCopilotTokenUsage,
@@ -26,6 +27,7 @@ export interface StartCopilotRunOptions {
   runId: string;
   repoPath: string;
   prompt: string;
+  pairedWorkspace?: PairedCopilotWorkspace;
   attachmentPaths?: string[];
   sessionId?: string | null;
   resumeSession?: boolean;
@@ -44,7 +46,7 @@ export interface StartCopilotRunOptions {
   executableArgs?: string[];
   trackProcessStats?: boolean;
   /** Fired synchronously right after the child process spawns, so callers can persist pid/command early. */
-  onSpawn?: (info: { pid: number | null; command: string; model: string | null }) => void;
+  onSpawn?: (info: { pid: number | null; command: string; model: string | null }) => void | Promise<void>;
 }
 
 export type CopilotRunEvent =
@@ -68,6 +70,7 @@ const globalForRunner = globalThis as unknown as {
   copilotCancelledRunIds?: Set<string>;
   copilotRunStats?: Map<string, RunProcessStats>;
   copilotRunStops?: Map<string, Promise<boolean>>;
+  copilotExternalRunControls?: Map<string, () => Promise<boolean>>;
 };
 
 // One emitter per in-flight run; SSE endpoints subscribe to stream live output.
@@ -80,6 +83,7 @@ const cancelledRunIds = globalForRunner.copilotCancelledRunIds ?? new Set<string
 // Latest pidusage sample per in-flight run, for the "process info" panel / live polling endpoint.
 const runStats = globalForRunner.copilotRunStats ?? new Map<string, RunProcessStats>();
 const runStops = globalForRunner.copilotRunStops ??= new Map<string, Promise<boolean>>();
+const externalRunControls = globalForRunner.copilotExternalRunControls ??= new Map<string, () => Promise<boolean>>();
 
 globalForRunner.copilotRunEmitters = runEmitters;
 globalForRunner.copilotRunProcesses = runProcesses;
@@ -111,12 +115,24 @@ export function getRunProcessStats(runId: string): RunProcessStats | undefined {
  * run already finished, or the server restarted since it started).
  */
 export function isNativeCopilotRunActive(runId: string): boolean {
-  return runProcesses.has(runId);
+  return runProcesses.has(runId) || externalRunControls.has(runId);
+}
+
+export function registerNativeRunControl(runId: string, cancel: () => Promise<boolean>): () => void {
+  if (runProcesses.has(runId) || externalRunControls.has(runId)) throw new Error("This Run already owns a native process.");
+  externalRunControls.set(runId, cancel);
+  return () => { if (externalRunControls.get(runId) === cancel) externalRunControls.delete(runId); };
 }
 
 export async function cancelRun(runId: string): Promise<boolean> {
   const stopping = runStops.get(runId);
   if (stopping) return stopping;
+  const external = externalRunControls.get(runId);
+  if (external) {
+    const operation = external().finally(() => { runStops.delete(runId); });
+    runStops.set(runId, operation);
+    return operation;
+  }
   cancelledRunIds.add(runId);
   const child = runProcesses.get(runId);
   if (!child) return false;
@@ -207,7 +223,7 @@ export function extractFinalCopilotOutput(output: string): string | null {
   return finalOutput ?? (output.trim() || null);
 }
 
-const INCOMPLETE_SESSION_PROMPT = `Continue and complete the original task. The previous non-interactive process exited before completion was confirmed, and unfinished background sub-agents may have been cancelled. Inspect the work already produced, restart any unfinished analysis as needed, wait for every background sub-agent and tool to finish, then produce the final requested deliverables and a root-level final answer. Do not return a progress-only message.`;
+export const INCOMPLETE_SESSION_PROMPT = `Continue and complete the original task. The previous non-interactive process exited before completion was confirmed, and unfinished background sub-agents may have been cancelled. Inspect the work already produced, restart any unfinished analysis as needed, wait for every background sub-agent and tool to finish, then produce the final requested deliverables and a root-level final answer. Do not return a progress-only message.`;
 
 function buildArgs(
   opts: StartCopilotRunOptions,
@@ -224,6 +240,7 @@ function buildArgs(
   ];
 
   args.push(opts.permissionMode === "full" ? "--allow-all" : "--allow-all-tools");
+  if (opts.pairedWorkspace) args.push("--add-dir", opts.pairedWorkspace.inputDirectory);
   if (opts.outputFormat === "json") args.push("--stream", "on");
   if (!automaticContinuation) {
     for (const attachment of opts.attachmentPaths ?? []) args.push("--attachment", attachment);
@@ -332,7 +349,7 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
         processArgs,
         {
         cwd: opts.repoPath,
-        env: buildCopilotEnvironment(),
+        env: workspaceInstructionEnvironment(buildCopilotEnvironment(), opts.pairedWorkspace),
         windowsHide: true,
         detached: process.platform !== "win32",
         }

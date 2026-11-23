@@ -19,7 +19,7 @@ export default function ExperimentBuilder({
 }: {
   workId: string;
   initialSkills: SkillOption[];
-  defaultEngine: "CLI" | "SDK";
+  defaultEngine: "CLI" | "SDK" | "CASEIQ";
 }) {
   const router = useRouter();
   const [skills, setSkills] = useState(initialSkills);
@@ -163,11 +163,12 @@ export default function ExperimentBuilder({
           Engine
           <select
             value={engine}
-            onChange={(event) => setEngine(event.target.value as "CLI" | "SDK")}
+            onChange={(event) => setEngine(event.target.value as "CLI" | "SDK" | "CASEIQ")}
             className="mt-1 block rounded border border-neutral-600 bg-neutral-950 px-3 py-2 text-sm text-white"
           >
             <option value="CLI">Copilot CLI</option>
             <option value="SDK">Copilot SDK</option>
+            <option value="CASEIQ">CaseIQ</option>
           </select>
         </label>
         <button

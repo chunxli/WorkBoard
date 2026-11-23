@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { createTwoFilesPatch } from "diff";
+import { isPrivateRuntimePath } from "@/lib/native-runtime-paths";
 
 const TEXT_CAPTURE_LIMIT = 1024 * 1024;
 const IGNORED_DIRECTORY_NAMES = new Set([
@@ -47,11 +48,22 @@ export interface DirectorySnapshot {
   entries: Record<string, DirectorySnapshotEntry>;
 }
 
-function hashFile(filePath: string): Promise<string> {
+export interface DirectorySnapshotProgress {
+  filesScanned: number;
+  bytesRead: number;
+}
+
+function hashFile(filePath: string, onBytes?: (length: number) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     const stream = createReadStream(filePath);
-    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("data", (chunk) => {
+      hash.update(chunk);
+      try { onBytes?.(typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length); }
+      catch (error) {
+        stream.destroy(error instanceof Error ? error : new Error("Cannot report snapshot progress.", { cause: error }));
+      }
+    });
     stream.once("error", reject);
     stream.once("end", () => resolve(hash.digest("hex")));
   });
@@ -68,9 +80,24 @@ function decodeText(content: Buffer): string | undefined {
 
 export async function captureDirectorySnapshot(
   rootPath: string,
-  previous?: DirectorySnapshot
+  previous?: DirectorySnapshot,
+  onProgress?: (progress: DirectorySnapshotProgress) => void,
 ): Promise<DirectorySnapshot> {
   const entries: Record<string, DirectorySnapshotEntry> = {};
+  let filesScanned = 0;
+  let bytesRead = 0;
+  let lastReport = -Infinity;
+  const report = (force = false) => {
+    if (!onProgress) return;
+    const now = performance.now();
+    if (!force && now - lastReport < 250) return;
+    lastReport = now;
+    onProgress({ filesScanned, bytesRead });
+  };
+  const recordBytes = onProgress ? (length: number) => {
+    bytesRead += length;
+    report();
+  } : undefined;
 
   async function visit(directoryPath: string, relativeDirectory: string): Promise<void> {
     const children = await readdir(directoryPath, { withFileTypes: true });
@@ -78,6 +105,7 @@ export async function captureDirectorySnapshot(
     for (const child of children) {
       if (child.isDirectory() && IGNORED_DIRECTORY_NAMES.has(child.name.toLowerCase())) continue;
       const absolutePath = path.join(directoryPath, child.name);
+      if (isPrivateRuntimePath(absolutePath)) continue;
       const relativePath = path.join(relativeDirectory, child.name).replaceAll("\\", "/");
       const info = await lstat(absolutePath).catch(() => null);
       if (!info) continue;
@@ -108,18 +136,24 @@ export async function captureDirectorySnapshot(
         const entry: DirectorySnapshotEntry = {
           kind: "file",
           size: info.size,
-          sha256: await hashFile(absolutePath),
+          sha256: await hashFile(absolutePath, recordBytes),
           mtimeMs: info.mtimeMs,
         };
         if (info.size <= TEXT_CAPTURE_LIMIT) {
           entry.text = decodeText(await readFile(absolutePath));
         }
         entries[relativePath] = entry;
+        if (onProgress) {
+          filesScanned++;
+          report();
+        }
       }
     }
   }
 
+  report();
   await visit(rootPath, "");
+  report(true);
   return { schemaVersion: 1, capturedAtMs: Date.now(), entries };
 }
 

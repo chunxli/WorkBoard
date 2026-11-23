@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Fragment } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
@@ -15,6 +16,7 @@ import {
   releaseNotes,
 } from "@/lib/docs-content";
 import { getSessionUserId } from "@/lib/session";
+import { caseIqDocumentation } from "@/lib/caseiq-docs";
 
 export const metadata: Metadata = {
   title: "Docs | Work Board",
@@ -60,7 +62,7 @@ function SectionNavigation({ mobile = false }: { mobile?: boolean }) {
 
 function ReleaseNotes() {
   return (
-    <section id="release-notes" className="scroll-mt-24">
+    <section id="release-notes" className="scroll-mt-48 lg:scroll-mt-24">
       <div className="border-b border-neutral-800 pb-5">
         <div className="flex items-center gap-2 text-emerald-400">
           <GitCommitHorizontal size={16} aria-hidden="true" />
@@ -124,6 +126,33 @@ function ReleaseNotes() {
   );
 }
 
+function CaseIqGuides() {
+  return <section id="caseiq-guides" className="scroll-mt-48 space-y-5 lg:scroll-mt-24">
+    <header className="space-y-2 border-b border-neutral-800 pb-5">
+      <p className="font-mono text-[10px] font-bold text-emerald-400">03</p>
+      <h2 className="text-xl font-bold text-white">CaseIQ Guides / CaseIQ 集成</h2>
+      <p lang="zh-CN" className="text-sm leading-6 text-neutral-300">
+        在 Runtime 选择 CaseIQ，用自己的 Prompt 走普通网页运行和对话流程，不必打开 Terminal。操作指南与原生桥协议均直接读取仓库 Markdown；企业认证与真实案件验证边界单独说明。
+      </p>
+      <p lang="en" className="text-xs leading-5 text-neutral-500">
+        Choose CaseIQ in Runtime and run your Prompt in WorkBoard. Source-backed guides cover web execution, Follow Up and the original-launcher bridge, without SDK session control.
+      </p>
+    </header>
+    <div className="grid gap-4 md:grid-cols-2">
+      {Object.values(caseIqDocumentation).map((document) => <article key={document.href} className="ui-panel min-w-0 space-y-3 p-5">
+        <h3 className="text-base font-semibold text-neutral-100">
+          <Link href={document.href} className="hover:text-emerald-300">{document.title}</Link>
+        </h3>
+        <p lang="zh-CN" className="text-sm leading-6 text-neutral-300">{document.zh}</p>
+        <p lang="en" className="text-xs leading-5 text-neutral-500">{document.en}</p>
+        <Link href={document.href} className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300">
+          Read guide / 阅读指南<ArrowUpRight size={13} aria-hidden="true" />
+        </Link>
+      </article>)}
+    </div>
+  </section>;
+}
+
 export default async function DocsPage() {
   const userId = await getSessionUserId();
   if (!userId) redirect("/api/auth/signin");
@@ -148,6 +177,11 @@ export default async function DocsPage() {
           快速入门与初始配置 / Quick Start & Initial Setup
           <ArrowUpRight size={14} aria-hidden="true" />
         </Link>
+        <div>
+          <Link href="#caseiq-guides" className="inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-400 hover:text-emerald-300">
+            CaseIQ 操作与原生协议 / CaseIQ Guides<ArrowUpRight size={14} aria-hidden="true" />
+          </Link>
+        </div>
       </div>
 
       <SectionNavigation mobile />
@@ -161,10 +195,11 @@ export default async function DocsPage() {
           <ReleaseNotes />
 
           {docsSections.map((section, sectionIndex) => (
-            <section key={section.id} id={section.id} className="scroll-mt-24">
+            <Fragment key={section.id}>
+            <section id={section.id} className="scroll-mt-48 lg:scroll-mt-24">
               <div className="border-b border-neutral-800 pb-5">
                 <p className="font-mono text-[10px] font-bold text-emerald-400">
-                  {String(sectionIndex + 2).padStart(2, "0")}
+                  {String(sectionIndex === 0 ? 2 : sectionIndex + 3).padStart(2, "0")}
                 </p>
                 <h2 className="mt-2 text-xl font-bold text-white">{section.title}</h2>
                 <p lang="zh-CN" className="mt-2 max-w-3xl text-sm leading-6 text-neutral-300">
@@ -232,6 +267,8 @@ export default async function DocsPage() {
                 </div>
               )}
             </section>
+            {section.id === "quick-start" && <CaseIqGuides />}
+            </Fragment>
           ))}
         </div>
       </div>

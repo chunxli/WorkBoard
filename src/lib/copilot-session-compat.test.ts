@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   copilotSessionExists,
+  copilotSessionHasHistory,
   processIsAlive,
   readCopilotSessionSnapshot,
   readCompatibleCopilotSessionEvents,
@@ -85,6 +86,16 @@ describe("Copilot session compatibility", () => {
     await expect(copilotSessionExists(session.sessionId, session.baseDirectory)).resolves.toBe(true);
     await rm(session.eventsPath);
     await expect(copilotSessionExists(session.sessionId, session.baseDirectory)).resolves.toBe(false);
+  });
+
+  it("requires nonempty recorded history without changing legacy existence semantics", async () => {
+    const session = await createSession("");
+    await expect(copilotSessionExists(session.sessionId, session.baseDirectory)).resolves.toBe(true);
+    await expect(copilotSessionHasHistory(session.sessionId, session.baseDirectory)).resolves.toBe(false);
+    await writeFile(session.eventsPath, '{"type":"session.start"}\n', "utf8");
+    await expect(copilotSessionHasHistory(session.sessionId, session.baseDirectory)).resolves.toBe(true);
+    await rm(session.eventsPath);
+    await expect(copilotSessionHasHistory(session.sessionId, session.baseDirectory)).resolves.toBe(false);
   });
 
   it("maps legacy permission transitions in both directions", () => {

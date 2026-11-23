@@ -17,7 +17,7 @@ describe("in-app documentation content", () => {
     const ids = docsNavigation.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids[0]).toBe("release-notes");
-    expect(docsSections.map((section) => section.id)).toEqual(ids.slice(1));
+    expect(docsSections.map((section) => section.id)).toEqual(ids.filter((id) => id !== "release-notes" && id !== "caseiq-guides"));
     expect(docsSections.every((section) => section.features.length > 0)).toBe(true);
   });
 

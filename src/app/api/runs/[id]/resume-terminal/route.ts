@@ -9,6 +9,7 @@ import {
 } from "@/lib/terminal-resume";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { CopilotSessionInUseError } from "@/lib/copilot-session-compat";
+import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
 
 export async function POST(
   req: NextRequest,
@@ -16,6 +17,9 @@ export async function POST(
 ) {
   const userId = await getSessionUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (req.headers.get("origin") && req.headers.get("origin") !== req.nextUrl.origin) {
+    return NextResponse.json({ error: "Cross-origin terminal resume is not allowed." }, { status: 403 });
+  }
   if (!localTerminalAvailable(req.nextUrl.hostname)) {
     return NextResponse.json(
       { error: "Local terminal launch is only available from this Windows host" },
@@ -40,7 +44,8 @@ export async function POST(
     if (
       error instanceof CopilotSessionInUseError ||
       error instanceof TerminalResumeInProgressError ||
-      error instanceof TerminalResumeNotReadyError
+      error instanceof TerminalResumeNotReadyError ||
+      error instanceof CaseIqIntegrationError
     ) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }

@@ -3,14 +3,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getRunStatusRevision, isRunStatusSnapshot, type RunStatusSnapshot } from "@/lib/work-run-status";
+import PendingRunFeedback from "@/components/PendingRunFeedback";
 
 export default function RunStatusRefresher({ initialState }: { initialState: RunStatusSnapshot }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [observation, setObservation] = useState<RunStatusSnapshot | null>(null);
   const retry = useRef<() => void>(() => {});
   const runId = initialState.id;
   const initialRevision = getRunStatusRevision(initialState);
   const polling = ["PENDING", "RUNNING", "UNKNOWN"].includes(initialState.status);
+  const pending = initialState.displayStatus === "PENDING";
+  const current = observation?.id === runId ? observation : initialState;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -34,6 +38,7 @@ export default function RunStatusRefresher({ initialState }: { initialState: Run
         }
         if (!isRunStatusSnapshot(body) || body.id !== runId) throw new Error("Invalid Run status response");
         setError(null);
+        if (pending) setObservation(body);
         const nextRevision = getRunStatusRevision(body);
         if (nextRevision !== revision) {
           revision = nextRevision;
@@ -60,8 +65,11 @@ export default function RunStatusRefresher({ initialState }: { initialState: Run
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [runId, initialRevision, polling, router]);
+  }, [runId, initialRevision, pending, polling, router]);
 
+  if (!error && pending && current.displayStatus === "PENDING") {
+    return <PendingRunFeedback preparation={current.preparation} />;
+  }
   return error ? (
     <p role="alert" className="flex flex-wrap items-center gap-2 text-xs text-red-400">
       Status refresh failed: {error}
