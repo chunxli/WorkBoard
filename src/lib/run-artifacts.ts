@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, copyFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { WorkAttachment } from "@/lib/work-attachment-types";
 
@@ -30,6 +30,20 @@ export interface RunArtifactPaths {
   stdout: string;
   stderr: string;
   steering: string;
+}
+
+export interface RunArtifactDigest {
+  byteSize: number;
+  sha256: string;
+}
+
+export interface FinalRunArtifactDigests {
+  snapshot: RunArtifactDigest;
+  result: RunArtifactDigest;
+}
+
+function artifactDigest(content: string | Buffer): RunArtifactDigest {
+  return { byteSize: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex") };
 }
 
 export interface WorkRunSteeringArtifact {
@@ -73,8 +87,10 @@ export interface WorkRunSnapshot {
   finishedAt: string | null;
   exitCode: number | null;
   errorMessage: string | null;
+  artifactWarnings?: string[];
   gitBeforeTree: string | null;
   gitAfterTree: string | null;
+  sourceAfterCaptured?: boolean;
   experimentVariantId?: string | null;
   skillName?: string | null;
   skillHash?: string | null;
@@ -233,6 +249,7 @@ export async function finalizeWorkRunArtifacts(options: {
   snapshot: WorkRunSnapshot;
   finalOutput: string | null;
   diff: string;
+  seal?: (digests: FinalRunArtifactDigests) => Promise<void>;
 }): Promise<void> {
   const { paths, snapshot } = options;
   const result = options.finalOutput?.trim()
@@ -243,14 +260,53 @@ export async function finalizeWorkRunArtifacts(options: {
       ? `# Run failed\n\n${snapshot.errorMessage}\n`
       : `# Run finished\n\nNo final assistant response was captured.\n`;
 
+  const diffWrite = writeAtomic(paths.diff, options.diff);
+  const transcriptWrite = copyFile(paths.stdout, paths.transcript);
+  if (options.seal) {
+    const [diff, transcript] = await Promise.allSettled([diffWrite, transcriptWrite]);
+    const warnings = [...(snapshot.artifactWarnings ?? [])];
+    for (const [write, message] of [
+      [diff, "Workspace diff could not be saved."],
+      [transcript, "Transcript could not be saved; see stdout.log for the original output."],
+    ] as const) {
+      if (write.status === "rejected") {
+        warnings.push(message);
+        console.warn("[Work Board] " + message, snapshot.runId, write.reason instanceof Error ? write.reason.name : write.reason);
+      }
+    }
+    const terminalSnapshot = warnings.length ? { ...snapshot, artifactWarnings: warnings } : snapshot;
+    const snapshotContent = `${JSON.stringify(terminalSnapshot, null, 2)}\n`;
+    await options.seal({ snapshot: artifactDigest(snapshotContent), result: artifactDigest(result) });
+    await writeAtomic(paths.result, result);
+    // The verified terminal snapshot is the commit point for the required artifacts.
+    await writeAtomic(paths.snapshot, snapshotContent);
+    return;
+  }
   await Promise.all([
     writeAtomic(paths.result, result),
-    writeAtomic(paths.diff, options.diff),
-    writeAtomic(paths.snapshot, `${JSON.stringify(snapshot, null, 2)}\n`),
-    copyFile(paths.stdout, paths.transcript).catch(async () => {
-      await writeAtomic(paths.transcript, "");
-    }),
+    diffWrite,
+    transcriptWrite.catch(() => writeAtomic(paths.transcript, "")),
+    writeRunSnapshot(paths.snapshot, snapshot),
   ]);
+}
+
+export async function readVerifiedRunArtifact(filePath: string, expected: RunArtifactDigest): Promise<string> {
+  const entry = await lstat(/* turbopackIgnore: true */ filePath);
+  if (!entry.isFile() || entry.size !== expected.byteSize) throw new Error("Run artifact size does not match its completion receipt.");
+  const file = await open(/* turbopackIgnore: true */ filePath, "r");
+  try {
+    const buffer = Buffer.alloc(expected.byteSize);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    if (offset !== buffer.length || (await file.stat()).size !== expected.byteSize || artifactDigest(buffer).sha256 !== expected.sha256) {
+      throw new Error("Run artifact checksum does not match its completion receipt.");
+    }
+    return buffer.toString("utf8");
+  } finally { await file.close(); }
 }
 
 export async function checkpointRunHistory(options: {

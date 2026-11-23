@@ -1,9 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { z } from "zod";
+import { CaseIqRunUnconfirmedError, caseIqRunAlreadyFinalizing, caseIqStopAlreadyRequested } from "@/lib/caseiq-errors";
 import { acceptCaseIqPreparation, finalizeCaseIqSessionHome, prepareCaseIqPrompt } from "@/lib/caseiq-integration";
 import { workspaceInstructionEnvironment } from "@/lib/work-pair-directories";
 import type { CaseIqStartupPhase } from "@/lib/caseiq-startup";
@@ -18,21 +18,27 @@ import {
 import { analyzeCopilotSessionEvents, readCopilotSessionInsights, subtractCopilotTokenUsage } from "@/lib/copilot-session-insights";
 import { getCaseIqStateRoot } from "@/lib/native-runtime-paths";
 import { readNativeSessionBindingSync } from "@/lib/native-session-bindings";
+import {
+  persistCaseIqRetryCancellation, readCaseIqAttemptExit, readOptionalCaseIqBridgeJson, requestCaseIqBridgeCancellation,
+} from "@/lib/caseiq-run-lifecycle";
 import type { CaseIqRunVersion } from "@/lib/run-artifacts";
 import {
-  MAX_BRIDGE_FILE_BYTES, assertBridgeCorrelation, bridgeCorrelation, launcherResultSchema,
-  nativeBridgeCancellationSchema, nativeBridgeFrameSchema, parseNativeBridgeRequest,
+  MAX_BRIDGE_FILE_BYTES, assertBridgeCorrelation, launcherResultSchema, nativeBridgeFrameSchema, parseNativeBridgeRequest,
 } from "../../scripts/native-bridge-protocol.mjs";
 
 type BridgeRequest = ReturnType<typeof parseNativeBridgeRequest>;
 type BridgeFrame = z.infer<typeof nativeBridgeFrameSchema>;
 type NativeResult = Extract<BridgeFrame, { kind: "native-result" }>;
 type RunResult = Awaited<ReturnType<typeof startCopilotRun>>;
+type AttemptExit = Awaited<ReturnType<typeof readCaseIqAttemptExit>>;
+type StopReason = "user" | "timeout" | "shutdown";
 
 interface CaseIqRunOptions extends Omit<StartCopilotRunOptions, "executable" | "executableArgs" | "permissionMode"> {
   userId: string;
   workId: string;
   sessionId: string;
+  authorizeLaunch: () => Promise<"authorized" | "cancelled">;
+  persistPrelaunchCancellation: (attempt?: Pick<Attempt, "directory" | "request">) => Promise<void>;
   testExecutableArgs?: string[];
   onVersion?: (version: CaseIqRunVersion) => Promise<void>;
 }
@@ -43,15 +49,55 @@ interface Attempt {
   directory: string;
   done: Promise<number | null>;
   closed: boolean;
+  accepted: boolean;
   spawnError: Error | null;
-  stopping: Promise<void> | null;
+  stopping: { reason: StopReason; confirmation: Promise<AttemptExit> } | null;
+  detachOutput(): void;
 }
 
-export class CaseIqRunUnconfirmedError extends Error {
-  constructor() {
-    super("CaseIQ could not confirm that its owned process stopped. This Work remains reserved; retry cancellation and inspect local diagnostics.");
-    this.name = "CaseIqRunUnconfirmedError";
-  }
+const STOP_GRACE_MS = 5_000;
+// Allow the 15-second Windows process-tree stop plus time for the close notification.
+const STOP_CONFIRMATION_LIMIT_MS = STOP_GRACE_MS + 17_000;
+
+function hasWrapperExited(attempt: Attempt): boolean {
+  return attempt.closed || attempt.child.exitCode !== null || attempt.child.signalCode !== null;
+}
+
+function stopCaseIqAttempt(attempt: Attempt, reason: StopReason): Promise<AttemptExit> {
+  return new Promise<AttemptExit>((resolve, reject) => {
+    let settled = false;
+    let forced = false;
+    const settle = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(grace);
+      clearTimeout(limit);
+      complete();
+    };
+    const force = () => {
+      if (settled || forced || hasWrapperExited(attempt)) return;
+      forced = true;
+      void stopCopilotProcess(attempt.child).catch((error: unknown) => settle(() => reject(error)));
+    };
+    const grace = setTimeout(force, STOP_GRACE_MS);
+    const limit = setTimeout(() => settle(() => reject(new CaseIqRunUnconfirmedError())), STOP_CONFIRMATION_LIMIT_MS);
+    void attempt.done.then(async () => {
+      if (settled) return;
+      const accepted = attempt.accepted ||
+        await readOptionalCaseIqBridgeJson(path.join(attempt.directory, "accept.json")) !== null;
+      // The launcher can disappear while an accepted native invocation is still running.
+      const exit = accepted ? await readCaseIqAttemptExit(attempt.directory, attempt.request) : null;
+      if (accepted && !exit) throw new Error("The accepted CaseIQ attempt has no matching exit receipts.");
+      settle(() => resolve(exit));
+    }).catch((error: unknown) => settle(() => reject(new CaseIqRunUnconfirmedError(error))));
+    if (!hasWrapperExited(attempt)) {
+      void requestCaseIqBridgeCancellation(attempt.directory, attempt.request, reason).catch((error: unknown) => {
+        if (settled || hasWrapperExited(attempt)) return;
+        console.error("[CaseIQ] Cancellation journal failed; stopping the owned wrapper process.", error);
+        force();
+      });
+    }
+  });
 }
 
 export function buildCaseIqEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -157,6 +203,10 @@ class CaseIqOutputBuffer {
 export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResult> {
   const privateRoot = getCaseIqStateRoot();
   let active: Attempt | null = null;
+  let firstLaunch: Pick<Attempt, "directory" | "request"> | undefined;
+  let retryingAfter: Attempt | null = null;
+  let preSpawnCancellation: Promise<void> | undefined;
+  let finalizing = false;
   let cancelled = false;
   let timedOut = false;
   let finalOutput: string | null = null;
@@ -165,7 +215,7 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
   let fallbackAttempted = false;
   let attemptNumber = 1;
   const reportStartup = (phase: CaseIqStartupPhase) =>
-    reportCaseIqStartup(options.runId, cancelled || timedOut ? "stopping" : phase, attemptNumber);
+    reportCaseIqStartup(options.runId, preSpawnCancellation || cancelled || timedOut ? "stopping" : phase, attemptNumber);
   let pendingWrites = Promise.resolve();
   let writeError: unknown = null;
   let outputError: unknown = null;
@@ -209,49 +259,41 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
       catch (error) { outputError ??= error; }
     }
   };
-  const stop = async (reason: "user" | "timeout" | "shutdown") => {
+  const stop = async (reason: StopReason) => {
     const attempt = active;
-    if (!attempt || attempt.closed) return;
-    reportStartup("stopping");
-    if (attempt.stopping) return attempt.stopping;
-    attempt.stopping = (async () => {
-      const cancel = path.join(attempt.directory, "cancel.json");
-      try {
-        const existing = await bridgeJson(cancel).catch((error: unknown) => {
-          if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
-          throw error;
-        });
-        if (existing) assertBridgeCorrelation(nativeBridgeCancellationSchema.parse(existing), attempt.request);
-        else {
-          const temporary = `${cancel}.${randomUUID()}.tmp`;
-          await writeFile(temporary, JSON.stringify({ ...bridgeCorrelation(attempt.request), action: "cancel", reason }), {
-            flag: "wx", mode: 0o600,
-          });
-          await rename(temporary, cancel);
-        }
-      } catch (error) {
-        console.error("[CaseIQ] Cancellation journal failed; stopping the owned wrapper process.", error);
-        await stopCopilotProcess(attempt.child);
-        await attempt.done;
-        return;
-      }
-      let forceError: unknown = null;
-      const force = setTimeout(() => {
-        void stopCopilotProcess(attempt.child).catch((error: unknown) => { forceError = error; });
-      }, 5000);
-      try {
-        while (!attempt.closed) {
-          if (forceError) throw forceError;
-          await sleep(25);
-        }
-      } finally { clearTimeout(force); }
-    })().finally(() => { attempt.stopping = null; });
-    return attempt.stopping;
+    if (!attempt) return null;
+    if (!hasWrapperExited(attempt)) reportStartup("stopping");
+    return (attempt.stopping ??= { reason, confirmation: stopCaseIqAttempt(attempt, reason) }).confirmation;
   };
   const unregister = registerNativeRunControl(options.runId, async () => {
-    cancelled = true;
-    reportStartup("stopping");
-    await stop("user");
+    if (preSpawnCancellation) {
+      await preSpawnCancellation;
+      return true;
+    }
+    const attempt = active;
+    const reason = attempt?.stopping?.reason;
+    if (timedOut || reason === "timeout" || reason === "shutdown") {
+      throw caseIqStopAlreadyRequested();
+    }
+    if (finalizing && (!attempt || retryingAfter)) throw caseIqRunAlreadyFinalizing();
+    if (attempt && !retryingAfter && reason !== "user" && hasWrapperExited(attempt)) {
+      await stopCaseIqAttempt(attempt, "user");
+      throw caseIqRunAlreadyFinalizing();
+    }
+    if (!cancelled && deadline !== null && Date.now() >= deadline) {
+      throw caseIqStopAlreadyRequested();
+    }
+    if (!attempt || retryingAfter) {
+      preSpawnCancellation = retryingAfter
+        ? persistCaseIqRetryCancellation(retryingAfter.directory, retryingAfter.request)
+        : options.persistPrelaunchCancellation(firstLaunch);
+      reportStartup("stopping");
+      await preSpawnCancellation;
+    } else {
+      cancelled = true;
+      reportStartup("stopping");
+      await stop("user");
+    }
     return true;
   });
   const emitter = createRunEmitter(options.runId);
@@ -263,6 +305,11 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
       cpuTimeMs: null, peakMemoryMb: null, finalOutput, incomplete: incompleteReason !== null,
       incompleteReason, continuationCount, usage,
     };
+  };
+  const cancelledBeforeSpawn = async (decision: Promise<void>): Promise<RunResult> => {
+    await decision;
+    cancelled = true;
+    return result(null, null, null);
   };
   const cleanup = () => { clearCaseIqStartup(options.runId); unregister(); releaseRunEmitter(options.runId); };
   try {
@@ -280,11 +327,12 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
     let prompt = options.prompt.trim() ? options.prompt : "Please review the attached files.";
     let resume = options.resumeSession === true;
     let attachments = options.attachmentPaths ?? [];
+    let launchAuthorized = false;
     while (true) {
       await pendingWrites;
       if (writeError !== null) throw writeError;
       if (outputError !== null) throw outputError;
-      if (cancelled) return result(null, null, null);
+      if (preSpawnCancellation) return await cancelledBeforeSpawn(preSpawnCancellation);
       if (deadline !== null && Date.now() >= deadline) { timedOut = true; return result(null, null, null); }
       recentOutput = "";
       reportStartup("checking");
@@ -297,9 +345,10 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
         testExecutableArgs: options.testExecutableArgs,
         onStartupStage: reportStartup,
       });
-      if (cancelled) return result(null, null, null);
+      if (preSpawnCancellation) return await cancelledBeforeSpawn(preSpawnCancellation);
       if (deadline !== null && Date.now() >= deadline) { timedOut = true; return result(null, null, null); }
       const request = parseNativeBridgeRequest(await bridgeJson(spec.requestFile));
+      const directory = path.dirname(spec.requestFile);
       const version: CaseIqRunVersion = {
         attemptId: request.attemptId, sourceCommit: request.sourceCommit ?? null,
         sourceBranch: request.sourceBranch ?? null, sourceDirty: request.sourceDirty ?? null,
@@ -309,57 +358,76 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
       await options.onVersion?.(version);
       await pendingWrites;
       if (writeError !== null) throw writeError;
-      if (cancelled) return result(null, null, null);
+      if (preSpawnCancellation) return await cancelledBeforeSpawn(preSpawnCancellation);
       if (deadline !== null && Date.now() >= deadline) { timedOut = true; return result(null, null, null); }
+      if (!launchAuthorized) {
+        firstLaunch = { directory, request };
+        const authorization = await options.authorizeLaunch();
+        if (preSpawnCancellation) return await cancelledBeforeSpawn(preSpawnCancellation);
+        cancelled = authorization === "cancelled";
+        launchAuthorized = true;
+        if (cancelled) return result(null, null, null);
+        if (deadline !== null && Date.now() >= deadline) { timedOut = true; return result(null, null, null); }
+      }
       reportStartup("launcher");
       const child = spawn(/* turbopackIgnore: true */ spec.powerShellExecutable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", spec.script, ...spec.arguments], {
         cwd: options.repoPath, windowsHide: true,
         env: workspaceInstructionEnvironment({ ...buildCaseIqEnvironment(), ...spec.environment }, options.pairedWorkspace),
       });
+      const receiveStdout = (data: string) => receive(buffers.launcherStdout, data);
+      const receiveStderr = (data: string) => receive(buffers.launcherStderr, data);
       const attempt: Attempt = {
-        child, request, directory: path.dirname(spec.requestFile), closed: false, spawnError: null, stopping: null,
+        child, request, directory, closed: false, accepted: false, spawnError: null, stopping: null,
         done: new Promise<number | null>((resolve) => {
           child.once("error", (error) => { attempt.spawnError = error; });
           child.once("close", (code) => { attempt.closed = true; resolve(code); });
         }),
+        detachOutput() {
+          child.stdout.off("data", receiveStdout).resume();
+          child.stderr.off("data", receiveStderr).resume();
+        },
       };
       active = attempt;
+      retryingAfter = null;
       child.stdin.end();
-      child.stdout.setEncoding("utf8").on("data", (data: string) => receive(buffers.launcherStdout, data));
-      child.stderr.setEncoding("utf8").on("data", (data: string) => receive(buffers.launcherStderr, data));
+      child.stdout.setEncoding("utf8").on("data", receiveStdout);
+      child.stderr.setEncoding("utf8").on("data", receiveStderr);
       await options.onSpawn?.({ pid: child.pid ?? null, command, model });
       const journal = new BridgeJournal(path.join(attempt.directory, "journal.jsonl"), request);
       const tracker = new CopilotCompletionTracker();
       const preparationDeadline = Date.now() + 120_000;
-      let accepted = false;
       let native: NativeResult | null = null;
       while (true) {
         if (writeError !== null) throw writeError;
         if (outputError !== null) throw outputError;
-        if (cancelled || deadline !== null && Date.now() >= deadline) {
+        if (cancelled || !hasWrapperExited(attempt) && deadline !== null && Date.now() >= deadline) {
           timedOut ||= !cancelled;
           await stop(cancelled ? "user" : "timeout");
         }
-        if (!accepted && !attempt.closed && Date.now() >= preparationDeadline) {
+        if (!attempt.accepted && !hasWrapperExited(attempt) && Date.now() >= preparationDeadline) {
           throw new Error("CaseIQ initialization did not reach its native CLI within two minutes. Check the Run output for dependency/authentication setup errors. No Terminal or ordinary CLI fallback was opened.");
         }
         const batch = await journal.read();
         for (const event of batch.events) {
           if (event.kind === "prepared") {
-            if (accepted) throw new Error("CaseIQ prepared more than one native invocation.");
-            accepted = await acceptCaseIqPreparation({
+            if (attempt.accepted) throw new Error("CaseIQ prepared more than one native invocation.");
+            attempt.accepted = await acceptCaseIqPreparation({
               id: options.runId, workId: options.workId, copilotSessionId: options.sessionId,
-            }, null, spec.requestFile);
-            if (!accepted) throw new Error("CaseIQ native preparation was not accepted.");
+            }, null, spec.requestFile, () => !cancelled && !timedOut && (deadline === null || Date.now() < deadline));
+            if (!attempt.accepted) {
+              timedOut ||= !cancelled && deadline !== null && Date.now() >= deadline;
+              if (cancelled || timedOut) continue;
+              throw new Error("CaseIQ native preparation was not accepted.");
+            }
             reportStartup("accepted");
             model = event.binding.model;
             output("[Work Board] CaseIQ preparation accepted. Ready to start your Prompt in WorkBoard.\n", "stdout");
           } else if (event.kind === "native-spawn") {
-            if (!accepted) throw new Error("CaseIQ started a native process before its preparation was accepted.");
+            if (!attempt.accepted) throw new Error("CaseIQ started a native process before its preparation was accepted.");
             reportStartup("native");
             output("[Work Board] CaseIQ Prompt process started. Output and Follow Up remain in WorkBoard.\n", "stdout");
           } else if (event.kind === "native-output") {
-            if (!accepted) throw new Error("CaseIQ emitted native output before its preparation was accepted.");
+            if (!attempt.accepted) throw new Error("CaseIQ emitted native output before its preparation was accepted.");
             // Only the correlated native channel can provide completion evidence.
             if (event.stream === "stdout") {
               tracker.push(event.data);
@@ -381,11 +449,8 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
       if (outputError !== null) throw outputError;
       if (attempt.spawnError) throw attempt.spawnError;
       if (cancelled || timedOut) {
-        const recordedLauncher = await stat(path.join(attempt.directory, "launcher-result.json")).catch((error: unknown) => {
-          if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
-          throw error;
-        });
-        if (accepted && native?.pid && recordedLauncher?.isFile()) {
+        const exit = await stop(cancelled ? "user" : "timeout");
+        if (exit?.native?.pid && !exit.launcher.scriptError && exit.native.error === null) {
           await finalizeCaseIqSessionHome({
             id: options.runId, workId: options.workId, copilotSessionId: options.sessionId,
           }, spec.requestFile);
@@ -398,7 +463,7 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
       if (launcher.nativeExitCode !== native.exitCode || code !== launcher.bridgeExitCode) {
         throw new Error("CaseIQ launcher and native process results disagree.");
       }
-      if (!accepted || !launcher.nativeExecutionObserved || launcher.scriptError || native.error) {
+      if (!attempt.accepted || !launcher.nativeExecutionObserved || launcher.scriptError || native.error) {
         throw new Error(native.error?.message ?? "The original CaseIQ launcher failed before a verified native invocation completed. Inspect this Run's output.");
       }
       await finalizeCaseIqSessionHome({
@@ -419,6 +484,7 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
       if (cancelled || timedOut) return result(exitCode, null, usage);
       if (exitCode !== 0 && !fallbackAttempted && options.fallbackModel && options.fallbackModel !== model &&
           isModelUnavailableError(recentOutput)) {
+        retryingAfter = attempt;
         fallbackAttempted = true;
         model = options.fallbackModel;
         resume = insights.eventCount > 0;
@@ -431,6 +497,7 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
         ? insights.eventCount === 0 ? "the bound CaseIQ session history is unavailable" : completionIssue(completion)
         : null;
       if (issue && continuationCount < maxIncompleteContinuations && insights.eventCount > 0) {
+        retryingAfter = attempt;
         continuationCount++;
         resume = true;
         cursor = insights.eventCount;
@@ -444,11 +511,33 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
       return result(exitCode, issue ? `CaseIQ exited before completion: ${issue}.` : null, usage);
     }
   } catch (error) {
-    try { await stop("shutdown"); }
-    catch (stopError) {
-      console.error("[CaseIQ] Web runtime process cleanup failed.", stopError);
-      emitter.emit("event", { type: "error", message: new CaseIqRunUnconfirmedError().message } satisfies CopilotRunEvent);
-      throw new CaseIqRunUnconfirmedError();
+    finalizing = true;
+    if (preSpawnCancellation) {
+      try {
+        await preSpawnCancellation;
+        cancelled = true;
+      }
+      catch (cause) {
+        const unconfirmed = new CaseIqRunUnconfirmedError(cause,
+          "CaseIQ could not verify its saved cancellation. No new Prompt was sent. This Work remains reserved pending recovery.");
+        console.error("[CaseIQ] Could not confirm the pre-spawn cancellation record.", cause);
+        flushOutput();
+        await pendingWrites;
+        if (writeError !== null) console.error("[CaseIQ] Run output could not be persisted.", writeError);
+        emitter.emit("event", { type: "error", message: unconfirmed.message } satisfies CopilotRunEvent);
+        throw unconfirmed;
+      }
+    } else {
+      try {
+        if (error instanceof CaseIqRunUnconfirmedError) throw error;
+        await stop("shutdown");
+      }
+      catch (stopError) {
+        console.error("[CaseIQ] Web runtime process cleanup failed.", stopError);
+        const unconfirmed = stopError instanceof CaseIqRunUnconfirmedError ? stopError : new CaseIqRunUnconfirmedError();
+        emitter.emit("event", { type: "error", message: unconfirmed.message } satisfies CopilotRunEvent);
+        throw unconfirmed;
+      }
     }
     const message = redact(error instanceof Error ? error.message : "CaseIQ web execution failed.");
     flushOutput();
@@ -459,10 +548,12 @@ export async function startCaseIqRun(options: CaseIqRunOptions): Promise<RunResu
     }
     output(`[CaseIQ] ${reportedMessage}\n`, "stderr");
     await pendingWrites;
+    if (preSpawnCancellation) return result(null, null, null);
     emitter.emit("event", { type: "error", message: reportedMessage } satisfies CopilotRunEvent);
     throw new Error(reportedMessage, { cause: error });
   } finally {
-    if (active && !active.closed) active.child.once("close", cleanup);
-    else cleanup();
+    // Let recovery inspect durable exit evidence even if the wrapper never emits close.
+    if (active && !active.closed) active.detachOutput();
+    cleanup();
   }
 }

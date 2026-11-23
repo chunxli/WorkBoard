@@ -1,16 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import type { z } from "zod";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_BRIDGE_FILE_BYTES, NATIVE_BRIDGE_PROTOCOL, bridgeCorrelation, launcherResultSchema,
-  nativeBridgeFrameSchema, nativeBridgeRequestSchema, parseNativeBridgeRequest,
+  nativeBridgeFrameSchema, nativeBridgeRequestSchema, parseNativeBridgeRequest, promptWrapperIdentitySchema,
 } from "../../scripts/native-bridge-protocol.mjs";
 import { validateRequestFile } from "../../scripts/caseiq-native-delegate.mjs";
 import { stopOwnedProcess } from "../../scripts/owned-process.mjs";
+import { inspectInterruptedCaseIqRun } from "./caseiq-run-lifecycle";
 import { buildCopilotEnvironment } from "./copilot-runner";
 import { windowsProcessMatchesStartTime } from "./copilot-process";
 
@@ -89,7 +90,7 @@ afterEach(async () => {
 
 async function start(options: {
   launcherMode?: string; nativeMode?: string; accept?: boolean;
-  overrides?: Partial<Request>; acceptanceNonce?: string;
+  overrides?: Partial<Request>; acceptanceNonce?: string; cancelBeforeLaunch?: boolean;
 } = {}): Promise<Execution> {
   const request = parseNativeBridgeRequest({
     protocolVersion: NATIVE_BRIDGE_PROTOCOL,
@@ -103,6 +104,9 @@ async function start(options: {
   });
   const file = path.join(directory, "request.json");
   await writeFile(file, JSON.stringify(request), { flag: "wx", mode: 0o600 });
+  if (options.cancelBeforeLaunch) {
+    await atomicJson("cancel.json", { ...bridgeCorrelation(request), action: "cancel", reason: "shutdown" });
+  }
   const child = spawn("powershell.exe", [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-File",
     path.join(process.cwd(), "scripts", "workboard-caseiq.ps1"),
@@ -189,6 +193,17 @@ describe("native bridge request validation", () => {
 });
 
 describe.skipIf(process.platform !== "win32")("CaseIQ offline native bridge", () => {
+  it("records the web wrapper before honoring a recovered stop request without entering the launcher", async () => {
+    const execution = await start({ overrides: { trackPromptWrapper: true }, cancelBeforeLaunch: true, accept: false });
+    const completion = await execution.done;
+    expect(completion.code, completion.stderr).not.toBe(0);
+    const wrapper = promptWrapperIdentitySchema.parse(JSON.parse(await readFile(path.join(directory, "prompt-wrapper.json"), "utf8")));
+    expect(wrapper).toMatchObject({ ...bridgeCorrelation(execution.request), pid: execution.child.pid });
+    expect(await optionalText(enteredFile)).toBeNull();
+    expect(await optionalText(recordFile)).toBeNull();
+    expect(await result()).toMatchObject({ launcherExitCode: 130, nativeExecutionObserved: null });
+  });
+
   it("does not require an auth-only flag for an ordinary request under StrictMode", async () => {
     const execution = await start({ overrides: { disableNativeAutoUpdate: true } });
     expect(Object.hasOwn(execution.request, "authenticationOnly")).toBe(false);
@@ -459,11 +474,23 @@ describe.skipIf(process.platform !== "win32")("CaseIQ offline native bridge", ()
     expect(() => process.kill(record.childPid, 0)).toThrow();
   }, 30_000);
 
-  it("times out without requiring an active browser", async () => {
-    const execution = await start({ nativeMode: "hang", overrides: { timeoutMs: 3_000 } });
+  it("preserves the timeout after the Windows wrapper exits without an active browser", async () => {
+    const execution = await start({ nativeMode: "hang", overrides: { timeoutMs: 3_000, trackPromptWrapper: true } });
     expect((await execution.done).code).toBe(124);
     expect((await frames()).at(-1)).toMatchObject({ timedOut: true });
     expect(await optionalText(finishedFile)).toBe("finished");
+
+    const { runId, attemptId, sessionId, workingDirectory } = execution.request;
+    const stateRoot = path.join(root, "restart-state");
+    const runDirectory = path.join(stateRoot, "requests", runId);
+    await mkdir(runDirectory, { recursive: true });
+    await rename(directory, path.join(runDirectory, attemptId));
+    vi.stubEnv("WORKBOARD_CASEIQ_STATE_ROOT", stateRoot);
+    try {
+      expect(await inspectInterruptedCaseIqRun({
+        id: runId, hostname: hostname(), copilotSessionId: sessionId, executionPath: workingDirectory,
+      })).toMatchObject({ stopped: true, timedOut: true, cancelled: false });
+    } finally { vi.unstubAllEnvs(); }
   }, 30_000);
 
   it("can stop preparing without launching a native task", async () => {

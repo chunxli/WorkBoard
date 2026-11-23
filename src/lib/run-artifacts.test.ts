@@ -12,6 +12,7 @@ import {
   prepareWorkRunArtifacts,
   readRunDiffPreview,
   readRunLogTail,
+  readVerifiedRunArtifact,
   readWorkRunSnapshot,
   writeRunSnapshot,
   type WorkRunSnapshot,
@@ -147,6 +148,40 @@ describe("Git Work snapshots", () => {
 });
 
 describe("Run artifacts", () => {
+  it("seals the required CaseIQ artifacts even when diff and transcript writes fail", async () => {
+    const work = await temporaryDirectory();
+    const snapshot: WorkRunSnapshot = {
+      schemaVersion: 1, runId: "sealed-caseiq", workId: "work", workName: "Synthetic Run",
+      promptFileName: null, prompt: "Synthetic task", promptHash: "fixture", engine: "CASEIQ", providerId: "caseiq",
+      sessionId: "session", executionPath: work, concurrencyMode: "DIRECT", status: "RUNNING",
+      startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, errorMessage: null,
+      gitBeforeTree: null, gitAfterTree: null,
+    };
+    const paths = await prepareWorkRunArtifacts(work, snapshot.runId, snapshot);
+    await writeFile(paths.stdout, "Original stdout\n");
+    await mkdir(`${paths.diff}.tmp`);
+    await rm(paths.transcript);
+    await mkdir(paths.transcript);
+    const seal = vi.fn();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await finalizeWorkRunArtifacts({
+        paths, snapshot: { ...snapshot, status: "SUCCESS", finishedAt: new Date().toISOString(), exitCode: 0 },
+        finalOutput: "Verified response", diff: "Synthetic patch", seal,
+      });
+      expect(seal).toHaveBeenCalledOnce();
+      const [digests] = seal.mock.calls[0];
+      expect(JSON.parse(await readVerifiedRunArtifact(paths.snapshot, digests.snapshot))).toMatchObject({
+        status: "SUCCESS", exitCode: 0, artifactWarnings: [
+          "Workspace diff could not be saved.", "Transcript could not be saved; see stdout.log for the original output.",
+        ],
+      });
+      expect(await readVerifiedRunArtifact(paths.result, digests.result)).toBe("Verified response\n");
+      expect(await readFile(paths.stdout, "utf8")).toBe("Original stdout\n");
+      expect(warning).toHaveBeenCalledTimes(2);
+    } finally { warning.mockRestore(); }
+  });
+
   it("stores accepted Steering in an idempotent Run artifact", async () => {
     const work = await temporaryDirectory();
     const paths = await prepareWorkRunArtifacts(work, "steering-run", {

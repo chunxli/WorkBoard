@@ -47,6 +47,25 @@ function Save-CaseIQTerminalState {
     Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
 }
 
+function Save-CaseIQPromptWrapper {
+    param([string]$Directory, $Request)
+    $ErrorActionPreference = 'Stop'
+    $startTime = ([Diagnostics.Process]::GetCurrentProcess()).StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)
+    $state = @{
+        protocolVersion = $Request.protocolVersion
+        requestId = $Request.requestId
+        runId = $Request.runId
+        attemptId = $Request.attemptId
+        nonce = $Request.nonce
+        pid = $PID
+        startTime = $startTime
+    }
+    $file = Join-Path $Directory 'prompt-wrapper.json'
+    $temporary = "$file.$PID.tmp"
+    [IO.File]::WriteAllText($temporary, ($state | ConvertTo-Json -Compress), $utf8)
+    [IO.File]::Move($temporary, $file)
+}
+
 function Test-CaseIQCriticalScriptError {
     foreach ($record in $global:Error) {
         if ($record.Exception -is [Microsoft.PowerShell.Commands.WriteErrorException] -or
@@ -92,6 +111,14 @@ try {
     }
     $terminalLaunchFile = $request.terminalLaunchFile
     Save-CaseIQTerminalState -File $terminalLaunchFile
+    if ($request.PSObject.Properties['trackPromptWrapper']) {
+        Save-CaseIQPromptWrapper -Directory $directory -Request $request
+        # A restarted server can seal an attempt before this wrapper reaches its launcher.
+        if (Test-Path -LiteralPath (Join-Path $directory 'cancel.json') -ErrorAction Stop) {
+            & $NodeExecutable $delegate finalize $validatedFile '130' '0'
+            exit $LASTEXITCODE
+        }
+    }
     $global:WorkBoardCaseIQBridgeContext = [pscustomobject]@{
         Request = $request
         RequestFile = $validatedFile

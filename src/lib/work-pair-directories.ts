@@ -105,9 +105,9 @@ export async function verifyPairedWorkspaces(root: string, pair: WorkSessionPair
   }
 }
 
-export async function verifyPairedRunDirectory(work: PairWorkspaceWork, run: PairWorkspaceRun & { id: string }) {
+async function verifyPairedRunOutput(work: PairWorkspaceWork, run: PairWorkspaceRun & { id: string }) {
   const pair = work.sessionPair;
-  if (!pair) return work.directoryPath;
+  if (!pair) return null;
   const lane = pairedWorkLane(pair, run.copilotSessionId);
   if (!lane || !matchesPairedWorkspace({ ...work, sessionPair: pair }, run)) {
     throw new WorkPairError("This Run does not match its saved paired workspace.");
@@ -115,11 +115,30 @@ export async function verifyPairedRunDirectory(work: PairWorkspaceWork, run: Pai
   await verifyPairedWorkspaces(work.directoryPath, pair, [lane]);
   const directory = pairedWorkspacePath(work.directoryPath, pair, lane);
   const paths = getWorkRunArtifactPaths(directory, z.uuid().parse(run.id));
-  for (const relative of [".workboard", path.join(".workboard", "outputs"), path.relative(directory, paths.outputDirectory),
-    path.join(".workboard", "tmp"),
-    path.join(".workboard", "tmp", "run-snapshots")]) {
-    await assertPlainIfPresent(path.join(directory, relative));
+  for (const folder of [path.join(directory, ".workboard"), path.join(directory, ".workboard", "outputs"), paths.outputDirectory]) {
+    await assertPlainIfPresent(folder);
   }
+  return { directory, paths };
+}
+
+export async function resolveRunCompletionArtifactPaths(
+  work: PairWorkspaceWork,
+  run: PairWorkspaceRun & { id: string; outputDir: string | null },
+) {
+  const output = await verifyPairedRunOutput(work, run);
+  const { outputDirectory, snapshot, result } = output?.paths ?? getWorkRunArtifactPaths(work.directoryPath, run.id);
+  if (!run.outputDir || path.relative(run.outputDir, outputDirectory) !== "") {
+    throw new WorkPairError("CaseIQ completion artifacts are outside the saved Run directory.");
+  }
+  return { snapshot, result };
+}
+
+export async function verifyPairedRunDirectory(work: PairWorkspaceWork, run: PairWorkspaceRun & { id: string }) {
+  const output = await verifyPairedRunOutput(work, run);
+  if (!output) return work.directoryPath;
+  const { directory, paths } = output;
+  await assertPlainIfPresent(path.join(directory, ".workboard", "tmp"));
+  await assertPlainIfPresent(path.join(directory, ".workboard", "tmp", "run-snapshots"));
   const files = [paths.result, paths.transcript, paths.diff, paths.snapshot, paths.stdout, paths.stderr,
     getDirectorySnapshotPath(directory, run.id)];
   await Promise.all(files.flatMap((file) => [file, `${file}.tmp`]).map(async (file) => {

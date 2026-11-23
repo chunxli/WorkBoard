@@ -38,6 +38,7 @@ export const nativeBridgeRequestSchema = z.object({
   sharedInputDirectory: absolutePath.optional(),
   sessionId: z.uuid(),
   mode: z.enum(["prompt", "terminal"]).default("prompt"),
+  trackPromptWrapper: z.literal(true).optional(),
   authenticationOnly: z.boolean().optional(),
   trustWorkFolder: z.boolean().optional(),
   sharedOAuth: z.object({
@@ -148,6 +149,12 @@ export const nativeBridgeCancellationSchema = z.object({
   ...correlation, action: z.literal("cancel"), reason: z.enum(["user", "timeout", "shutdown"]),
 }).strict();
 
+export const promptWrapperIdentitySchema = z.object({
+  ...correlation,
+  pid: z.number().int().positive(),
+  startTime: z.string().regex(/^[1-9]\d{0,18}$/),
+}).strict();
+
 export const nativeOAuthProbeStatusSchema = z.object({
   ...correlation, sessionId: z.uuid(), preparedHash: digest, checkedAt: z.iso.datetime(),
   status: z.enum(["authenticated", "no-auth-required", "needs-auth", "failed", "unknown"]),
@@ -206,6 +213,9 @@ export function assertBridgeCorrelation(value, request) {
 
 export function parseNativeBridgeRequest(value, environment = process.env) {
   const request = nativeBridgeRequestSchema.parse(value);
+  if (request.trackPromptWrapper && request.mode !== "prompt") {
+    throw new NativeBridgeError("unsupported-option", "Prompt wrapper tracking requires Prompt mode.");
+  }
   if (request.sharedInputDirectory) {
     const relative = path.relative(request.sharedInputDirectory, request.workingDirectory);
     if (request.mode !== "prompt" || request.authenticationOnly || !relative ||

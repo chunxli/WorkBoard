@@ -366,10 +366,12 @@ export async function executeInvocation(file) {
   try {
     const binding = await prepareBinding(request, invocation);
     await journal.append("prepared", { binding });
-    const stopped = await waitForAcceptance(request, binding);
+    let stopped = await waitForAcceptance(request, binding);
     if (!stopped) {
       await trustAuthenticationWorkFolder(request, binding);
       observerDirectory = await stageAuthenticationObserver(request, binding);
+      const control = await cancellation(request);
+      stopped = control?.reason ?? (timedOut(request) ? "timeout" : null);
     }
     result = stopped ? {
       pid: null, exitCode: null, signal: null,

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { renameSync } from "node:fs";
+import { lstat, mkdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -165,7 +166,7 @@ async function prepareCaseIqExecution(options: {
   const directory = options.mode === "prompt"
     ? path.join(stateRoot, "requests", options.runId, attemptId)
     : path.join(stateRoot, "requests", options.runId);
-  await ensurePrivateRuntimeDirectory(directory);
+  if (options.mode === "terminal") await ensurePrivateRuntimeDirectory(directory);
   await ensurePrivateRuntimeDirectory(path.join(stateRoot, "bindings"));
   const nativeRoot = path.join(stateRoot, "native", options.sessionId);
   await ensurePrivateRuntimeDirectory(nativeRoot);
@@ -197,6 +198,7 @@ async function prepareCaseIqExecution(options: {
     ...(installation.sourceDirty !== undefined ? { sourceDirty: installation.sourceDirty } : {}),
     disableNativeAutoUpdate: true,
     workingDirectory, sessionId: options.sessionId, mode: options.mode, resume: options.resume,
+    ...(options.mode === "prompt" ? { trackPromptWrapper: true } : {}),
     ...(sharedInputDirectory ? { sharedInputDirectory } : {}),
     ...(options.authenticationOnly ? { authenticationOnly: true } : {}),
     ...(options.trustWorkFolder ? { trustWorkFolder: true } : {}),
@@ -215,7 +217,8 @@ async function prepareCaseIqExecution(options: {
     testExecutableArgs: options.testExecutableArgs ?? [],
   });
   const requestFile = path.join(directory, "request.json");
-  await writeFile(requestFile, `${JSON.stringify(request)}\n`, { flag: "wx", mode: 0o600 });
+  const requestContent = `${JSON.stringify(request)}\n`;
+  if (options.mode === "terminal") await writeFile(requestFile, requestContent, { flag: "wx", mode: 0o600 });
   await saveNativeSessionBinding({
     bindingVersion: 1, providerId: "caseiq", sessionId: options.sessionId,
     userId: options.userId, workId: options.workId, hostname: hostname(), home: prior?.home ?? null,
@@ -225,6 +228,25 @@ async function prepareCaseIqExecution(options: {
     sourceCommit: installation.sourceCommit, nativeExecutable: installation.nativeExecutable,
     nativeVersion: installation.nativeVersion, workingDirectory, packs: launch.packs, caseNumber: launch.caseNumber,
   });
+  if (options.mode === "prompt") {
+    // Recovery enumerates only attempts whose whole request has been published.
+    const staging = path.join(/* turbopackIgnore: true */ stateRoot, "request-staging", attemptId);
+    const stagedFile = path.join(staging, "request.json");
+    await mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
+    await ensurePrivateRuntimeDirectory(staging);
+    try {
+      await writeFile(stagedFile, requestContent, { flag: "wx", mode: 0o600 });
+      await rename(staging, directory);
+    } catch (error) {
+      try {
+        await rm(stagedFile, { force: true });
+        await rmdir(staging);
+      } catch (cleanupError) {
+        console.error("[CaseIQ] Could not remove an unpublished request.", attemptId, cleanupError);
+      }
+      throw error;
+    }
+  }
   return {
     requestFile, runId: options.runId, sessionId: options.sessionId,
     script: path.join(process.cwd(), "scripts", "workboard-caseiq.ps1"),
@@ -240,8 +262,8 @@ async function prepareCaseIqExecution(options: {
 
 export async function acceptCaseIqPreparation(run: {
   id: string; workId: string | null; copilotSessionId: string | null;
-}, launchId: string | null, promptRequestFile?: string): Promise<boolean> {
-  return acceptCaseIqInvocation(run, launchId, promptRequestFile);
+}, launchId: string | null, promptRequestFile?: string, canAcceptPrompt?: () => boolean): Promise<boolean> {
+  return acceptCaseIqInvocation(run, launchId, promptRequestFile, undefined, canAcceptPrompt);
 }
 
 export async function acceptCaseIqAuthentication(
@@ -254,7 +276,8 @@ export async function acceptCaseIqAuthentication(
 
 async function acceptCaseIqInvocation(run: {
   id: string; workId: string | null; copilotSessionId: string | null;
-}, launchId: string | null, promptRequestFile?: string, authorizeAuthentication?: () => Promise<void>): Promise<boolean> {
+}, launchId: string | null, promptRequestFile?: string, authorizeAuthentication?: () => Promise<void>,
+canAcceptPrompt?: () => boolean): Promise<boolean> {
   if (!run.copilotSessionId) throw new CaseIqIntegrationError("CaseIQ session ID is missing.");
   const binding = readNativeSessionBindingSync(run.copilotSessionId);
   if (!binding || binding.workId !== run.workId) throw new CaseIqIntegrationError("CaseIQ binding is missing.");
@@ -336,7 +359,16 @@ async function acceptCaseIqInvocation(run: {
   if (prior === null) {
     const temporary = `${file}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(acceptance), { flag: "wx", mode: 0o600 });
-    await rename(temporary, file);
+    if (canAcceptPrompt) {
+      if (!canAcceptPrompt()) {
+        await rm(temporary);
+        return false;
+      }
+      // Check cancellation and publish permission to spawn in the same event-loop turn.
+      renameSync(temporary, file);
+    } else {
+      await rename(temporary, file);
+    }
   } else if (JSON.stringify(JSON.parse(prior)) !== JSON.stringify(acceptance)) {
     throw new CaseIqIntegrationError("A different CaseIQ startup acknowledgement already exists.");
   }

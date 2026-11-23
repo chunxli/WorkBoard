@@ -7,8 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
-import { getManagedSessionController } from "@/lib/managed-session-controller";
-import { isNativeCopilotRunActive } from "@/lib/copilot-runner";
+import { getLocalManagedWorkRuntime } from "@/lib/managed-work-runtime";
 import { getSteeringAvailabilityReason, isWorkSteeringRequestInFlight } from "@/lib/work-steering";
 import { authMode } from "@/lib/auth-mode";
 import { copilotSessionHasHistory, getCopilotSessionEventsPath } from "@/lib/copilot-session-compat";
@@ -119,11 +118,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const managedRun = runs.find((run) => run.status === "RUNNING");
     if (pairedWork) base.displayRunId = (managedRun
       ?? orderPendingWorkRuns(runs.filter((run) => run.status === "PENDING"))[0] ?? current)?.id;
-    const managedController = managedRun?.engine === "SDK" && managedRun.hostname === hostname()
-      ? getManagedSessionController(managedRun.id)
-      : null;
-    const ownedNativeRun = managedRun && (managedRun.engine === "CLI" || managedRun.engine === "CASEIQ") && managedRun.hostname === hostname()
-      && isNativeCopilotRunActive(managedRun.id);
+    const { controller: managedController, native: ownedNativeRun } = getLocalManagedWorkRuntime(managedRun);
     const currentActive = current && ["PENDING", "RUNNING"].includes(current.status);
     const activity = managedController || ownedNativeRun || awaitingCaseIqSession
       ? { active: false, starting: false }

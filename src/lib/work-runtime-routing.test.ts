@@ -2,15 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   find: vi.fn(), current: vi.fn(), claim: vi.fn(), update: vi.fn(), count: vi.fn(), workUpdate: vi.fn(),
+  settle: vi.fn(), workProjection: vi.fn(),
   native: vi.fn(), sdk: vi.fn(), caseiq: vi.fn(), controlled: vi.fn(), prepare: vi.fn(), finalize: vi.fn(), attachments: vi.fn(),
   baseline: vi.fn<typeof import("./run-source-snapshot").captureRunSourceBaseline>(),
+  sourceDiff: vi.fn<typeof import("./run-source-snapshot").captureRunSourceDiff>(),
   insights: vi.fn(), writeSnapshot: vi.fn(),
-  append: vi.fn(), nativeActive: vi.fn(), controller: vi.fn(),
+  append: vi.fn(), nativeActive: vi.fn(), controller: vi.fn(), retain: vi.fn(),
+  prepareLaunch: vi.fn(), authorizeLaunch: vi.fn(), persistPrelaunchCancellation: vi.fn(), sealCompletion: vi.fn(),
 }));
-vi.mock("@/lib/prisma", () => ({ prisma: {
-  run: { findUniqueOrThrow: mocks.find, findUnique: mocks.current, updateMany: mocks.claim, update: mocks.update, count: mocks.count },
-  work: { update: mocks.workUpdate },
-} }));
+vi.mock("@/lib/prisma", () => {
+  const tx = { run: { updateMany: mocks.settle }, work: { updateMany: mocks.workProjection } };
+  return { prisma: {
+    run: { findUniqueOrThrow: mocks.find, findUnique: mocks.current, updateMany: mocks.claim, update: mocks.update, count: mocks.count },
+    work: { update: mocks.workUpdate, updateMany: mocks.workProjection },
+    $transaction: (callback: (database: typeof tx) => unknown) => callback(tx),
+  } };
+});
 vi.mock("@/lib/copilot-runner", async (original) => ({
   ...await original<typeof import("./copilot-runner")>(), startCopilotRun: mocks.native, isNativeCopilotRunActive: mocks.nativeActive,
 }));
@@ -22,6 +29,12 @@ vi.mock("@/lib/copilot-sdk-runner", () => ({
 }));
 vi.mock("@/lib/caseiq-runner", async (original) => ({
   ...await original<typeof import("./caseiq-runner")>(), startCaseIqRun: mocks.caseiq,
+}));
+vi.mock("@/lib/caseiq-run-lifecycle", async (original) => ({
+  ...await original<typeof import("./caseiq-run-lifecycle")>(), trackInterruptedCaseIqRun: mocks.retain,
+  prepareCaseIqRunLaunch: mocks.prepareLaunch, authorizeCaseIqRunLaunch: mocks.authorizeLaunch,
+  persistCaseIqPrelaunchCancellation: mocks.persistPrelaunchCancellation,
+  sealCaseIqRunCompletion: mocks.sealCompletion,
 }));
 vi.mock("@/lib/git-safety", () => ({ getHeadCommit: async () => null }));
 vi.mock("@/lib/skill-events", () => ({ detectSkillInvocation: () => false }));
@@ -40,7 +53,7 @@ vi.mock("@/lib/run-artifacts", () => ({
 }));
 vi.mock("@/lib/run-source-snapshot", () => ({
   captureRunSourceBaseline: mocks.baseline,
-  captureRunSourceDiff: async () => ({ afterGitTree: null, diff: "" }),
+  captureRunSourceDiff: mocks.sourceDiff,
 }));
 vi.mock("@/lib/copilot-session-compat", () => ({ repairLegacyCopilotSessionEvents: vi.fn() }));
 vi.mock("@/lib/copilot-session-insights", async (original) => ({
@@ -50,14 +63,17 @@ vi.mock("@/lib/copilot-session-insights", async (original) => ({
 import { executeWorkRun } from "./work-executor";
 import { getPendingRunPreparation } from "./work-run-preparation-state";
 import { ManagedSessionController } from "./managed-session-controller";
-import { CaseIqRunUnconfirmedError } from "./caseiq-runner";
+import { CaseIqRunUnconfirmedError } from "./caseiq-errors";
+import { cancelRun } from "./copilot-runner";
 import type { startCaseIqRun } from "./caseiq-runner";
 
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.current.mockResolvedValue({ status: "PENDING" });
   mocks.claim.mockResolvedValue({ count: 1 });
+  mocks.settle.mockResolvedValue({ count: 1 });
   mocks.baseline.mockResolvedValue(null);
+  mocks.sourceDiff.mockResolvedValue({ afterGitTree: null, diff: "" });
   mocks.count.mockResolvedValue(0);
   mocks.insights.mockResolvedValue(null);
   mocks.nativeActive.mockReturnValue(false);
@@ -130,10 +146,16 @@ describe("Work execution engine routing", () => {
     mocks.find.mockResolvedValue(run("CASEIQ", false));
     mocks.caseiq.mockImplementationOnce(async (options: Parameters<typeof startCaseIqRun>[0]) => {
       await options.onVersion?.(version);
+      await options.authorizeLaunch();
       return { exitCode: 0, timedOut: false, cancelled: false, finalOutput: "Synthetic response",
         cpuTimeMs: null, peakMemoryMb: null, incomplete: false, usage: null, model: "primary" };
     });
     await executeWorkRun("run");
+    expect(mocks.prepareLaunch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "run", copilotSessionId: "native-session" }), expect.any(Function),
+    );
+    expect(mocks.prepareLaunch.mock.invocationCallOrder[0]).toBeLessThan(mocks.claim.mock.invocationCallOrder[0]);
+    expect(mocks.authorizeLaunch).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "run", copilotSessionId: "native-session" }));
     expect(mocks.writeSnapshot).toHaveBeenCalledWith("C:\\synthetic\\run.json",
       expect.objectContaining({ status: "RUNNING", caseIqVersions: [version] }));
     expect(mocks.finalize).toHaveBeenCalledWith(expect.objectContaining({
@@ -147,14 +169,146 @@ describe("Work execution engine routing", () => {
       mocks.find.mockResolvedValue(run("CASEIQ", false));
       mocks.caseiq.mockRejectedValue(new CaseIqRunUnconfirmedError());
       await executeWorkRun("run");
-      expect(mocks.update).toHaveBeenCalledWith({
-        where: { id: "run" },
-        data: expect.objectContaining({ status: "RUNNING", finishedAt: null, errorMessage: expect.stringContaining("remains reserved") }),
+      expect(mocks.claim).toHaveBeenCalledWith({
+        where: { id: "run", status: "RUNNING" },
+        data: { errorMessage: expect.stringContaining("remains reserved") },
       });
       expect(mocks.finalize).not.toHaveBeenCalled();
+      expect(mocks.retain).toHaveBeenCalledWith({ id: "run", copilotSessionId: "native-session" });
       expect(logged).toHaveBeenCalled();
     } finally { logged.mockRestore(); }
   });
+
+  it("hands sealed artifacts to recovery instead of replacing them when publishing the Work state fails", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mocks.find.mockResolvedValue(run("CASEIQ", false));
+      const digest = { sha256: "a".repeat(64), byteSize: 1 };
+      const artifacts = { snapshot: digest, result: digest };
+      mocks.finalize.mockImplementationOnce(async ({ seal }) => { await seal(artifacts); });
+      mocks.workProjection.mockRejectedValueOnce(new Error("Synthetic Work projection write failed."));
+      await executeWorkRun("run");
+      expect(mocks.sealCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "run", workId: "work", copilotSessionId: "native-session" }),
+        { artifacts, hasOutput: true, finalCommit: null, skillInvoked: false },
+      );
+      expect(mocks.sealCompletion.mock.invocationCallOrder[0]).toBeLessThan(mocks.settle.mock.invocationCallOrder[0]);
+      expect(mocks.finalize).toHaveBeenCalledOnce();
+      expect(mocks.retain).toHaveBeenCalledWith({ id: "run", copilotSessionId: "native-session" });
+    } finally { logged.mockRestore(); }
+  });
+
+  it.each([
+    { status: "SUCCESS", exitCode: 0, cancelled: false, timedOut: false, finalOutput: "Saved response" },
+    { status: "CANCELLED", exitCode: null, cancelled: true, timedOut: false, finalOutput: null },
+    { status: "TIMED_OUT", exitCode: 124, cancelled: false, timedOut: true, finalOutput: null },
+  ])("preserves $status when the workspace diff cannot be captured", async ({ status, ...result }) => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mocks.find.mockResolvedValue(run("CASEIQ", false));
+      mocks.caseiq.mockResolvedValueOnce({ ...result, usage: null, model: "primary", cpuTimeMs: null, peakMemoryMb: null, incomplete: false });
+      mocks.sourceDiff.mockRejectedValueOnce(new Error("Synthetic snapshot write failure."));
+      await executeWorkRun("run");
+      expect(mocks.sourceDiff).toHaveBeenCalledOnce();
+      expect(mocks.finalize).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        diff: "", finalOutput: result.finalOutput,
+        snapshot: expect.objectContaining({ status, errorMessage: null, artifactWarnings: ["Workspace diff could not be collected."] }),
+        seal: expect.any(Function),
+      }));
+      expect(mocks.settle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        where: { id: "run", status: "RUNNING" },
+        data: expect.objectContaining({ status, exitCode: result.exitCode, finalOutput: result.finalOutput, model: "primary" }),
+      }));
+      expect(mocks.update).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledOnce();
+    } finally { warning.mockRestore(); }
+  });
+
+  it.each(["ready", "attachment error", "record error"] as const)("waits for the durable decision before settling CaseIQ preparation cancellation (%s)", async (scenario) => {
+    mocks.find.mockResolvedValue(run("CASEIQ", false));
+    mocks.current.mockResolvedValueOnce({ status: "PENDING" }).mockResolvedValueOnce({ status: "PENDING" }).mockResolvedValue({ status: "RUNNING" });
+    const entered = Promise.withResolvers<void>();
+    const attachments = Promise.withResolvers<[]>();
+    const persisting = Promise.withResolvers<void>();
+    const persisted = Promise.withResolvers<void>();
+    mocks.attachments.mockImplementationOnce(() => {
+      entered.resolve();
+      return attachments.promise;
+    });
+    mocks.persistPrelaunchCancellation.mockImplementationOnce(() => {
+      persisting.resolve();
+      return persisted.promise;
+    });
+    const execution = executeWorkRun("run");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await Promise.race([entered.promise, execution.then(() => { throw new Error("Run did not reach attachment preparation."); })]);
+      let answered = false;
+      const cancellation = cancelRun("run").catch((error: unknown) => error).finally(() => { answered = true; });
+      await persisting.promise;
+      if (scenario === "attachment error") attachments.reject(new Error("Attachment disappeared during cancellation."));
+      else attachments.resolve([]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(answered).toBe(false);
+      expect(mocks.settle).not.toHaveBeenCalled();
+      expect(mocks.finalize).not.toHaveBeenCalled();
+      expect(mocks.caseiq).not.toHaveBeenCalled();
+
+      if (scenario === "record error") {
+        const failure = new Error("Synthetic cancellation record write failed.");
+        persisted.reject(failure);
+        expect(await cancellation).toBe(failure);
+        await execution;
+        expect(mocks.settle).not.toHaveBeenCalled();
+        expect(mocks.finalize).not.toHaveBeenCalled();
+        expect(mocks.retain).toHaveBeenCalledExactlyOnceWith({ id: "run", copilotSessionId: "native-session" });
+        expect(logged).toHaveBeenCalled();
+      } else {
+        persisted.resolve();
+        expect(await cancellation).toBe(true);
+        await execution;
+        expect(mocks.settle).toHaveBeenCalledExactlyOnceWith({
+          where: { id: "run", status: "RUNNING" },
+          data: expect.objectContaining({ status: "CANCELLED", finishedAt: expect.any(Date) }),
+        });
+        expect(mocks.finalize).toHaveBeenCalledWith(expect.objectContaining({ snapshot: expect.objectContaining({ status: "CANCELLED" }) }));
+      }
+      expect(mocks.caseiq).not.toHaveBeenCalled();
+      expect(mocks.update).not.toHaveBeenCalled();
+    } finally {
+      persisted.resolve();
+      attachments.resolve([]);
+      logged.mockRestore();
+      await execution;
+    }
+  });
+
+  it("does not publish a preparation error if a queued CaseIQ cancellation already won", async () => {
+    mocks.find.mockResolvedValue(run("CASEIQ", false));
+    mocks.baseline.mockRejectedValueOnce(new Error("Synthetic baseline preparation failure."));
+    // The failed worker read PENDING, but cancellation committed before its conditional write.
+    mocks.settle.mockResolvedValueOnce({ count: 0 });
+    await executeWorkRun("run");
+    expect(mocks.settle).toHaveBeenCalledExactlyOnceWith({
+      where: { id: "run", status: "PENDING" },
+      data: expect.objectContaining({ status: "FAILED" }),
+    });
+    expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.caseiq).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a CaseIQ cancellation snapshot when a job loses the race during launch preparation", async () => {
+    mocks.find.mockResolvedValue(run("CASEIQ", false));
+    mocks.current.mockResolvedValueOnce({ status: "PENDING" }).mockResolvedValue({ status: "CANCELLED" });
+    await executeWorkRun("run");
+    expect(mocks.prepareLaunch).toHaveBeenCalledOnce();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(mocks.claim).not.toHaveBeenCalled();
+    expect(mocks.caseiq).not.toHaveBeenCalled();
+  });
+
   it.each(["CLI", "SDK", "CASEIQ"] as const)("executes a %s Work using only its real engine", async (engine) => {
     mocks.find.mockResolvedValue(run(engine, false));
     await executeWorkRun("run");
@@ -169,7 +323,8 @@ describe("Work execution engine routing", () => {
         : { workPath: "C:\\synthetic", attachments: [{ type: "file", path: "C:\\synthetic\\new.png", displayName: "new.png" }] }),
     }));
     if (engine === "CASEIQ") expect(selected).toHaveBeenCalledWith(expect.objectContaining({ userId: "owner", workId: "work" }));
-    expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCESS" }) }));
+    const saved = engine === "CASEIQ" ? mocks.settle : mocks.update;
+    expect(saved).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCESS" }) }));
   });
 
   describe("queued Work execution", () => {

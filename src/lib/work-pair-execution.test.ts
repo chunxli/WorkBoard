@@ -7,8 +7,10 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrismaClient, type Work } from "@/generated/prisma/client";
 import type { StartCopilotRunOptions } from "./copilot-runner";
-import { getWorkRunArtifactPaths } from "./run-artifacts";
-import { saveWorkAttachment, resolveWorkAttachments } from "./work-attachments";
+import { getWorkRunArtifactPaths, readWorkRunSnapshot } from "./run-artifacts";
+import { getDirectorySnapshotPath, readDirectorySnapshot } from "./directory-snapshot";
+import * as sourceSnapshot from "./run-source-snapshot";
+import * as workAttachments from "./work-attachments";
 import { canonicalizeWorkPath, provisionWorkDirectory } from "./work-files";
 import { pairedWorkspacePath, assertPairedInputDirectory } from "./work-pair-directories";
 import { pairedWorkReceipt, type PairedWorkFollowUp } from "./work-session-pair";
@@ -24,12 +26,21 @@ const mocks = vi.hoisted(() => ({
   history: vi.fn(),
   binding: vi.fn(),
   authBlocked: vi.fn(),
+  inspectInterrupted: vi.fn(),
+  hold: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ get prisma() { return mocks.db; } }));
-vi.mock("@/lib/job-queue", () => ({ jobQueue: { enqueue: mocks.enqueue } }));
+vi.mock("@/lib/job-queue", async (original) => ({
+  ...await original<typeof import("./job-queue")>(),
+  jobQueue: { enqueue: mocks.enqueue, hold: mocks.hold },
+}));
 vi.mock("@/lib/caseiq-installation", () => ({ getCaseIqInstallation: mocks.installation, getCaseIqPromptPowerShell: async () => "synthetic-pwsh" }));
 vi.mock("@/lib/caseiq-integration", () => ({ ensurePrivateRuntimeDirectory: (directory: string) => mkdir(directory, { recursive: true }) }));
-vi.mock("@/lib/caseiq-runner", () => ({ startCaseIqRun: mocks.caseiq, CaseIqRunUnconfirmedError: class extends Error {} }));
+vi.mock("@/lib/caseiq-run-lifecycle", async (original) => ({
+  ...await original<typeof import("./caseiq-run-lifecycle")>(),
+  inspectInterruptedCaseIqRun: mocks.inspectInterrupted,
+}));
+vi.mock("@/lib/caseiq-runner", () => ({ startCaseIqRun: mocks.caseiq }));
 vi.mock("@/lib/copilot-runner", async (original) => ({
   ...await original<typeof import("./copilot-runner")>(), startCopilotRun: mocks.cli,
   isNativeCopilotRunActive: () => false,
@@ -45,7 +56,10 @@ vi.mock("@/lib/terminal-resume", () => ({ getTerminalSessionActivity: mocks.acti
 vi.mock("@/lib/caseiq-authentication-state", () => ({ caseIqAuthenticationBlockedReason: mocks.authBlocked }));
 
 import { sendPairedFollowUp, startPairedWork } from "./work-pair-execution";
-import { finalizeCancelledWorkRun } from "./work-executor";
+import { cancelPendingCaseIqWorkRun, createPendingWorkRun, executeWorkRun, finalizeCancelledWorkRun, settleCaseIqWorkRun } from "./work-executor";
+import { releaseInterruptedCaseIqRun } from "./caseiq-run-lifecycle";
+import { cancelRun } from "./copilot-runner";
+import { reconcileInterruptedCaseIqRuns } from "./run-recovery";
 
 let fixtureRoot: string;
 let db: PrismaClient;
@@ -102,12 +116,223 @@ async function initial() {
 }
 
 describe("paired Work admission and execution using isolated SQLite", () => {
+  it("preserves a claimed CaseIQ cancellation and its queue hold when settlement rolls back", async () => {
+    const experiment = await db.experiment.create({
+      data: { workId: work.id, name: "Synthetic experiment", engine: "CASEIQ", status: "RUNNING", variants: { create: { status: "READY" } } },
+      include: { variants: true },
+    });
+    const variantId = experiment.variants[0].id;
+    const run = await createPendingWorkRun({
+      workId: work.id, engine: "CASEIQ", executionPath: work.directoryPath, prompt, concurrencyMode: "DIRECT",
+      trigger: "EXPERIMENT", experimentVariantId: variantId,
+    });
+    await db.work.update({ where: { id: work.id }, data: { status: "REVIEW" } });
+    const release = vi.fn();
+    mocks.hold.mockReturnValue(release);
+    const lifecycle = await vi.importActual<typeof import("./caseiq-run-lifecycle")>("./caseiq-run-lifecycle");
+    mocks.inspectInterrupted.mockImplementation(lifecycle.inspectInterruptedCaseIqRun);
+    const entered = Promise.withResolvers<void>();
+    const attachments = Promise.withResolvers<[]>();
+    const prepareAttachments = vi.spyOn(workAttachments, "runtimeWorkAttachments").mockImplementationOnce(() => {
+      entered.resolve();
+      return attachments.promise;
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    await db.$executeRaw`CREATE TRIGGER reject_claimed_caseiq_cancel_fixture BEFORE UPDATE OF status ON Work
+      WHEN NEW.status = 'ACTIVE'
+      BEGIN SELECT RAISE(ABORT, 'synthetic claimed cancellation projection failure'); END`;
+    const execution = executeWorkRun(run.id);
+    try {
+      try {
+        await Promise.race([entered.promise, execution.then(() => { throw new Error("Run did not reach attachment preparation."); })]);
+        expect(await cancelRun(run.id)).toBe(true);
+        attachments.resolve([]);
+        await execution;
+        expect(await db.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "RUNNING", finishedAt: null });
+        expect(await db.experimentVariant.findUniqueOrThrow({ where: { id: variantId } })).toMatchObject({ status: "RUNNING" });
+        expect(await db.experiment.findUniqueOrThrow({ where: { id: experiment.id } })).toMatchObject({ status: "RUNNING", finishedAt: null });
+        expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status: "REVIEW" });
+        expect(mocks.hold).toHaveBeenCalledExactlyOnceWith(`session:${run.copilotSessionId}`);
+        expect(release).not.toHaveBeenCalled();
+      } finally {
+        await db.$executeRaw`DROP TRIGGER reject_claimed_caseiq_cancel_fixture`;
+      }
+      await reconcileInterruptedCaseIqRuns();
+      expect(await db.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: "CANCELLED", finishedAt: expect.any(Date), errorMessage: expect.stringContaining("No Prompt was sent."),
+      });
+      expect(await db.experimentVariant.findUniqueOrThrow({ where: { id: variantId } })).toMatchObject({ status: "CANCELLED" });
+      expect(await db.experiment.findUniqueOrThrow({ where: { id: experiment.id } })).toMatchObject({ status: "COMPLETED" });
+      expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status: "ACTIVE" });
+      expect(mocks.caseiq).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      attachments.resolve([]);
+      try { await execution; } finally {
+        prepareAttachments.mockRestore();
+        logged.mockRestore();
+        releaseInterruptedCaseIqRun(run.id);
+      }
+    }
+  });
+
+  it("rolls back all CaseIQ projections when the Work write fails and recovers the saved result without replay", async () => {
+    const experiment = await db.experiment.create({
+      data: { workId: work.id, name: "Synthetic experiment", engine: "CASEIQ", status: "RUNNING", variants: { create: { status: "READY" } } },
+      include: { variants: true },
+    });
+    const variantId = experiment.variants[0].id;
+    const run = await createPendingWorkRun({
+      workId: work.id, engine: "CASEIQ", executionPath: work.directoryPath, prompt, concurrencyMode: "DIRECT",
+      trigger: "EXPERIMENT", experimentVariantId: variantId,
+    });
+    mocks.caseiq.mockResolvedValue({
+      exitCode: 0, finalOutput: "Saved CaseIQ result", usage: null, model: "synthetic-model", cpuTimeMs: null, peakMemoryMb: null,
+    });
+    const release = vi.fn();
+    mocks.hold.mockReturnValue(release);
+    mocks.inspectInterrupted.mockResolvedValue({ stopped: true, cancelled: false, timedOut: false, completedRequests: [] });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    await db.$executeRaw`CREATE TRIGGER reject_caseiq_work_fixture BEFORE UPDATE OF status ON Work
+      WHEN NEW.status = 'REVIEW'
+      BEGIN SELECT RAISE(ABORT, 'synthetic Work projection failure'); END`;
+    try {
+      try {
+        await executeWorkRun(run.id);
+        expect(await db.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+          status: "RUNNING", finishedAt: null, finalOutput: null,
+        });
+        expect(await db.experimentVariant.findUniqueOrThrow({ where: { id: variantId } })).toMatchObject({ status: "RUNNING" });
+        expect(await db.experiment.findUniqueOrThrow({ where: { id: experiment.id } })).toMatchObject({ status: "RUNNING", finishedAt: null });
+        expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status: "ACTIVE" });
+        expect(mocks.hold).toHaveBeenCalledWith(`session:${run.copilotSessionId}`);
+        expect(release).not.toHaveBeenCalled();
+        expect(logged).toHaveBeenCalled();
+      } finally {
+        await db.$executeRaw`DROP TRIGGER reject_caseiq_work_fixture`;
+      }
+
+      await reconcileInterruptedCaseIqRuns();
+      expect(await db.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: "SUCCESS", finalOutput: "Saved CaseIQ result", errorMessage: null,
+      });
+      expect(await db.experimentVariant.findUniqueOrThrow({ where: { id: variantId } })).toMatchObject({ status: "SUCCESS" });
+      expect(await db.experiment.findUniqueOrThrow({ where: { id: experiment.id } })).toMatchObject({ status: "COMPLETED" });
+      expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status: "REVIEW" });
+      expect(mocks.caseiq).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      logged.mockRestore();
+      releaseInterruptedCaseIqRun(run.id);
+    }
+  });
+
+  it.each(["ARCHIVED", "REVIEW"] as const)("preserves the %s Work state on settlement when it should not be projected", async (status) => {
+    const { cli, caseiq } = await initial();
+    const archivedAt = status === "ARCHIVED" ? new Date() : null;
+    await db.work.update({ where: { id: work.id }, data: { status, archivedAt } });
+    await db.run.update({ where: { id: cli.runId }, data: { status: status === "ARCHIVED" ? "SUCCESS" : "PENDING" } });
+    const run = await db.run.update({ where: { id: caseiq.runId }, data: { status: "RUNNING" } });
+    await settleCaseIqWorkRun(run, { status: "FAILED", finishedAt: new Date(), errorMessage: "Synthetic interruption" });
+    expect(await db.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "FAILED" });
+    expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status, archivedAt });
+  });
+
+  it("keeps a queued CaseIQ experiment cancellable if a related write fails", async () => {
+    const experiment = await db.experiment.create({
+      data: { workId: work.id, name: "Synthetic experiment", engine: "CASEIQ", status: "RUNNING", variants: { create: { status: "READY" } } },
+      include: { variants: true },
+    });
+    const variantId = experiment.variants[0].id;
+    const run = await createPendingWorkRun({
+      workId: work.id, engine: "CASEIQ", executionPath: work.directoryPath, prompt, concurrencyMode: "DIRECT",
+      trigger: "EXPERIMENT", experimentVariantId: variantId,
+    });
+    await db.work.update({ where: { id: work.id }, data: { status: "REVIEW" } });
+    const paths = getWorkRunArtifactPaths(work.directoryPath, run.id);
+    const message = "Synthetic cancellation before launch.";
+    await db.$executeRaw`CREATE TRIGGER reject_caseiq_cancel_fixture BEFORE UPDATE OF status ON Work
+      WHEN NEW.status = 'ACTIVE'
+      BEGIN SELECT RAISE(ABORT, 'synthetic cancellation projection failure'); END`;
+    try {
+      await expect(cancelPendingCaseIqWorkRun(run.id, message)).rejects.toThrow();
+      expect(await db.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: "PENDING", finishedAt: null, finalOutput: null,
+      });
+      expect(await db.experimentVariant.findUniqueOrThrow({ where: { id: variantId } })).toMatchObject({ status: "READY" });
+      expect(await db.experiment.findUniqueOrThrow({ where: { id: experiment.id } })).toMatchObject({ status: "RUNNING", finishedAt: null });
+      expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status: "REVIEW" });
+      await expect(readFile(paths.snapshot, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await db.$executeRaw`DROP TRIGGER reject_caseiq_cancel_fixture`;
+    }
+
+    await expect(cancelPendingCaseIqWorkRun(run.id, message)).resolves.toBe(true);
+    await executeWorkRun(run.id);
+    expect(await db.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+      status: "CANCELLED", startedAt: null, finishedAt: expect.any(Date), finalOutput: message,
+    });
+    expect(await db.experimentVariant.findUniqueOrThrow({ where: { id: variantId } })).toMatchObject({ status: "CANCELLED", errorMessage: null });
+    expect(await db.experiment.findUniqueOrThrow({ where: { id: experiment.id } })).toMatchObject({ status: "COMPLETED" });
+    expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status: "ACTIVE" });
+    expect(JSON.parse(await readFile(paths.snapshot, "utf8"))).toMatchObject({ status: "CANCELLED", startedAt: null });
+    expect(mocks.caseiq).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen an archived paired Work when its last pending Run is the CLI lane", async () => {
+    const { cli, caseiq } = await initial();
+    const archivedAt = new Date();
+    await db.work.update({ where: { id: work.id }, data: { status: "ARCHIVED", archivedAt } });
+    await expect(cancelPendingCaseIqWorkRun(caseiq.runId, "Synthetic archived Work.")).resolves.toBe(true);
+    await finalizeCancelledWorkRun(cli.runId, "Synthetic archived Work.");
+    expect(await db.run.count({ where: { workId: work.id, status: "CANCELLED" } })).toBe(2);
+    expect(await db.work.findUniqueOrThrow({ where: { id: work.id } })).toMatchObject({ status: "ARCHIVED", archivedAt });
+  });
+
+  it("does not count the previous CaseIQ Run's changes in a Follow Up after final source capture fails", async () => {
+    const { caseiq, pair, followUp } = await initial();
+    const cwd = pairedWorkspacePath(work.directoryPath, pair, "CASEIQ");
+    const previousFile = "previous-run.txt";
+    const nextFile = "next-run.txt";
+    const capture = vi.spyOn(sourceSnapshot, "captureRunSourceDiff").mockRejectedValueOnce(new Error("Synthetic final snapshot failure."));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = { exitCode: 0, finalOutput: "Synthetic response", usage: null, model: null, cpuTimeMs: null, peakMemoryMb: null };
+    mocks.caseiq.mockImplementationOnce(async () => {
+      await writeFile(path.join(cwd, previousFile), "The original Run created this");
+      return result;
+    }).mockImplementationOnce(async () => {
+      await writeFile(path.join(cwd, nextFile), "The Follow Up created this");
+      return result;
+    });
+    try {
+      await executeWorkRun(caseiq.runId);
+      expect(await readWorkRunSnapshot(getWorkRunArtifactPaths(cwd, caseiq.runId).snapshot)).toMatchObject({
+        status: "SUCCESS", sourceAfterCaptured: false,
+      });
+      const savedBaseline = await readDirectorySnapshot(getDirectorySnapshotPath(cwd, caseiq.runId));
+      expect(savedBaseline.entries[previousFile]).toBeUndefined();
+
+      const { runs: [next] } = await sendPairedFollowUp(work.userId, work.id, {
+        ...followUp, targets: [{ lane: "CASEIQ", expectedParentRunId: caseiq.runId }],
+      });
+      await executeWorkRun(next.runId);
+      const artifacts = getWorkRunArtifactPaths(cwd, next.runId);
+      const patch = await readFile(artifacts.diff, "utf8");
+      expect(patch).toContain(nextFile);
+      expect(patch).not.toContain(previousFile);
+      expect(await readWorkRunSnapshot(artifacts.snapshot)).toMatchObject({ status: "SUCCESS", sourceAfterCaptured: true });
+    } finally {
+      capture.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
   it("uses the same saved Prompt and attachment in both Runs, with distinct queue keys and real output roots", async () => {
     expect(await db.workSessionPair.findUnique({ where: { workId: work.id } })).toBeNull();
-    const file = await saveWorkAttachment({
+    const file = await workAttachments.saveWorkAttachment({
       work, requestId: work.id, uploadId: randomUUID(), name: "input.txt", size: 0, body: null,
     });
-    await resolveWorkAttachments(work, work.id, [file.id], true);
+    await workAttachments.resolveWorkAttachments(work, work.id, [file.id], true);
     await writeFile(path.join(work.directoryPath, "shared.txt"), "common input");
     const { cli, caseiq, pair, followUp } = await initial();
     expect(await db.workSessionPair.findUnique({ where: { workId: work.id } })).toMatchObject(pair);
@@ -140,7 +365,8 @@ describe("paired Work admission and execution using isolated SQLite", () => {
       expect(patch).not.toContain(`${other}.txt`);
     }
 
-    const sharedFollowUpFile = await saveWorkAttachment({
+    await writeFile(path.join(pairedWorkspacePath(work.directoryPath, pair, "CASEIQ"), "between-runs.txt"), "A manual change after the parent Run");
+    const sharedFollowUpFile = await workAttachments.saveWorkAttachment({
       work, requestId: followUp.requestId, uploadId: randomUUID(), name: "follow-up.txt", size: 0, body: null,
     });
     followUp.attachmentIds = [sharedFollowUpFile.id];
@@ -169,6 +395,7 @@ describe("paired Work admission and execution using isolated SQLite", () => {
       const patch = await readFile(artifact.diff, "utf8");
       expect(patch).toContain(`${label}-next.txt`);
       expect(patch).not.toContain(`${label}.txt`);
+      if (lane === "CASEIQ") expect(patch).toContain("between-runs.txt");
     }
     expect(await readFile(path.join(work.directoryPath, work.promptFileName), "utf8")).toBe(prompt);
   }, 15_000);

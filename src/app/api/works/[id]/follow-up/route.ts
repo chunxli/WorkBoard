@@ -9,8 +9,7 @@ import {
   executeWorkRun,
 } from "@/lib/work-executor";
 import { getWorkQueueBlockedReason, getWorkRunQueueKey, orderPendingWorkRuns, QUEUED_FOLLOW_UP_MODE } from "@/lib/work-run-queue";
-import { getManagedSessionController } from "@/lib/managed-session-controller";
-import { isNativeCopilotRunActive } from "@/lib/copilot-runner";
+import { getLocalManagedWorkRuntime } from "@/lib/managed-work-runtime";
 import { jobQueue } from "@/lib/job-queue";
 import {
   copilotSessionExists,
@@ -79,7 +78,7 @@ export async function POST(
       }
       const activeWorkRuns = parsed.data.queue ? await prisma.run.findMany({
         where: { workId: work.id, status: { in: ["PENDING", "RUNNING"] } },
-        select: { id: true, trigger: true, status: true, copilotSessionId: true, hostname: true, engine: true,
+        select: { id: true, trigger: true, status: true, copilotSessionId: true, hostname: true, engine: true, providerId: true,
           experimentVariantId: true, createdAt: true, resumedFromRunId: true },
       }) : [];
       const activeWorkRun = parsed.data.queue ? activeWorkRuns[0] : await prisma.run.findFirst({
@@ -151,10 +150,8 @@ export async function POST(
             }
           }
           const running = activeWorkRuns.find((run) => run.status === "RUNNING");
-          const ownedRunning = running?.hostname === hostname() && (running.engine === "SDK"
-            ? getManagedSessionController(running.id) !== null
-            : running.engine === "CLI" && isNativeCopilotRunActive(running.id));
-          if (!ownedRunning) {
+          const { controller, native } = getLocalManagedWorkRuntime(running);
+          if (!controller && !native) {
             const activity = await getTerminalSessionActivity(parent.copilotSessionId, parent.terminalLaunches[0]?.id ?? null);
             if (activity.active || activity.starting) throw new FollowUpConflictError("This session is open in Terminal. Close the Copilot session before sending.");
           }

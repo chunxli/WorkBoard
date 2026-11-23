@@ -4,6 +4,10 @@ export function isCaseIqRuntime(run: { providerId?: string | null }): boolean {
   return run.providerId === CASEIQ_PROVIDER_ID;
 }
 
+export function isCaseIqWebRun(run: { providerId?: string | null; engine?: string | null }): boolean {
+  return isCaseIqRuntime(run) && run.engine === "CASEIQ";
+}
+
 export function runtimeProviderLabel(run: { providerId?: string | null; engine?: string | null }): string {
   if (run.providerId === CASEIQ_PROVIDER_ID) return run.engine === "CASEIQ" ? "CaseIQ" : "CaseIQ · Native Terminal";
   if (run.providerId) return `Unsupported runtime (${run.providerId})`;
