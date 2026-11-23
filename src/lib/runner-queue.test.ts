@@ -1,6 +1,9 @@
+import { ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCopilotEnvironment,
@@ -10,7 +13,18 @@ import {
   startCopilotRun,
 } from "./copilot-runner";
 import { CopilotCompletionTracker } from "./copilot-completion";
+import { stopCopilotProcess } from "./copilot-process";
 import { JobQueue } from "./job-queue";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+
+vi.mock("@/lib/copilot-process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./copilot-process")>();
+  return { ...actual, stopCopilotProcess: vi.fn(actual.stopCopilotProcess) };
+});
 
 function deferred() {
   let resolve!: () => void;
@@ -341,39 +355,66 @@ describe("Copilot process boundary", () => {
     expect(result.incompleteReason).toContain("1 unfinished background sub-agent");
   });
 
-  it("shares one timeout deadline across automatic continuations", async () => {
+  it("shares one timeout deadline across automatic continuations and waits for process exit", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "work-board-deadline-"));
-    cleanupPaths.push(directory);
-    const script = path.join(directory, "fake-copilot.cjs");
-    const runId = `deadline-test-${Date.now()}`;
-    cleanupPaths.push(getRunLogPath(runId));
-    await writeFile(
-      script,
-      [
-        "const resumed = process.argv.slice(2).some((arg) => arg.startsWith('--resume='));",
-        "console.log(JSON.stringify({ type: 'subagent.started', agentId: 'agent-1', data: { agentDisplayName: 'Analyst' } }));",
-        "setTimeout(() => {}, resumed ? 3000 : 300);",
-      ].join("\n"),
-      "utf8"
-    );
+    const runId = `deadline-test-${randomUUID()}`;
+    cleanupPaths.push(directory, getRunLogPath(runId));
+    const child = () => Object.assign(new ChildProcess(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    const first = child();
+    const resumed = child();
+    const firstStarted = deferred();
+    const resumedStarted = deferred();
+    const onSpawn = vi.fn()
+      .mockImplementationOnce(() => firstStarted.resolve())
+      .mockImplementationOnce(() => resumedStarted.resolve());
+    const spawnAttempt = vi.mocked(spawn).mockReturnValueOnce(first).mockReturnValueOnce(resumed);
+    const stop = vi.mocked(stopCopilotProcess).mockResolvedValue(undefined);
 
-    const startedAt = Date.now();
-    const result = await startCopilotRun({
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let finished = false;
+    const running = startCopilotRun({
       runId,
       repoPath: directory,
       prompt: "test prompt",
-      sessionId: "test-session-id",
+      sessionId: randomUUID(),
       outputFormat: "json",
       executable: process.execPath,
-      executableArgs: [script],
       trackProcessStats: false,
       timeoutSeconds: 1.5,
       maxIncompleteContinuations: 3,
+      onSpawn,
+    }).then((result) => {
+      finished = true;
+      return result;
     });
 
-    expect(result.timedOut).toBe(true);
-    expect(result.continuationCount).toBe(1);
-    expect(Date.now() - startedAt).toBeLessThan(1750);
+    try {
+      await expect(Promise.race([firstStarted.promise, running])).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(500);
+      first.stdout.write(`${JSON.stringify({ type: "subagent.started", agentId: "analyst", data: { agentDisplayName: "Analyst" } })}\n`);
+      first.emit("close", 0);
+      await expect(Promise.race([resumedStarted.promise, running])).resolves.toBeUndefined();
+
+      // The continuation inherits the 1,000 ms remaining, not a fresh 1,500 ms.
+      await vi.advanceTimersByTimeAsync(999);
+      expect(stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stop).toHaveBeenCalledExactlyOnceWith(resumed);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(finished).toBe(false);
+      resumed.emit("close", null);
+      await expect(running).resolves.toMatchObject({ timedOut: true, cancelled: false, continuationCount: 1 });
+    } finally {
+      first.emit("close", null);
+      resumed.emit("close", null);
+      vi.useRealTimers();
+      spawnAttempt.mockReset();
+      stop.mockReset();
+      await running;
+    }
   });
 });
 

@@ -1581,10 +1581,11 @@ body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
 
 @media (min-width: 1024px) {
   .work-workspace-grid {
+    --work-pane-divider-width: 0.75rem;
     grid-template-areas: "tabs left-divider panels";
     grid-template-rows: minmax(0, 1fr);
-    grid-template-columns: var(--work-sidebar-width, 8rem) 0.5rem minmax(0, 1fr);
-    column-gap: 0;
+    grid-template-columns: var(--work-sidebar-width, 8rem) var(--work-pane-divider-width) minmax(0, 1fr);
+    column-gap: 0.625rem;
   }
 
   .work-pane-divider-left { display: block; }
@@ -1614,14 +1615,14 @@ body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
 @media (min-width: 1280px) {
   .work-workspace-grid.has-files {
     grid-template-areas: "tabs left-divider panels right-divider files";
-    grid-template-columns: var(--work-sidebar-width, 8rem) 0.5rem minmax(0, 1fr) 0.5rem var(--work-files-width, 15rem);
+    grid-template-columns: var(--work-sidebar-width, 8rem) var(--work-pane-divider-width) minmax(0, 1fr)
+      var(--work-pane-divider-width) var(--work-files-width, 15rem);
   }
 
   .work-pane-divider-right { display: block; }
 
   .work-files-panel {
     grid-area: files;
-    padding-left: 0.5rem;
   }
 }
 

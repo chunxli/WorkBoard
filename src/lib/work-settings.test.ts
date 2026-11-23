@@ -79,26 +79,37 @@ describe("Work execution settings", () => {
     }).success).toBe(false);
   });
 
-  it("keeps text-only Follow Up compatible with default empty attachments", () => {
+  it("keeps text-only Follow Up unqueued with default empty attachments", () => {
     expect(followUpWorkSchema.parse({ prompt: "  Continue the analysis  " })).toEqual({
       prompt: "Continue the analysis",
       attachmentIds: [],
+      queue: false,
     });
     expect(followUpWorkSchema.safeParse({ prompt: "   " }).success).toBe(false);
     expect(followUpWorkSchema.safeParse({ prompt: "valid", sessionId: "client-controlled" }).success).toBe(false);
     expect(followUpWorkSchema.parse({ prompt: "Continue", expectedParentRunId: "owned-run" }))
-      .toEqual({ prompt: "Continue", expectedParentRunId: "owned-run", attachmentIds: [] });
+      .toEqual({ prompt: "Continue", expectedParentRunId: "owned-run", attachmentIds: [], queue: false });
   });
 
   it("accepts attachment-only Follow Up only with a valid request identity and unique file references", () => {
     const requestId = "12345678-1234-4234-8234-123456789abc";
     const attachmentId = "22345678-1234-4234-8234-123456789abc";
     expect(followUpWorkSchema.parse({ requestId, attachmentIds: [attachmentId] })).toEqual({
-      prompt: "", requestId, attachmentIds: [attachmentId],
+      prompt: "", requestId, attachmentIds: [attachmentId], queue: false,
     });
     expect(followUpWorkSchema.safeParse({ attachmentIds: [attachmentId] }).success).toBe(false);
     expect(followUpWorkSchema.safeParse({ requestId: "invalid", attachmentIds: [attachmentId] }).success).toBe(false);
     expect(followUpWorkSchema.safeParse({ requestId, attachmentIds: ["invalid"] }).success).toBe(false);
     expect(followUpWorkSchema.safeParse({ requestId, attachmentIds: [attachmentId, attachmentId] }).success).toBe(false);
+  });
+
+  it("only queues an explicitly requested Follow Up with a request ID and a parent Run", () => {
+    const queued = {
+      prompt: "Continue", queue: true, requestId: "12345678-1234-4234-8234-123456789abc",
+      expectedParentRunId: "owned-run",
+    };
+    expect(followUpWorkSchema.parse(queued)).toEqual({ ...queued, attachmentIds: [] });
+    expect(followUpWorkSchema.safeParse({ ...queued, requestId: undefined }).success).toBe(false);
+    expect(followUpWorkSchema.safeParse({ ...queued, expectedParentRunId: null }).success).toBe(false);
   });
 });
