@@ -15,6 +15,7 @@ export default function WorkQuickActions({
   archiveTarget,
   archived,
   archiveRedirect,
+  showLabels = false,
 }: {
   name: string;
   directoryPath: string;
@@ -24,6 +25,7 @@ export default function WorkQuickActions({
   archiveTarget: { kind: "work" | "task"; id: string } | null;
   archived: boolean;
   archiveRedirect?: string;
+  showLabels?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<QuickAction | null>(null);
@@ -82,22 +84,24 @@ export default function WorkQuickActions({
     }
   }
 
-  const actions: { action: QuickAction; icon: LucideIcon; label: string; disabled: boolean }[] = [
-    { action: "explorer", icon: FolderOpen, label: `Open ${name} in Windows Explorer`, disabled: !canOpenLocal || !directoryPath },
-    { action: "vscode", icon: Code2, label: `Open ${name} in VS Code`, disabled: !canOpenLocal || !directoryPath },
+  const actions: { action: QuickAction; icon: LucideIcon; label: string; caption: string; disabled: boolean }[] = [
+    { action: "explorer", icon: FolderOpen, label: `Open ${name} in Windows Explorer`, caption: "Open in Explorer", disabled: !canOpenLocal || !directoryPath },
+    { action: "vscode", icon: Code2, label: `Open ${name} in VS Code`, caption: "Open in VS Code", disabled: !canOpenLocal || !directoryPath },
     {
       action: "terminal", icon: TerminalSquare,
       label: terminalState === "active" ? `Check and resume ${name} in Windows Terminal`
         : terminalState === "ready" ? `Resume ${name} in Windows Terminal`
           : `${name} has no resumable Terminal session`,
+      caption: terminalState === "active" ? "Check and resume in Terminal" : "Resume in Terminal",
       disabled: !canOpenLocal || !terminalRunId || terminalState === "unavailable" || archived,
     },
-    { action: "archive", icon: archived ? RotateCcw : Archive, label: `${archived ? "Restore" : "Archive"} ${name}`, disabled: !archiveTarget },
+    { action: "archive", icon: archived ? RotateCcw : Archive, label: `${archived ? "Restore" : "Archive"} ${name}`,
+      caption: archived ? "Restore Work" : "Archive Work", disabled: !archiveTarget },
   ];
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1" role="group" aria-label="Quick actions">
-      {actions.map(({ action, icon: Icon, label, disabled }) => (
+    <div className={showLabels ? "grid min-w-0 gap-0.5" : "flex min-w-0 flex-wrap items-center gap-1"} role="group" aria-label="Quick actions">
+      {actions.map(({ action, icon: Icon, label, caption, disabled }) => (
         <button
           key={action}
           type="button"
@@ -105,13 +109,14 @@ export default function WorkQuickActions({
           aria-label={label}
           disabled={disabled || busy !== null}
           onClick={() => void invoke(action)}
-          className={`grid size-9 shrink-0 place-items-center rounded-md disabled:cursor-not-allowed disabled:opacity-40 ${
+          className={showLabels ? "work-toolbar-action work-toolbar-menu-action" : `grid size-9 shrink-0 place-items-center rounded-md disabled:cursor-not-allowed disabled:opacity-40 ${
             action === "archive"
               ? "text-neutral-500 hover:bg-neutral-800 hover:text-amber-300"
               : "text-neutral-500 hover:bg-neutral-800 hover:text-emerald-300"
           }`}
         >
           {busy === action ? <LoaderCircle size={16} className="animate-spin" aria-hidden="true" /> : <Icon size={16} aria-hidden="true" />}
+          {showLabels && <span>{caption}</span>}
         </button>
       ))}
       {error && <span role="alert" className="basis-full pt-1 text-xs text-red-400">{error}</span>}

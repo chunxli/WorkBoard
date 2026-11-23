@@ -95,7 +95,8 @@ async function pairedLaneDisplay(work: { id: string; directoryPath: string }, pa
 }
 
 function renderRunActions(run: DisplayRun, state: Awaited<ReturnType<typeof getRunStatusSnapshot>> | null, paired = false) {
-  return <div className={paired ? "work-paired-run-actions" : "flex shrink-0 items-center gap-1"}>
+  return <div className={paired ? "work-paired-run-actions" : "work-toolbar-run flex min-w-0 flex-wrap items-center gap-1"}
+    role={paired ? undefined : "group"} aria-label={paired ? undefined : "Run controls"}>
     {!paired && isCaseIqRuntime(run) && <CaseIqRuntimeTag title={`Runtime: ${runtimeProviderLabel(run)}`} />}
     <StatusBadge status={state?.displayStatus ?? run.status} />
     {state?.displayStatus !== "SYNCING" && (!paired || run.startedAt) && <RunDuration key={run.id} startedAt={run.startedAt?.toISOString() ?? null}
@@ -265,40 +266,37 @@ export default async function WorkDetailPage({
         awaitingRunStart={latestRunState?.displayStatus === "PENDING"}
         historySync={Boolean(latestRun && isTerminalRunTrigger(latestRun.trigger) && (latestRun.status === "RUNNING" || latestRun.status === "UNKNOWN"))}
         outputFormat={latestRun?.outputFormat === "json" ? "json" : "text"}
-        workHeader={<>
-        <div className="work-toolbar-identity flex min-w-0 items-center gap-2">
+        workHeader={<div className="work-toolbar-identity flex min-w-0 items-center gap-2">
           <Link href="/work" title="Back to Work Board" aria-label="Back to Work Board" className="work-toolbar-control grid size-9 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-emerald-300">
             <ArrowLeft size={15} aria-hidden="true" />
           </Link>
-          <h1 title={work.name} className="min-w-0 flex-1 truncate text-sm font-bold text-white">{work.name}</h1>
+          <h1 title={work.name} className="min-w-0 truncate text-sm font-bold text-white">{work.name}</h1>
           <span className="shrink-0 rounded-full border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-400">{work.status}</span>
-        </div>
-        <details key={`details:${work.id}`} className="work-toolbar-details group min-w-0 shrink-0 text-xs">
-          <summary title="Work details" aria-label="Work details" className="work-toolbar-control flex size-8 cursor-pointer list-none items-center justify-center gap-1 rounded-md text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 [&::-webkit-details-marker]:hidden">
-            <Info size={15} aria-hidden="true" />
-            <span className="sr-only group-open:not-sr-only">Work details</span>
-          </summary>
-          <div className="space-y-2 pt-2">
-            <p className="break-words font-semibold text-neutral-200">{work.name}</p>
-            <p className="flex min-w-0 items-start gap-2 text-neutral-400">
-              <FolderOpen size={13} className="mt-1 shrink-0" aria-hidden="true" />
-              <span className="break-all font-mono leading-5">{work.directoryPath}</span>
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <MetaChip icon={Cpu}>{pair ? `${pairedLaneInfo.CLI.label} + ${pairedLaneInfo.CASEIQ.label}` : `Default ${work.defaultEngine}`}</MetaChip>
-              <MetaChip icon={Bot}>{work.model ?? "Auto model"}</MetaChip>
-              <MetaChip icon={Clock3}>{work.timeoutSeconds ? `${work.timeoutSeconds}s timeout` : "No timeout"}</MetaChip>
-              {work.sourceRepo && <MetaChip icon={Boxes}>{work.sourceRepo.name}</MetaChip>}
+          <details key={`details:${work.id}`} name="work-toolbar-panels" className="work-toolbar-details min-w-0 shrink-0 text-xs">
+            <summary title="Work details" aria-label="Work details" className="work-toolbar-control flex size-8 cursor-pointer list-none items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 [&::-webkit-details-marker]:hidden">
+              <Info size={15} aria-hidden="true" />
+            </summary>
+            <div className="work-toolbar-details-panel space-y-2">
+              <p className="break-words font-semibold text-neutral-200">{work.name}</p>
+              <p className="flex min-w-0 items-start gap-2 text-neutral-400">
+                <FolderOpen size={13} className="mt-1 shrink-0" aria-hidden="true" />
+                <span className="break-all font-mono leading-5">{work.directoryPath}</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <MetaChip icon={Cpu}>{pair ? `${pairedLaneInfo.CLI.label} + ${pairedLaneInfo.CASEIQ.label}` : `Default ${work.defaultEngine}`}</MetaChip>
+                <MetaChip icon={Bot}>{work.model ?? "Auto model"}</MetaChip>
+                <MetaChip icon={Clock3}>{work.timeoutSeconds ? `${work.timeoutSeconds}s timeout` : "No timeout"}</MetaChip>
+                {work.sourceRepo && <MetaChip icon={Boxes}>{work.sourceRepo.name}</MetaChip>}
+              </div>
+              {latestRun && (
+                <p className="text-neutral-500">{queuedFollowUp ? "Current Run" : "Latest Run"}: {latestRun.trigger} · {runtimeProviderLabel(latestRun)}</p>
+              )}
+              {latestRun?.copilotSessionId && (
+                <p className="break-all font-mono text-neutral-400">Session {latestRun.copilotSessionId}</p>
+              )}
             </div>
-            {latestRun && (
-              <p className="text-neutral-500">{queuedFollowUp ? "Current Run" : "Latest Run"}: {latestRun.trigger} · {runtimeProviderLabel(latestRun)}</p>
-            )}
-            {latestRun?.copilotSessionId && (
-              <p className="break-all font-mono text-neutral-400">Session {latestRun.copilotSessionId}</p>
-            )}
-          </div>
-        </details>
-        </>}
+          </details>
+        </div>}
         workActions={<WorkActions
           workId={work.id}
           name={work.name}

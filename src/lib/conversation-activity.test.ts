@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityRecords, conversationTimeline, conversationToolActivityAt, isConversationMessage, withPendingFollowUp, type PendingFollowUp } from "./conversation-activity";
+import { activityRecords, conversationTimeline, conversationTimelineRows, conversationToolActivityAt, isConversationMessage, withPendingFollowUp, type PendingFollowUp } from "./conversation-activity";
 import { normalizeConversationEvent, type ConversationEvent } from "./session-conversation";
 
 function event(type: string, offset: number, data: Record<string, unknown> = {}, agentId: string | null = null): ConversationEvent {
@@ -165,6 +165,86 @@ describe("conversation activity timeline", () => {
     const retained = conversationTimeline(events).flatMap((item) => item.kind === "activity" ? item.events : [item.event]);
     expect(retained.map((entry) => entry.id).sort()).toEqual(events.map((entry) => entry.id).sort());
     expect(JSON.stringify(events)).toBe(before);
+  });
+});
+
+describe("completed activity summaries", () => {
+  it("combines consecutive completed turns and trailing metadata without mixing reused tool calls", () => {
+    const firstCall = [
+      event("tool.execution_start", 1, { toolCallId: "reused", toolName: "view" }),
+      event("tool.execution_complete", 2, { toolCallId: "reused", success: true, result: "First result" }),
+    ];
+    const secondCall = [
+      event("tool.execution_start", 6, { toolCallId: "reused", toolName: "rg" }),
+      event("tool.execution_complete", 7, { toolCallId: "reused", success: true, result: "Second result" }),
+    ];
+    const events = [
+      event("assistant.message", 0, { content: "I will check." }),
+      ...firstCall,
+      event("assistant.message", 3, { content: "" }),
+      event("assistant.turn_end", 4),
+      event("assistant.turn_start", 5),
+      ...secondCall,
+      event("assistant.turn_end", 8),
+      event("assistant.turn_start", 9),
+      event("session.usage_checkpoint", 10),
+      { ...event("assistant.turn_end", 11), timestamp: "2026-10-23T02:05:00Z" },
+      event("assistant.message", 12, { content: "Here is the result." }),
+    ];
+    const before = JSON.stringify(events);
+    const rows = conversationTimelineRows(conversationTimeline(events), false);
+    expect(rows.map((item) => item.kind)).toEqual(["message", "activity", "message"]);
+    const summary = rows[1];
+    if (summary.kind !== "activity") throw new Error("Expected an activity summary");
+    expect(summary).toMatchObject({ status: "Completed", toolCount: 2, eventCount: 10, timestamp: events[11].timestamp });
+    expect(summary.records.filter(({ events: entries }) => entries[0].role === "tool").map(({ events: entries }) => entries))
+      .toEqual([firstCall, secondCall]);
+    expect(summary.records.flatMap((record) => record.events)).toEqual(events.slice(1, 12).filter((entry) => entry.type !== "assistant.message"));
+    expect(JSON.stringify(events)).toBe(before);
+  });
+
+  it.each([
+    ["assistant.message", { content: "An update between tools" }],
+    ["user.message", { content: "Another request" }],
+    ["user.message", { content: "" }],
+    ["session.resume", {}],
+  ] as const)("keeps completed tools on either side of %s separate (%j)", (type, data) => {
+    const rows = conversationTimelineRows(conversationTimeline([
+      event("tool.execution_complete", 0, { success: true }),
+      event("assistant.turn_end", 1),
+      event(type, 2, data),
+      event("assistant.turn_start", 3),
+      event("tool.execution_complete", 4, { success: true }),
+      event("assistant.turn_end", 5),
+    ]), false);
+    expect(rows.filter((item) => item.kind === "activity").map(({ status, toolCount }) => [status, toolCount]))
+      .toEqual([["Completed", 1], ["Completed", 1]]);
+  });
+
+  it("leaves failures and running or unconfirmed tools visible instead of absorbing them", () => {
+    const timeline = conversationTimeline([
+      event("tool.execution_complete", 0, { success: true }),
+      event("assistant.turn_end", 1),
+      event("assistant.turn_start", 2),
+      event("tool.execution_complete", 3, { success: false }),
+      event("assistant.turn_end", 4),
+      event("assistant.turn_start", 5),
+      event("tool.execution_complete", 6, { success: true }),
+      event("assistant.turn_end", 7),
+      event("assistant.turn_start", 8),
+      event("tool.execution_start", 9),
+    ]);
+    const statuses = (live: boolean) => conversationTimelineRows(timeline, live)
+      .filter((item) => item.kind === "activity").map(({ status }) => status);
+    expect(statuses(true)).toEqual(["Completed", "Failed", "Completed", "Running"]);
+    expect(statuses(false)).toEqual(["Completed", "Failed", "Completed", "Recorded"]);
+  });
+
+  it("does not collapse metadata-only turns when there are no tool calls", () => {
+    const rows = conversationTimelineRows(conversationTimeline([
+      event("assistant.turn_end", 0), event("assistant.turn_start", 1), event("assistant.turn_end", 2),
+    ]), false);
+    expect(rows).toHaveLength(2);
   });
 });
 

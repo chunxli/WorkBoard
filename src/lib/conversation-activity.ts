@@ -4,17 +4,29 @@ export interface ConversationActivity {
   kind: "activity";
   id: string;
   events: ConversationEvent[];
+  startsUserTurn: boolean;
   turnEnded: boolean;
   finished: boolean;
 }
 
-export type ConversationTimelineItem =
-  | ConversationActivity
-  | { kind: "message"; event: ConversationEvent };
+type ConversationMessageItem = { kind: "message"; event: ConversationEvent };
+
+export type ConversationTimelineItem = ConversationActivity | ConversationMessageItem;
 
 export interface ActivityRecord {
   id: string;
   events: ConversationEvent[];
+}
+
+export interface ConversationActivitySummary {
+  kind: "activity";
+  id: string;
+  records: ActivityRecord[];
+  toolCount: number;
+  eventCount: number;
+  failures: number;
+  status: "Running" | "Failed" | "Completed" | "Recorded";
+  timestamp: string | null;
 }
 
 export interface PendingFollowUp {
@@ -58,27 +70,33 @@ export function conversationToolActivityAt(events: readonly ConversationEvent[])
   return events.flatMap((event) => event.role === "tool" && event.timestamp !== null ? [event.timestamp] : []);
 }
 
+function startsRootSession(event: ConversationEvent): boolean {
+  return event.agentId === null && (event.type === "session.start" || event.type === "session.resume");
+}
+
 export function conversationTimeline(events: ConversationEvent[]): ConversationTimelineItem[] {
   const timeline: ConversationTimelineItem[] = [];
   let activity: ConversationActivity | null = null;
+  let startsUserTurn = false;
   for (const event of events) {
     if (!isAuxiliaryEvent(event)) {
       if (event.role === "user") {
         if (activity) activity.finished = true;
         activity = null;
+        startsUserTurn = true;
       }
       if (isConversationMessage(event)) timeline.push({ kind: "message", event });
       continue;
     }
     const rootEvent = event.agentId === null;
-    const startsSession = rootEvent && (event.type === "session.start" || event.type === "session.resume");
-    if (startsSession || (rootEvent && event.type === "assistant.turn_start" && (activity?.turnEnded || activity?.finished))) {
+    if (startsRootSession(event) || (rootEvent && event.type === "assistant.turn_start" && (activity?.turnEnded || activity?.finished))) {
       if (activity) activity.finished = true;
       activity = null;
     }
     if (!activity) {
-      activity = { kind: "activity", id: event.id, events: [], turnEnded: false, finished: false };
+      activity = { kind: "activity", id: event.id, events: [], startsUserTurn, turnEnded: false, finished: false };
       timeline.push(activity);
+      startsUserTurn = false;
     }
     activity.events.push(event);
     if (rootEvent && event.type === "assistant.turn_end") activity.turnEnded = true;
@@ -105,4 +123,56 @@ export function activityRecords(events: ConversationEvent[]): ActivityRecord[] {
     }
   }
   return records;
+}
+
+function summarizeActivity(activity: ConversationActivity, live: boolean): ConversationActivitySummary {
+  const records = activityRecords(activity.events);
+  const tools = records.filter((record) => record.events[0].role === "tool");
+  const unfinished = records.some((record) => record.events[record.events.length - 1].status === "running");
+  const failures = records.filter((record) => record.events.some((event) => event.status === "failed")).length;
+  const active = live && !activity.finished && (unfinished || !activity.turnEnded);
+  const completed = activity.finished || activity.turnEnded ||
+    (tools.length > 0 && tools.every((record) => record.events[record.events.length - 1].status === "success"));
+  return {
+    kind: "activity", id: activity.id, records, toolCount: tools.length, eventCount: activity.events.length, failures,
+    status: active ? "Running" : failures ? "Failed" : completed && !unfinished ? "Completed" : "Recorded",
+    timestamp: activity.events[activity.events.length - 1].timestamp,
+  };
+}
+
+export function conversationTimelineRows(timeline: readonly ConversationTimelineItem[], isLive: boolean) {
+  const latestActivity = isLive ? timeline.findLast((item) => item.kind === "activity") : undefined;
+  const rows: (ConversationMessageItem | ConversationActivitySummary)[] = [];
+  let completed: ConversationActivitySummary[] = [];
+  const flush = () => {
+    if (completed.length > 1 && completed.some((item) => item.toolCount > 0)) {
+      rows.push({
+        ...completed[0],
+        // Correlation is scoped to the original activity; IDs can be reused in later turns.
+        records: completed.flatMap((item) => item.records),
+        toolCount: completed.reduce((count, item) => count + item.toolCount, 0),
+        eventCount: completed.reduce((count, item) => count + item.eventCount, 0),
+        timestamp: completed[completed.length - 1].timestamp,
+      });
+    } else {
+      completed.forEach((item) => rows.push(item));
+    }
+    completed = [];
+  };
+  for (const item of timeline) {
+    if (item.kind === "message") {
+      flush();
+      rows.push(item);
+      continue;
+    }
+    if (item.startsUserTurn || startsRootSession(item.events[0])) flush();
+    const summary = summarizeActivity(item, item === latestActivity);
+    if (summary.status === "Completed") completed.push(summary);
+    else {
+      flush();
+      rows.push(summary);
+    }
+  }
+  flush();
+  return rows;
 }

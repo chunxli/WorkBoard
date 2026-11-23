@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import SessionConversation, { conversationControlCapabilities, ConversationActivityGroup, ConversationMessage, ConversationTimelineEntries, handleConversationComposerKeyDown, handleConversationHistoryWheel, readEarlierConversationPages } from "./SessionConversation";
+import SessionConversation, { conversationControlCapabilities, ConversationMessage, ConversationTimelineEntries, handleConversationComposerKeyDown, handleConversationHistoryWheel, readEarlierConversationPages } from "./SessionConversation";
 import { normalizeConversationEvent, type ConversationEvent } from "@/lib/session-conversation";
 import { conversationTimeline, conversationToolActivityAt, withPendingFollowUp } from "@/lib/conversation-activity";
 import * as authentication from "./CaseIqAuthenticationPanel";
@@ -632,12 +632,11 @@ describe("session conversation messages", () => {
   });
 
   it.each([true, false])("shows live activity %s with metadata together and keeps completion initially closed", (live) => {
-    const activity = conversationTimeline([
+    const timeline = conversationTimeline([
       normalizeConversationEvent({ type: "tool.execution_start", data: { toolName: "rg", toolCallId: "query" } }, "source", 0)!,
       normalizeConversationEvent({ type: "session.usage_checkpoint" }, "source", 1)!,
-    ])[0];
-    if (activity.kind !== "activity") throw new Error("Expected activity");
-    const markup = renderToStaticMarkup(<ConversationActivityGroup activity={activity} live={live} />);
+    ]);
+    const markup = renderToStaticMarkup(<ConversationTimelineEntries timeline={timeline} workId="work" isLive={live} />);
     const outer = markup.match(/<details[^>]*>/)?.[0] ?? "";
     expect(outer.includes('open=""')).toBe(live);
     expect(markup).toContain("Tools &amp; run details");
@@ -648,18 +647,34 @@ describe("session conversation messages", () => {
   });
 
   it("keeps a failed call visible in the collapsed group summary", () => {
-    const activity = conversationTimeline([
+    const timeline = conversationTimeline([
       normalizeConversationEvent({ type: "tool.execution_start", data: { toolName: "rg", toolCallId: "query" } }, "source", 0)!,
       normalizeConversationEvent({ type: "tool.execution_complete", data: { toolCallId: "query", success: false, result: "Full tool error" } }, "source", 1)!,
       normalizeConversationEvent({ type: "assistant.turn_end" }, "source", 2)!,
-    ])[0];
-    if (activity.kind !== "activity") throw new Error("Expected activity");
-    const markup = renderToStaticMarkup(<ConversationActivityGroup activity={activity} live={false} />);
+    ]);
+    const markup = renderToStaticMarkup(<ConversationTimelineEntries timeline={timeline} workId="work" isLive={false} />);
     const summary = markup.slice(markup.indexOf("<summary"), markup.indexOf("</summary>"));
     expect(summary).toContain("text-red-400");
     expect(summary).toContain("1 failed");
     expect(summary).toContain("Failed");
     expect(markup).not.toContain("Full tool error");
+  });
+
+  it("renders adjacent completed calls in one closed summary with each tool available inside", () => {
+    const events = [
+      { type: "tool.execution_complete", data: { toolCallId: "read", toolName: "view", success: true } },
+      { type: "assistant.turn_end" },
+      { type: "assistant.turn_start" },
+      { type: "tool.execution_complete", data: { toolCallId: "search", toolName: "rg", success: true } },
+      { type: "assistant.turn_end" },
+    ].map((event, offset) => normalizeConversationEvent(event, "source", offset)!);
+    const markup = renderToStaticMarkup(<ConversationTimelineEntries
+      timeline={conversationTimeline(events)} workId="work" isLive={false} />);
+    expect(markup.match(/class="work-activity-group\b/g)).toHaveLength(1);
+    expect(markup).not.toMatch(/<details class="work-activity-group[^>]*\sopen(?:=|\s|>)/);
+    expect(markup).toContain("2 tools · 5 events · Completed");
+    expect(markup.indexOf('title="view"')).toBeGreaterThan(markup.indexOf("2 tools"));
+    expect(markup.indexOf('title="rg"')).toBeGreaterThan(markup.indexOf('title="view"'));
   });
 });
 import Link from "next/link";

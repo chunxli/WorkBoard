@@ -19,7 +19,7 @@ import { CaseIqToolPermissionsPanel, useCaseIqToolPermissions } from "@/componen
 import { isCaseIqAuthenticationCommand } from "@/lib/caseiq-options";
 import { AttachmentDraft, MessageAttachments, useMessageAttachments } from "@/components/WorkMessageAttachments";
 import type { WorkAttachment } from "@/lib/work-attachment-types";
-import { activityRecords, conversationTimeline, conversationToolActivityAt, isAuxiliaryEvent, isConversationMessage, withPendingFollowUp, type ConversationActivity, type ConversationTimelineItem } from "@/lib/conversation-activity";
+import { conversationTimeline, conversationTimelineRows, conversationToolActivityAt, isAuxiliaryEvent, isConversationMessage, withPendingFollowUp, type ConversationActivitySummary, type ConversationTimelineItem } from "@/lib/conversation-activity";
 import type { ConversationEvent, SessionConversationData } from "@/lib/session-conversation";
 import { ConversationPinsContext, ConversationPinsPanel, ConversationPinsProvider } from "@/components/ConversationPins";
 import ConversationMarkdown from "@/components/ConversationMarkdown";
@@ -93,29 +93,23 @@ export function ConversationMessage({ event, relatedEvents = [event], workId, pe
   );
 }
 
-export function ConversationActivityGroup({ activity, live }: { activity: ConversationActivity; live: boolean }) {
-  const records = activityRecords(activity.events);
-  const tools = records.filter((record) => record.events[0].role === "tool");
-  const unfinished = records.some((record) => record.events[record.events.length - 1].status === "running");
-  const failures = records.filter((record) => record.events.some((event) => event.status === "failed")).length;
-  const active = live && !activity.finished && (unfinished || !activity.turnEnded);
+function ConversationActivityGroup({ activity }: { activity: ConversationActivitySummary }) {
+  const { records, toolCount, eventCount, failures, status, timestamp } = activity;
+  const active = status === "Running";
   const [manual, setManual] = useState<{ active: boolean; open: boolean } | null>(null);
   const pinContext = useContext(ConversationPinsContext);
-  const pinnedOpen = activity.events.some((event) => event.id === pinContext?.activePin?.eventId);
+  const pinnedEventId = pinContext?.activePin?.eventId;
+  const pinnedOpen = Boolean(pinnedEventId) && records.some((record) => record.events.some((event) => event.id === pinnedEventId));
   const open = pinnedOpen || (manual?.active === active ? manual.open : active);
-  const latest = activity.events[activity.events.length - 1];
-  const completed = activity.finished || activity.turnEnded ||
-    (tools.length > 0 && tools.every((record) => record.events[record.events.length - 1].status === "success"));
-  const status = active ? "Running" : failures ? "Failed" : completed && !unfinished ? "Completed" : "Recorded";
   return (
     <details className="work-activity-group min-w-0 text-xs" open={open} onToggle={(change) => {
       if (change.currentTarget.open !== open) setManual({ active, open: change.currentTarget.open });
     }}>
       <summary className={`flex min-h-7 cursor-pointer list-none items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-neutral-800/50 [&::-webkit-details-marker]:hidden ${failures ? "text-red-400" : "text-neutral-400"}`}>
         {active ? <LoaderCircle size={13} className="shrink-0 animate-spin" aria-hidden="true" /> : <Wrench size={13} className="shrink-0" aria-hidden="true" />}
-        <span className="font-medium">{tools.length ? "Tools & run details" : "Run details"}</span>
-        <span className="min-w-0 truncate">{tools.length ? `${tools.length} tool${tools.length === 1 ? "" : "s"} · ` : ""}{activity.events.length} events · {status}{failures ? ` · ${failures} failed` : ""}</span>
-        <time className="ml-auto shrink-0 text-[10px]" dateTime={latest.timestamp ?? undefined} title={eventTime(latest.timestamp)} aria-label={eventTime(latest.timestamp)}>{eventTime(latest.timestamp, true)}</time>
+        <span className="font-medium">{toolCount ? "Tools & run details" : "Run details"}</span>
+        <span className="min-w-0 truncate">{toolCount ? `${toolCount} tool${toolCount === 1 ? "" : "s"} · ` : ""}{eventCount} events · {status}{failures ? ` · ${failures} failed` : ""}</span>
+        <time className="ml-auto shrink-0 text-[10px]" dateTime={timestamp ?? undefined} title={eventTime(timestamp)} aria-label={eventTime(timestamp)}>{eventTime(timestamp, true)}</time>
         <ChevronDown size={12} className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
       </summary>
       <div className="work-activity-records py-1 pl-2">
@@ -201,10 +195,9 @@ export function ConversationTimelineEntries({ timeline, workId, isLive, pendingR
   timeline: ConversationTimelineItem[]; workId: string; isLive: boolean;
   pendingRun?: { id: string; status: string }; startup?: ReactNode;
 }) {
-  const latestActivity = timeline.findLast((item) => item.kind === "activity");
   return <>
-    {timeline.map((item) => item.kind === "activity"
-      ? <ConversationActivityGroup key={item.id} activity={item} live={isLive && item.id === latestActivity?.id} />
+    {conversationTimelineRows(timeline, isLive).map((item) => item.kind === "activity"
+      ? <ConversationActivityGroup key={item.id} activity={item} />
       : <ConversationMessage key={item.event.id} event={item.event} workId={workId}
         pendingRun={item.event.type === "work.follow_up" && item.event.id === `follow-up:${pendingRun?.id}`
           ? pendingRun : undefined} />)}
@@ -1054,13 +1047,14 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
         newMessages={newPairedMessages} resultFiles={resultFiles}
         downloadHref={runId && (data?.historyAvailable || conversationReadError) ? endpoint({ download: "1" }) : undefined}
         toggleRaw={() => setView((current) => current === "raw" ? "conversation" : "raw")} />
-      : <Toolbar className={`work-conversation-toolbar flex flex-wrap items-center gap-x-2 gap-y-1${workHeader ? " work-detail-header work-detail-unified-toolbar" : ""}`} style={workHeader ? { top: navigationHeight } : undefined}>
+      : <Toolbar className={`work-conversation-toolbar flex flex-wrap items-center gap-x-2 gap-y-1${workHeader ? " work-detail-header work-detail-unified-toolbar" : ""}`}
+        style={workHeader ? { top: `calc(${navigationHeight}px + 0.5rem)` } : undefined}>
         {workHeader}
         <h2 id={headingId} className={workHeader ? "sr-only" : "flex shrink-0 items-center gap-2 text-xs font-bold text-white sm:text-sm"}>
           <Radio size={14} aria-hidden="true" />
           Session conversation
         </h2>
-        {!paired && <div className="flex shrink-0 items-center gap-1" role="tablist" aria-label="Session view">
+        {!paired && <div className={`flex shrink-0 items-center gap-1${workHeader ? " work-toolbar-view-switch" : ""}`} role="tablist" aria-label="Session view">
           {(["conversation", "raw"] as const).map((tab) => <button key={tab} type="button" role="tab" aria-selected={view === tab}
             onClick={() => { setSelectedPanel("conversation"); setView(tab); }} className={`work-toolbar-control min-h-8 rounded-md px-2 py-1 text-xs font-semibold ${view === tab ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:text-neutral-100"}`}>
             {tab === "conversation" ? "Conversation" : "Raw output"}

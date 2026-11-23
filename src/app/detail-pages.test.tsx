@@ -158,7 +158,10 @@ async function renderRun(run = makeRunPage()) {
 function disclosure(markup: string, title: string) {
   const section = [...markup.matchAll(/<details\b[^>]*>[\s\S]*?<\/details>/g)]
     .map((match) => match[0])
-    .find((details) => details.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1].includes(title));
+    .find((details) => {
+      const summary = details.match(/<summary\b([^>]*)>([\s\S]*?)<\/summary>/);
+      return summary?.[1].includes(`aria-label="${title}"`) || summary?.[2].includes(title);
+    });
   expect(section, `${title} disclosure`).toBeDefined();
   if (!section) throw new Error(`Missing ${title} disclosure`);
   expect(section).not.toMatch(/<details[^>]*\sopen(?:=|\s|>)/);
@@ -343,7 +346,8 @@ describe("compact Work details", () => {
     expect(markup.match(/id="session-conversation-heading"/g)).toHaveLength(1);
     expect(markup).toContain('aria-label="Work sections"');
     expect(markup).toContain("work-detail-unified-toolbar");
-    for (const value of ['<h2', "Session conversation", 'role="tablist"', 'aria-label="SUCCESS"', "Full details"]) {
+    for (const value of ['<h2', "Session conversation", 'role="tablist" aria-label="Session view"',
+      'role="group" aria-label="Run controls"', 'role="group" aria-label="Work actions"', 'aria-label="SUCCESS"', "Full details"]) {
       expect(toolbar).toContain(value);
     }
     const back = header(markup).match(/<a[^>]*aria-label="Back to Work Board"[^>]*>/)?.[0];
@@ -362,10 +366,15 @@ describe("compact Work details", () => {
     },
   );
 
-  it("labels the icon-only path action without adding another visible text button", async () => {
+  it("keeps Follow Up in the primary row and puts labeled secondary shortcuts in a closed disclosure", async () => {
     const markup = header(await renderWork());
-    expect(markup).toMatch(/<button[^>]*title="Copy path"[^>]*aria-label="Copy path"/);
-    expect(markup).toContain('<span class="sr-only" aria-live="polite">Copy path</span>');
+    const more = disclosure(markup, "More Work actions");
+    expect(more).toMatch(/<button[^>]*title="Copy path"[^>]*aria-label="Copy path"/);
+    for (const label of ["Copy path", "Open in Explorer", "Open in VS Code", "Resume in Terminal", "Archive Work"]) {
+      expect(more).toContain(`>${label}</span>`);
+    }
+    expect(more).not.toContain("Follow Up");
+    expect(markup.indexOf("Follow Up")).toBeLessThan(markup.indexOf("More Work actions"));
   });
 
   it("uses Work-local lightweight actions and removes only the header separator", async () => {
