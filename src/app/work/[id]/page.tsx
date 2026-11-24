@@ -86,7 +86,7 @@ async function pairedLaneDisplay(work: { id: string; directoryPath: string }, pa
     isLive: run?.status === "PENDING" || run?.status === "RUNNING",
     awaitingRunStart: state?.displayStatus === "PENDING",
     outputFormat: run?.outputFormat === "json" ? "json" as const : "text" as const,
-    notices: <>{state && <RunStatusRefresher key={state.id} initialState={state} />}
+    notices: <>{state && <RunStatusRefresher key={state.id} initialState={state} workId={work.id} />}
       {artifactError && <p role="alert" className="text-xs text-red-400">The original Run log could not be verified or read.</p>}
     </>,
     runActions: run && renderRunActions(run, state, true),
@@ -315,7 +315,7 @@ export default async function WorkDetailPage({
             {startError}
           </p>
         )}
-        {latestRunState && <RunStatusRefresher key={latestRunState.id} initialState={latestRunState} />}
+        {latestRunState && <RunStatusRefresher key={latestRunState.id} initialState={latestRunState} workId={work.id} />}
         <ExperimentRefresher active={hasActiveExperiment} />
         {latestRunState?.displayStatus === "SYNCING" && (
           <p role="status" className="text-xs text-emerald-200">{TERMINAL_SYNCING_MESSAGE}</p>
@@ -326,7 +326,15 @@ export default async function WorkDetailPage({
         </>}
         runActions={latestRun && renderRunActions(latestRun, latestRunState)}
         runError={latestRun && renderRunError(latestRun)}
-        fileBrowser={<WorkFileBrowser workId={work.id} pairedOutputRoot={pair ? pairedOutputFolder(pair) : undefined} />}
+        fileBrowser={<WorkFileBrowser
+          workId={work.id}
+          pairedOutputRoot={pair ? pairedOutputFolder(pair) : undefined}
+          activeRunIds={laneDisplays
+            ? laneDisplays.flatMap((lane) => lane.runId && lane.isLive ? [lane.runId] : [])
+            : latestRun && (latestRun.status === "PENDING" || latestRun.status === "RUNNING" || latestRunState?.displayStatus === "IN_TERMINAL" || latestRunState?.displayStatus === "SYNCING")
+              ? [latestRun.id]
+              : []}
+        />}
         panels={[
         { id: "settings", label: "Execution settings", content: <WorkExecutionSettings
         embedded

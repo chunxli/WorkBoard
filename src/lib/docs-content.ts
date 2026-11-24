@@ -44,14 +44,44 @@ export const docsNavigation = [
 
 export const releaseNotes: ReleaseEntry[] = [
   {
-    date: "2026-11-04",
+    date: "2026-11-24",
     version: "Latest changes",
     status: "latest",
     title: {
-      zh: "近期源码更新：消息队列、精确对话 Pin 与阅读体验",
-      en: "Recent source updates: queued messages, precise conversation Pins and reading improvements",
+      zh: "近期源码更新：CaseIQ 网页集成、配对双会话、恢复加固与详情页精简",
+      en: "Recent source updates: CaseIQ web runtime, paired Work sessions, recovery hardening and streamlined Work details",
     },
     notes: [
+      {
+        title: "Streamlined Work Details & Activity",
+        zh: "圆角工具栏随亮/暗主题着色并吸附在全局导航下，将会话视图与当前 Run 分组并突出 Follow Up；复制路径、打开目录、VS Code、Terminal 恢复与归档以精简图标直接排列在工具栏右侧，点击标题旁的 Work details 查看完整名称与元数据而不推移对话。Conversation 两侧分隔线保留留白且支持拖动与键盘调整宽度。连续已结束的工具调用与相邻运行元数据（含中途失败调用）折叠为一条可展开摘要并在摘要标出失败次数，仅执行中的进度保持独立展开。Run 结束时自动刷新 Work files 并高亮新生成文件，点击后高亮自动褪去。",
+        en: "A theme-tinted rounded toolbar groups session views and current Run controls while keeping Follow Up prominent alongside direct icon actions for Copy path, Explorer, VS Code, Terminal Resume and archive/restore; Work details beside the title reveals full metadata without shifting messages. Spaced desktop dividers resize and remember side-pane widths with mouse or arrow keys. Consecutive finished tool calls and adjacent runtime metadata—including turns with failed calls—fold into one expandable summary with total failure counts surfaced, while live Running progress stays separate. Work files refreshes automatically when a Run finishes and highlights newly generated files until clicked.",
+      },
+      {
+        title: "CaseIQ Cancellation & Recovery",
+        zh: "CaseIQ Run 在受理停止请求前先持久化取消决定，并在核实包装进程身份与退出回执前保留 Session 队列占用（内联等待最多 22 秒，收口中返回 202，未确认退出返回 409）。服务重启先保留受影响 Session 占用，后台最多并发核验两个 Session，不阻塞启动或其他队列。已完成但未写库的 Run 按私有回执在同一事务中补写 Run、实验与 Work 状态且保留日志；缺失结束快照的 Follow Up 在启动前重新采集目录基线。",
+        en: "CaseIQ Runs persist stop decisions before acceptance and retain Session reservations until wrapper identity and exit receipts are verified (up to 22s inline wait, 202 while settling, 409 when unconfirmed). Restart recovery reserves affected Sessions and verifies up to two concurrently in the background without blocking startup or unrelated queues. Completed Runs interrupted before DB updates settle atomically across Run, Experiment and Work from verified receipts without clearing logs; Follow Up refreshes unavailable end-state baselines.",
+      },
+      {
+        title: "Paired CLI & CaseIQ Sessions",
+        zh: "本机 Windows 支持 Create & Run Both（未运行且无 Automation 的 Work 也可在 Prompt → Run Both Sessions 启动），用同一份 Prompt 与附件同时启动独立的 Copilot CLI 与 CaseIQ Session。Both 并排展示历史并记住分隔线比例（窄屏上下排列并提供 Jump to），Send to both Sessions 同步发送并显示各侧 Accepted / Added to queue 回执；切到单侧标签仅向该 Session 发送。两侧各自拥有独立队列、状态与 `work-results-<CLI-session-id>` 下的子目录，可通过标题栏文件夹图标或 Work files 的 Shared / Copilot CLI / CaseIQ 直接切换。",
+        en: "On the local Windows host, Create & Run Both (or Prompt → Run Both Sessions on an unrun Work without Automations) starts independent Copilot CLI and CaseIQ Sessions from one saved Prompt and attachment set. Both shows side-by-side histories with a remembered split (or stacked with Jump to on narrow screens), sending Follow Ups to both with per-lane Accepted / Added to queue receipts; selecting one lane targets only that Session. Each lane keeps its own queue, status and output folder under `work-results-<CLI-session-id>`, accessible from lane folder icons or Shared / Copilot CLI / CaseIQ in Work files.",
+      },
+      {
+        title: "CaseIQ Auth & MCP Approvals",
+        zh: "CaseIQ 对话顶部提供默认折叠的 SupportIQ sign-in 与 MCP tool approvals 横幅，需登录时在输入框上方高亮引导 `/mcp auth SupportIQ`（本地认证动作，不发给模型）。Work 详情左侧 MCP configuration 按当前 Work/session 管理工具自动或手动审批，旧 `/mcp` 链接兼容跳转到所属 Work 面板。Settings → CaseIQ MCP defaults 配置新建 CaseIQ 会话的初始默认值（默认对已发现 MCP 开启自动批准，不改写已有配置）；自动批准不代替登录或绕过组织限制。",
+        en: "CaseIQ conversations place SupportIQ sign-in and MCP tool approvals in collapsed top banners, highlighting `/mcp auth SupportIQ` above Follow Up when sign-in is required without sending it to the model. Each Work's MCP configuration side tab manages per-Work/session automatic or manual approvals, and legacy `/mcp` bookmarks redirect to the owning Work panel. Settings → CaseIQ MCP defaults configures initial defaults for new CaseIQ sessions (automatic approval initially enabled for discovered MCPs) without rewriting saved configurations, signing in or bypassing policy.",
+      },
+      {
+        title: "Session MCP & Skill Usage",
+        zh: "Conversation 左下角新增 Session usage（窄屏位于 Follow Up 上方），按名称汇总当前 Session 跨 Run 与 Follow Up 已记录的 MCP 调用总次数（匹配到失败结果的次数以红色括号标出）及 Skill 调用次数，覆盖尚未加载到画面的更早历史。",
+        en: "Session usage in the lower-left of Conversation (or above Follow Up on narrow screens) lists recorded MCP server call counts—with matched failed calls in red parentheses—and Skill invocations across the selected Session's retained history, including unloaded pages.",
+      },
+      {
+        title: "Pending Run Preparation",
+        zh: "Work 与 Run 详情在 PENDING 阶段区分排队等待与已观察到的准备步骤（如准备文件、恢复 Session、生成目录快照），快照扫描显示实测文件数与读取字节数，不估算百分比或剩余时间。",
+        en: "While PENDING, Work and Run details distinguish queued waiting from observed preparation steps such as preparing Run files, resuming a session, or scanning workspace snapshots with measured files and bytes rather than an invented percent or ETA.",
+      },
       {
         title: "CaseIQ Web Runtime",
         zh: "Runtime 新增 CaseIQ：使用用户 Prompt 在原有网页 Create & Run / Execute / Conversation / Follow Up 流程执行，不默认打开 Terminal，不把 CaseIQ 伪装成普通 CLI Agent。原启动器与原生插件/权限保持不变，取消、超时、队列及续跑仍绑定同一 Provider。旧 Terminal 会话单独兼容；Docs 与 Markdown 同源，并如实保留真实认证、模型、案件及遥测验证门槛。",
@@ -74,8 +104,8 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Add to Queue",
-        zh: "运行中的 CLI / SDK Run 显示 Add to Queue：多条消息与附件持久排队，按同一会话 FIFO 执行，前一个 Run 失败、取消或超时后仍继续。刷新与重启保留队列；排队不改写当前 Prompt，未开始的消息可在 Run 详情取消。SDK 另保留 Steer now 即时发送；同请求重试不重复创建 Run。",
-        en: "Active CLI/SDK Runs show Add to Queue: messages and attachments persist and execute FIFO in the same session, continuing after failure, cancellation or timeout. Refresh/restart retains the queue. Queueing does not rewrite the active Prompt; cancel waiting messages from Run details. SDK retains separate immediate Steer now; same-request retries do not create duplicate Runs.",
+        zh: "运行中的 CLI / SDK / CaseIQ Run 显示 Add to Queue：多条消息与附件持久排队，按同一会话 FIFO 执行，前一个 Run 失败、取消或超时后仍继续。刷新与重启保留队列；排队不改写当前 Prompt，未开始的消息可在 Run 详情取消。SDK 另保留 Steer now 即时发送；同请求重试不重复创建 Run。",
+        en: "Active CLI/SDK/CaseIQ Runs show Add to Queue: messages and attachments persist and execute FIFO in the same session, continuing after failure, cancellation or timeout. Refresh/restart retains the queue. Queueing does not rewrite the active Prompt; cancel waiting messages from Run details. SDK retains separate immediate Steer now; same-request retries do not create duplicate Runs.",
       },
       {
         title: "Quick Work Renaming",
@@ -149,8 +179,8 @@ export const releaseNotes: ReleaseEntry[] = [
       },
       {
         title: "Source Upgrade & Data Retention",
-        zh: "本条日期表示当前源码汇总，不是发布或部署确认。Pin 新增 WorkConversationPin 表，附件元数据迁移仍需保留；完整 background:restart 会生成 Prisma Client、应用迁移、构建并启动，不重置已有数据。备份包含数据库中的队列与 Pin、Work 附件和原始 Copilot session 历史。",
-        en: "This date identifies the source summary, not a release or deployment. Pins add WorkConversationPin; existing attachment migrations remain required. A full background:restart generates Prisma Client, applies migrations and builds/starts without resetting data. Back up queued Runs and Pins in SQLite together with Work attachments and original Copilot session history.",
+        zh: "本条日期表示当前源码汇总，不是发布或部署确认。CaseIQ 与配对会话新增 WorkSessionPair 表及 Run.providerId 列，Pin 的 WorkConversationPin 表与附件元数据迁移同样需保留；完整 background:restart 会生成 Prisma Client、应用迁移、构建并启动，不重置已有数据。备份包含数据库中的队列与 Pin、Work 附件、私有 CaseIQ 运行状态和原始 Copilot session 历史。",
+        en: "This date identifies the source summary, not a release or deployment. CaseIQ and paired sessions add WorkSessionPair and Run.providerId, alongside WorkConversationPin; existing attachment migrations remain required. A full background:restart generates Prisma Client, applies migrations and builds/starts without resetting data. Back up queued Runs and Pins in SQLite together with Work attachments, private CaseIQ runtime state and original Copilot session history.",
       },
       {
         title: "First Run in Terminal",
@@ -325,8 +355,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Your First Work",
-        zh: "在 Work → New work 选择目录，填写目标和期望输出，可添加图片或文件，然后 Create & Run。Create only 只保存，稍后可用 Execute。Conversation 查看回复和工具，文件区查看产出；Raw output 与 Run history 提供细节。CLI 结束后用 Send Follow Up 沿用会话继续，运行中只能起草。任务会操作真实文件，重要内容先备份或使用 Git。",
-        en: "In Work → New work, choose a folder, describe the goal and expected output, optionally add images/files, then Create & Run. Create only saves for a later Execute. Review Conversation, the file pane, Raw output and Run history. After a CLI Run finishes, Send Follow Up continues the same session; while running, only draft. Runs operate on real files: back up important content or use Git first.",
+        zh: "在 Work → New work 选择目录，填写目标和期望输出，可添加图片或文件，然后 Create & Run。Create only 只保存，稍后可用 Execute。Conversation 查看回复和工具，文件区查看产出；Raw output 与 Run history 提供细节。CLI 结束后用 Send Follow Up 沿用会话继续，运行中可用 Add to Queue 排队下一条消息。任务会操作真实文件，重要内容先备份或使用 Git。",
+        en: "In Work → New work, choose a folder, describe the goal and expected output, optionally add images/files, then Create & Run. Create only saves for a later Execute. Review Conversation, the file pane, Raw output and Run history. After a CLI Run finishes, Send Follow Up continues the same session; while running, Add to Queue queues the next message. Runs operate on real files: back up important content or use Git first.",
         href: "/work",
         label: "Create your first Work",
       },
@@ -354,8 +384,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Create Actions",
-        zh: "Create only 只保存；Create & Run 在应用内启动 Run；Create & Open Terminal 用保存后的 Prompt 启动第一个交互式 Terminal Session。",
-        en: "Create only saves; Create & Run starts an in-app Run; Create & Open Terminal starts the first interactive Terminal session from the saved Prompt.",
+        zh: "Create only 只保存；Create & Run 在应用内启动所选 Runtime；本机 Windows 的 Create & Run Both 用同一份 Prompt 和附件同时启动独立的 Copilot CLI 与 CaseIQ Session；Create & Open Terminal 用保存后的 Prompt 启动第一个交互式 Terminal Session。",
+        en: "Create only saves; Create & Run starts an in-app Run in the selected Runtime; Create & Run Both on the local Windows host starts paired Copilot CLI and CaseIQ Sessions from one saved Prompt and attachment set; Create & Open Terminal starts the first interactive Terminal session.",
         href: "/work",
         label: "Create Work",
       },
@@ -379,9 +409,14 @@ export const docsSections: DocsSection[] = [
         en: "Execution settings, Settings and Execute offer Copilot CLI / Copilot SDK / CaseIQ. CLI remains the built-in default and saved defaults are respected. CLI directly runs copilot -p; CaseIQ prepares through its original launcher and returns its native Prompt output to the web. Neither borrows SDK session control. Execute overrides affect that Run only; each Run freezes its engine, provider and settings. Follow Up inherits its parent's engine and session rather than the next Execute selection.",
       },
       {
+        title: "Paired Work Sessions",
+        zh: "本机 Windows 通过 Create & Run Both（或未运行且无 Automation 的 Work 在 Prompt → Run Both Sessions）建立 Copilot CLI 与 CaseIQ 配对会话。Both 视图并排展示两侧历史，可拖动分隔线记住比例，双击或按 Enter 恢复等宽，窄屏上下排列并提供 Jump to。Both 下使用 Send to both Sessions 同步发送同一条 Follow Up 与附件（任一侧不可接收时明确提示，不单边偷偷发送），提交后显示各侧 Accepted 或 Added to queue 回执链接；切到 Copilot CLI 或 CaseIQ 标签仅向该侧发送。原 Work 目录保留共享输入，两侧分别在 `work-results-<CLI-session-id>\\copilot-cli` 与 `caseiq` 执行（指令边界，非系统文件沙箱），标题栏文件夹图标及 Work files 的 Shared / Copilot CLI / CaseIQ 可直接打开对应目录。",
+        en: "On the local Windows host, Create & Run Both (or Prompt → Run Both Sessions on an unrun Work without Automations) pairs independent Copilot CLI and CaseIQ Sessions. Both displays side-by-side histories with a draggable remembered split (double-click or Enter resets equal width; narrow screens stack with Jump to). Send to both Sessions dispatches one Follow Up and attachment set to both—blocking cleanly if either side is unavailable—and shows Accepted or Added to queue Run links; choosing Copilot CLI or CaseIQ targets only that Session. The shared Work directory holds input while lanes execute in `work-results-<CLI-session-id>\\copilot-cli` and `caseiq` (instructional isolation, not an OS sandbox), with header folder icons and Shared / Copilot CLI / CaseIQ views in Work files.",
+      },
+      {
         title: "Compact Work Details",
-        zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；其他页面仍居中。桌面分隔线两侧留有空隙，让会话正文和 Follow Up 输入框不紧贴侧栏。横向拖动 Conversation 两边的分隔线可分别调整左右栏宽度，当前浏览器会记住宽度；双击分隔线恢复该侧默认宽度，聚焦分隔线后也可用左右方向键调整。圆角工具栏吸附在全局导航下，会话视图与当前 Run 分组显示，Follow Up 保持突出。更多操作收在 More 中，包括复制路径、打开目录和归档。点击名称旁的 Work details 可查看完整名称和元数据，不会推移对话。桌面工具栏控件高 32px，触控目标至少 44px，窄屏自动换行。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。队列有等待消息时，工具栏保留当前 Run，不跳到队列尾部。历史数量仅表示已加载的 Run（包括等待中的消息），不是终身总数。右侧文件区可展开目录、在新标签页打开文件或插入路径，底部提供当前 Session 的 Pins；窄屏在 Files 选项卡访问。",
-        en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters; other pages stay centered. Desktop dividers have space on both sides so messages and the Follow Up composer do not crowd the side panes. Drag the dividers beside Conversation to resize each visible side pane. The browser remembers the widths; double-click a divider to reset its side, or focus it and use the Left/Right arrow keys. A rounded toolbar stays below global navigation and groups session views and current Run controls, keeping Follow Up prominent. Use More for secondary actions such as copying the path, opening the folder, and archiving. Open Work details beside the title to read the full name and metadata without shifting the conversation. Controls are 32px on desktop, with at least 44px touch targets and wrapping on narrow screens. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up focuses the draft; the composer stays docked while messages scroll independently. Waiting messages do not move the toolbar from the current Run to the queue tail. History counts loaded Runs, including waiting messages, not the lifetime total. The right pane expands folders, opens files or inserts paths, with this Session's Pins below; narrow screens use the Files tab.",
+        zh: "Work 详情和该页导航使用可用屏幕宽度，手机保留 16px、较大屏幕保留 24px 边距；其他页面仍居中。桌面分隔线两侧留有空隙，让会话正文和 Follow Up 输入框不紧贴侧栏。横向拖动 Conversation 两边的分隔线可分别调整左右栏宽度，当前浏览器会记住宽度；双击分隔线恢复该侧默认宽度，聚焦分隔线后也可用左右方向键调整。圆角工具栏随亮/暗主题着色并吸附在全局导航下，会话视图与当前 Run 分组显示，Follow Up 保持突出，复制路径、Explorer、VS Code、Terminal 恢复和归档直接以紧凑图标展开在栏上。点击名称旁的 Work details 可查看完整名称和元数据，不会推移对话。桌面工具栏控件高 32px，触控目标至少 44px，窄屏自动换行。默认显示 Conversation；执行设置、Prompt、Run history 在独立侧边选项卡中，窄屏改为横向选项卡。Follow Up 返回对话并聚焦草稿，输入框停靠面板底部，消息独立滚动。队列有等待消息时，工具栏保留当前 Run，不跳到队列尾部。历史数量仅表示已加载的 Run（包括等待中的消息），不是终身总数。右侧文件区可展开目录、在新标签页打开文件或插入路径，底部提供当前 Session 的 Pins；窄屏在 Files 选项卡访问。",
+        en: "Work details and its navigation use the available screen width with 16px mobile / 24px larger-screen gutters; other pages stay centered. Desktop dividers have space on both sides so messages and the Follow Up composer do not crowd the side panes. Drag the dividers beside Conversation to resize each visible side pane. The browser remembers the widths; double-click a divider to reset its side, or focus it and use the Left/Right arrow keys. A theme-tinted rounded toolbar stays below global navigation and groups session views and current Run controls, keeping Follow Up prominent with direct icon buttons for Copy path, Explorer, VS Code, Terminal Resume, and archiving right on the bar. Open Work details beside the title to read the full name and metadata without shifting the conversation. Controls are 32px on desktop, with at least 44px touch targets and wrapping on narrow screens. Conversation is the default; execution settings, Prompt and Run history use separate side tabs, horizontal on narrow screens. Follow Up focuses the draft; the composer stays docked while messages scroll independently. Waiting messages do not move the toolbar from the current Run to the queue tail. History counts loaded Runs, including waiting messages, not the lifetime total. The right pane expands folders, opens files or inserts paths, with this Session's Pins below; narrow screens use the Files tab.",
       },
       {
         title: "Folder List and Work Name",
@@ -395,8 +430,13 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Session Conversation",
-        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。连续完成的工具调用和相邻的已完成运行元数据合成一条默认折叠的摘要，展开可逐个查看参数、结果和技术事件。消息、新用户轮次和 Session 重新开始会断开合并；执行中展示进度，失败保持独立可见。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。刷新按分页恢复最近历史；滚到顶部继续向上滚动会连续拉取，直到出现新的可见用户/助手正文或仅附件消息，或历史已全部读完，不因纯工具、子代理或空分页提前停止。工具记录仍保留，阅读位置不变，失败保留进度并可 Retry；Pin 历史窗口同样适用。顶部小字也可点击或用键盘操作。若当前 Follow Up 的原始输入位于更早分页，已保存的输入按提交时间显示在后续回复之前，加载原始消息后自动去重，不再追加到时间线底部。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
-        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Consecutive completed tool calls and adjacent completed runtime metadata fold into one summary. Expand it to inspect each call's arguments, results, and technical events. Messages, new user turns, and session starts or resumes separate groups; live progress and failures remain visible separately. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Refresh restores recent history in pages. Keep scrolling upward at the top to fetch until a new visible user/assistant message or attachment-only input appears, or history ends; tool-only, subagent-only and empty pages do not stop the batch. All records and reading position are preserved, with retained progress and Retry on failure, including in pinned-history windows. The top hint remains clickable and keyboard-accessible. If the current Follow Up input is in an earlier page, its saved prompt is placed by submission time before later replies and deduplicated when the source message loads, never appended to the timeline bottom. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
+        zh: "同一 session 的用户与助手消息跨 Run 展示，正文采用 13px 字体与紧凑间距，空正文不生成空白消息卡片。连续已结束的工具调用和相邻的运行元数据（含中途失败调用）合成一条默认折叠的摘要并在摘要标出失败数，展开可逐个查看参数、结果和技术事件。消息、新用户轮次和 Session 重新开始会断开合并；执行中的当前轮次保持独立展开以展示实时进度。不再重复展示 session Run 列表或 Steering audit 区域，但保留底层历史、审计和当前指令的交付/重试提示。刷新按分页恢复最近历史；滚到顶部继续向上滚动会连续拉取，直到出现新的可见用户/助手正文或仅附件消息，或历史已全部读完，不因纯工具、子代理或空分页提前停止。工具记录仍保留，阅读位置不变，失败保留进度并可 Retry；Pin 历史窗口同样适用。顶部小字也可点击或用键盘操作。若当前 Follow Up 的原始输入位于更早分页，已保存的输入按提交时间显示在后续回复之前，加载原始消息后自动去重，不再追加到时间线底部。保留分页、原始日志和完整 session 下载，不拼接不同 session 或伪造缺失数据。",
+        en: "User and assistant turns span linked Runs in the same session, with 13px prose and tighter spacing. Empty prose does not create blank bubbles. Consecutive finished tool calls and adjacent runtime metadata—including turns with failed calls—fold into one summary with failed counts highlighted; expand it to inspect each call's arguments, results, and technical events. Messages, new user turns, and session starts or resumes separate groups, while live Running progress remains visible separately. Duplicate session-Run and Steering-audit panels are removed, not their stored history, audit data or inline delivery/retry feedback. Refresh restores recent history in pages. Keep scrolling upward at the top to fetch until a new visible user/assistant message or attachment-only input appears, or history ends; tool-only, subagent-only and empty pages do not stop the batch. All records and reading position are preserved, with retained progress and Retry on failure, including in pinned-history windows. The top hint remains clickable and keyboard-accessible. If the current Follow Up input is in an earlier page, its saved prompt is placed by submission time before later replies and deduplicated when the source message loads, never appended to the timeline bottom. Pagination, raw output and full session download remain available; different sessions and missing data are never merged or invented.",
+      },
+      {
+        title: "Session MCP & Skill Usage",
+        zh: "Conversation 左下角的 Session usage（窄屏位于 Follow Up 上方）按名称列出当前选中 Session 已记录的 MCP 服务调用与 Skill 调用。统计覆盖该 Session 跨 Run 与 Follow Up 保留的全部历史，包括尚未加载到屏幕的消息；主数字统计已记录的调用启动次数，匹配到失败结果的 MCP 调用在红色括号中单独标出，缺失结果不计为失败，Skill 仅记录调用次数，配置、权限提示与正文提及不计入。",
+        en: "Session usage in the lower-left of Conversation (or expandable above Follow Up on narrow screens) lists recorded MCP server calls and Skill invocations by name across the selected Session's retained Runs and Follow Ups, including unloaded history pages. Counts reflect recorded call starts once, with matched MCP failures shown in red parentheses; missing results are not counted as failures, Skills report invocations only, and configurations, permission prompts or text mentions do not count.",
       },
       {
         title: "Conversation Code Copy",
@@ -410,13 +450,13 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Work File References",
-        zh: "Work files 中普通文件和目录的右侧按钮插入服务器原生绝对路径，保留 Unicode、空格和文件名。Follow Up 记住光标或选区，未定位时追加，插入后保持光标可继续输入；窄屏从 Files 选项卡自动返回 Conversation。不上传、不自动发送，也不暴露符号链接或特殊文件路径。冻结、发送或输入法组合输入期间禁用；超出消息长度限制保留原草稿并提示。",
-        en: "The action beside ordinary Work files/folders inserts the server-native absolute path, preserving Unicode, spaces and names. Follow Up remembers its caret/selection or appends if none; insertion restores focus/caret, including from the narrow Files tab. It neither uploads nor sends or exposes redirected/special-file paths. Locked/sending/composing drafts disable insertion; length errors retain the draft.",
+        zh: "Work files 中普通文件和目录的右侧按钮插入服务器原生绝对路径，保留 Unicode、空格和文件名；配对 Work 可通过标题栏文件夹图标或 Shared / Copilot CLI / CaseIQ 直接切换查看共享目录与各侧输出目录，不改变发送目标。Run 结束时自动刷新列表，将本次新生成的文件（以及包含未读新文件的折叠目录和配对分栏）高亮标记为 New；点击打开或引用该文件后高亮自动平滑褪去。Follow Up 记住光标或选区，未定位时追加，插入后保持光标可继续输入；窄屏从 Files 选项卡自动返回 Conversation。不上传、不自动发送，也不暴露符号链接或特殊文件路径。冻结、发送或输入法组合输入期间禁用；超出消息长度限制保留原草稿并提示。",
+        en: "The action beside ordinary Work files/folders inserts the server-native absolute path, preserving Unicode, spaces and names; paired Works also switch directly via lane folder icons or Shared / Copilot CLI / CaseIQ without changing Follow Up targets. Finishing a Run automatically refreshes Work files and highlights newly generated files (plus collapsed parent folders and unselected paired tabs) as New; clicking to open or reference a file smoothly fades its highlight. Follow Up remembers its caret/selection or appends if none; insertion restores focus/caret, including from the narrow Files tab. It neither uploads nor sends or exposes redirected/special-file paths. Locked/sending/composing drafts disable insertion; length errors retain the draft.",
       },
       {
         title: "In-App Follow Up",
-        zh: "运行中的托管 CLI / SDK Run 显示 Add to Queue：Enter 将消息与附件加入持久队列，多条消息按同一会话 FIFO 执行；前一个 Run 成功、失败、取消或超时后都继续。刷新与重启保留队列，输入区展示最早 20 条预览但不限制队列条数，点击可打开 Run 详情查看或取消。排队不改写正在运行的 Prompt，也不将等待消息当作已交付输入显示；执行后的恢复输入按开始时间放在前一条回复之后。结束后主按钮恢复 Send Follow Up。Shift+Enter 换行，输入法与禁用按钮保护保持不变。SDK 另保留 Steer now 即时发送。后续 Run 继承父 Run 的引擎、设置和 session，只发送新内容及新附件；同请求重试不重复创建。外部 Terminal、其他目录或会话占用、跨机器与外部修改冲突仍明确阻止不安全操作。",
-        en: "Active managed CLI/SDK Runs show Add to Queue: Enter persists messages/files, and multiple messages execute FIFO in the same session after success, failure, cancellation or timeout. Refresh/restart retains the queue; the composer previews the first 20 waiting entries without limiting queue length, linking to Run details for inspection/cancellation. Queueing neither rewrites the active Prompt nor presents waiting input as delivered; restored executing input uses start time after the predecessor's reply. Completion restores Send Follow Up. Shift+Enter adds a new line. IME confirmation does not send or queue; keyboard submission respects the disabled Send button or Add to Queue action. SDK retains separate immediate Steer now. Follow-ups inherit their parent's engine/settings/session and send only new text/files; same-request retries do not create duplicates. External Terminal, other directory/session owners, foreign hosts and external-edit conflicts still block unsafe operations.",
+        zh: "运行中的托管 CLI / SDK / CaseIQ Run 显示 Add to Queue：Enter 将消息与附件加入持久队列，多条消息按同一会话 FIFO 执行；前一个 Run 成功、失败、取消或超时后都继续。刷新与重启保留队列，输入区展示最早 20 条预览但不限制队列条数，点击可打开 Run 详情查看或取消。排队不改写正在运行的 Prompt，也不将等待消息当作已交付输入显示；执行后的恢复输入按开始时间放在前一条回复之后。结束后主按钮恢复 Send Follow Up。Shift+Enter 换行，输入法与禁用按钮保护保持不变。SDK 另保留 Steer now 即时发送。后续 Run 继承父 Run 的引擎、设置和 session，只发送新内容及新附件；同请求重试不重复创建。外部 Terminal、其他目录或会话占用、跨机器与外部修改冲突仍明确阻止不安全操作。",
+        en: "Active managed CLI/SDK/CaseIQ Runs show Add to Queue: Enter persists messages/files, and multiple messages execute FIFO in the same session after success, failure, cancellation or timeout. Refresh/restart retains the queue; the composer previews the first 20 waiting entries without limiting queue length, linking to Run details for inspection/cancellation. Queueing neither rewrites the active Prompt nor presents waiting input as delivered; restored executing input uses start time after the predecessor's reply. Completion restores Send Follow Up. Shift+Enter adds a new line. IME confirmation does not send or queue; keyboard submission respects the disabled Send button or Add to Queue action. SDK retains separate immediate Steer now. Follow-ups inherit their parent's engine/settings/session and send only new text/files; same-request retries do not create duplicates. External Terminal, other directory/session owners, foreign hosts and external-edit conflicts still block unsafe operations.",
       },
       {
         title: "Message Attachments",
@@ -432,6 +472,13 @@ export const docsSections: DocsSection[] = [
         title: "Live Runtime & MCP",
         zh: "此面板仅属于 SDK Run，保留页面内权限审批、Agent 问答、MCP 表单与脱敏连接状态，按钮仍校验用户、主机、Run/session 和策略。SDK 缺少获批 Entra 宿主时保留 Authenticate in Terminal blocker；只有已配置且受支持的认证流程可提供 Sign in。内置 GitHub MCP 沿用 Copilot 账户，已连接服务可 Verify tools。CLI 不显示或调用 SDK 面板，不挂载隐藏的 SDK 会话；原生命令的错误保留在 Conversation 和日志中，不支持的非交互请求明确失败，不自动扩大权限或回退 SDK。两种引擎都不导入其他仓库配置或收集 Token。独立认证失败、MCP 504 及原生 Terminal 专属能力不会因此自动解决。",
         en: "This panel belongs only to SDK Runs, retaining in-page permissions, agent questions, MCP forms and sanitized states. Actions still enforce owner, host, exact Run/session and policy. SDK without approved Entra host configuration retains Authenticate in Terminal; Sign in is offered only for configured, supported flows. Built-in GitHub uses the Copilot account and connected servers retain Verify tools. CLI neither mounts nor invokes the SDK panel or a hidden SDK session. Native errors remain in Conversation/logs; unsupported non-interactive requests fail explicitly without permission escalation or SDK fallback. Neither engine imports foreign repository configuration or collects tokens. Independent authentication failures, MCP 504s and native-Terminal-only capabilities are not automatically solved.",
+      },
+      {
+        title: "CaseIQ Sign-in & MCP Configuration",
+        zh: "CaseIQ 网页会话在 Conversation 顶部提供默认折叠的 SupportIQ sign-in 与 MCP tool approvals 横幅；需要认证时在输入框上方保留高亮引导，可启动本地认证窗口或输入确切的 `/mcp auth SupportIQ`（作为本地认证动作处理，不发给模型、不创建普通 Run）。左侧 MCP configuration 选项卡按当前 Work 内的具体 CaseIQ Session 管理工具自动批准或手动审批，下一次明确启动的 Run/Follow Up 生效，不热提升当前运行中的任务；旧 `/mcp` 书签校验归属后跳转到对应 Work 面板，无上下文时回到 Work 列表。若存在旧版 Terminal CaseIQ 记录，单独显示 CaseIQ Terminal (legacy) 兼容面板。",
+        en: "CaseIQ web conversations show collapsed SupportIQ sign-in and MCP tool approvals banners at the top, plus a highlighted prompt above Follow Up when sign-in is needed; exact `/mcp auth SupportIQ` runs as a local authentication action rather than a model Prompt or Run. The MCP configuration side tab manages automatic or manual MCP approvals per CaseIQ Session in this Work for the next started Run/Follow Up without hot-promoting an active Run; legacy `/mcp` bookmarks redirect to the verified Work panel or `/work`. Works with earlier Terminal CaseIQ Runs retain a separate CaseIQ Terminal (legacy) tab.",
+        href: "/docs/caseiq",
+        label: "Read CaseIQ guide",
       },
       {
         title: "Run Startup States",
@@ -506,8 +553,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Portable Directory Layout",
-        zh: "`.workboard/` 保存 manifest、Run 输出、variants 与 `attachments/<work-id>/<message-id>/`。附件留在所属 Work，Work/实验复制和托管 Git 快照排除它；不自动删除，备份时应保留。",
-        en: "`.workboard/` stores manifests, Run outputs, variants and `attachments/<work-id>/<message-id>/`. Attachments stay in the owning Work and are excluded from Work/experiment copies and managed Git snapshots; retain them in backups because there is no automatic deletion.",
+        zh: "`.workboard/` 保存 manifest、Run 输出、variants 与 `attachments/<work-id>/<message-id>/`；配对双会话在共享 Work 目录下使用 `work-results-<CLI-session-id>/copilot-cli` 与 `caseiq` 隔离两侧生成物与产物。附件留在所属 Work，Work/实验复制和托管 Git 快照排除它；不自动删除，备份时应保留。",
+        en: "`.workboard/` stores manifests, Run outputs, variants and `attachments/<work-id>/<message-id>/`; paired sessions isolate lane outputs and Run artifacts under `work-results-<CLI-session-id>/copilot-cli` and `caseiq` inside the shared Work folder. Attachments stay in the owning Work and are excluded from Work/experiment copies and managed Git snapshots; retain them in backups because there is no automatic deletion.",
       },
     ],
   },
@@ -558,8 +605,8 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Recovery & Cancellation",
-        zh: "应用重启会恢复 PENDING Run、收口中断 Run，并补同步活动和 UNKNOWN Terminal 历史；运行中的 Terminal 可持续同步，不因超过 24 小时被判为 UNKNOWN。应用内 Cancel 只用于托管 Run；外部 Terminal 必须在 Terminal 中停止，随后自动同步。",
-        en: "Restart recovery requeues pending Runs, finalizes interrupted Runs, and catches up active and UNKNOWN Terminal histories. Active sessions keep syncing without a 24-hour callback expiry. In-app Cancel is for managed Runs only; stop external sessions in Terminal and their history synchronizes automatically.",
+        zh: "应用重启会恢复 PENDING Run、收口中断 Run，并补同步活动和 UNKNOWN Terminal 历史；运行中的 Terminal 可持续同步，不因超过 24 小时被判为 UNKNOWN。应用内 Cancel 只用于托管 Run；外部 Terminal 必须在 Terminal 中停止，随后自动同步。CaseIQ 网页 Run 在受理取消前持久化停止决定，先请求桥接协作退出并在 5 秒后尝试终止包装进程树，最多等待 22 秒核对包装进程身份与退出回执（收口中返回 202，未确认返回 409 并继续保留 Session 队列占用）；超时走同一路径并结算为 TIMED_OUT。已完成但未写库的 CaseIQ Run 按私有回执在同一数据库事务中补写 Run、实验与 Work 状态且不清空 stdout/stderr 日志；辅助 diff 或 transcript 采集异常记入 `run.json` 的 `artifactWarnings`，缺失结束快照的 Follow Up 在启动前重新采集基线。",
+        en: "Restart recovery requeues pending Runs, finalizes interrupted Runs, and catches up active and UNKNOWN Terminal histories. Active sessions keep syncing without a 24-hour callback expiry. In-app Cancel is for managed Runs only; stop external sessions in Terminal and their history synchronizes automatically. CaseIQ web Runs persist stop decisions before acceptance, request cooperative bridge exit before terminating the wrapper tree after 5s, and wait up to 22s to verify wrapper identity and exit receipts (returning 202 while settling or 409 while retaining the Session reservation if unconfirmed); timeouts settle as TIMED_OUT through the same path. Completed CaseIQ Runs interrupted before DB settlement recover atomically across Run, Experiment and Work from verified receipts without clearing stdout/stderr logs; auxiliary diff/transcript issues record `artifactWarnings` in `run.json`, and Follow Up refreshes missing end-state snapshots before starting.",
       },
     ],
   },
@@ -657,6 +704,13 @@ export const docsSections: DocsSection[] = [
         label: "Execution defaults",
       },
       {
+        title: "CaseIQ MCP Defaults",
+        zh: "在 Settings → CaseIQ MCP defaults 配置本执行主机新建 CaseIQ Work/session 的初始默认审批策略：默认对已发现 MCP 开启自动批准，也可按已发现服务分别设为继承默认、Automatic 或 Manual approval。仅新建会话首次初始化时复制当时的默认快照，修改默认值不会改写已有 Work/session 配置；自动批准涵盖所选服务后续或可写工具，但不自动登录、不绕过组织策略、不移除原启动器预批准，也不会重放 Prompt。",
+        en: "In Settings → CaseIQ MCP defaults, configure initial approval defaults for new CaseIQ Work/sessions on this execution host: automatic approval starts enabled for discovered MCPs, with per-server Inherit, Automatic or Manual approval choices. New sessions copy the snapshot once at initialization without rewriting existing saved configurations; automatic approval covers future and write-capable tools on selected servers without signing in, bypassing organization policy, removing launcher pre-approvals or replaying Prompts.",
+        href: "/settings#mcp-defaults",
+        label: "CaseIQ MCP defaults",
+      },
+      {
         title: "System Notifications",
         zh: "成功、失败、超时通知默认开启，可关闭或发送测试。Windows 首次发送登记当前用户的 Work Board 通知身份，不涉及开机自启；外框和主题由系统控制。点击测试通知打开此设置页；链接使用 AUTH_URL（默认 localhost:3100）。已提交不等于横幅已显示，系统勿扰/通知权限仍有效；原生错误明确提示，macOS/Linux 保留现有能力。",
         en: "Success, failure and timeout notifications default on; disable them or submit a test. Windows prepares a current-user Work Board identity, not login startup; native frames/themes remain OS-controlled. Selecting the test opens Settings; links use AUTH_URL (localhost:3100 by default). Submitted does not mean a banner was shown: OS policy still applies and native errors stay explicit. macOS/Linux retain existing capabilities.",
@@ -717,18 +771,18 @@ export const docsSections: DocsSection[] = [
       },
       {
         title: "Startup Recovery",
-        zh: "启动时依次恢复 Run、回收 Terminal launch、分发通知 backlog，再启动 scheduler。被服务重启打断的托管 Run 标记 FAILED；PENDING 消息保留文本、附件、会话和父链，按依赖/FIFO 顺序恢复，同 Session 串行执行。归档 Work 的待执行消息会取消，不重新执行。",
-        en: "Startup recovers Runs, reaps Terminal launches, dispatches notifications, then starts the scheduler. Managed Runs interrupted by restart become FAILED. PENDING messages retain text, attachments, session and parent chain, recovering in dependency/FIFO order with one Run per Session. Waiting messages for archived Works are cancelled rather than executed.",
+        zh: "启动时依次恢复 Run、回收 Terminal launch、分发通知 backlog，再启动 scheduler。普通托管 Run 被服务重启打断时标记 FAILED；CaseIQ 网页 Run 先保留受影响 Session 的队列占用并在后台按最多两个并发 Session 核对退出回执与落盘结果，不阻塞服务启动或其他无关队列。PENDING 消息保留文本、附件、会话和父链，按依赖/FIFO 顺序恢复，同 Session 串行执行。归档 Work 的待执行消息会取消，不重新执行。",
+        en: "Startup recovers Runs, reaps Terminal launches, dispatches notifications, then starts the scheduler. Ordinary managed Runs interrupted by restart become FAILED, while interrupted CaseIQ web Runs reserve their affected Sessions and verify exit/completion receipts in the background (up to two concurrent Sessions) without blocking startup or unrelated queues. PENDING messages retain text, attachments, session and parent chain, recovering in dependency/FIFO order with one Run per Session. Waiting messages for archived Works are cancelled rather than executed.",
       },
       {
         title: "Data & Backup",
-        zh: "备份应包括 DATABASE_URL 对应的 SQLite（含排队 Run 与 Pin 定位信息）、应用 data/ 与后台日志，各 Work 的 Prompt、资源和 `.workboard`（含附件），以及 COPILOT_HOME（默认 ~/.copilot）下的会话历史。Pin 的预览和校验信息不能重建原始正文；源历史改写或替换后可能需要重新 Pin。不能只备份数据库或输出日志来代替原始附件与 session 历史。",
-        en: "Back up SQLite at DATABASE_URL, including queued Runs and Pin anchors, app data/logs, each Work's prompts/resources and `.workboard` attachments, and original history under COPILOT_HOME (default ~/.copilot). Pin previews/checksums cannot reconstruct conversation text; changed or replaced history can require repinning. Database or output-log backups alone do not replace original attachments and session history.",
+        zh: "备份应包括 DATABASE_URL 对应的 SQLite（含排队 Run、配对会话与 Pin 定位信息）、应用 data/（含私有 CaseIQ 运行与会话绑定状态）与后台日志，各 Work 的 Prompt、资源、`work-results-*` 和 `.workboard`（含附件），以及 COPILOT_HOME（默认 ~/.copilot）下的会话历史。Pin 的预览和校验信息不能重建原始正文；源历史改写或替换后可能需要重新 Pin。不能只备份数据库或输出日志来代替原始附件与 session 历史。",
+        en: "Back up SQLite at DATABASE_URL, including queued Runs and Pin anchors, app data/logs (including private CaseIQ runtime and session-binding state), each Work's prompts/resources, `work-results-*` outputs and `.workboard` attachments, and original history under COPILOT_HOME (default ~/.copilot). Pin previews/checksums cannot reconstruct conversation text; changed or replaced history can require repinning. Database or output-log backups alone do not replace original attachments and session history.",
       },
       {
         title: "Source Updates & Migrations",
-        zh: "Latest source 不表示运行中的后台版本已更新。完整 npm run background:restart 会停旧服务、生成 Prisma Client、应用 migration、构建并启动；有活跃 Run 时应先等待结束，避免打断执行。Pin 新增 WorkConversationPin 表，旧的 Run/Steering 附件元数据迁移仍需保留；不重置数据库，旧记录无需补附件或 Pin。登录自启和 --skip-build 不代做迁移或构建。",
-        en: "Latest source does not mean a background instance is current. A full npm run background:restart stops the old server, generates Prisma Client, applies migrations, builds and starts; wait for active Runs first to avoid interrupting them. Pins add WorkConversationPin; older Run/Steering attachment migrations still apply. The database is not reset and older records need no attachment/Pin backfill. Login startup and --skip-build do not migrate or build.",
+        zh: "Latest source 不表示运行中的后台版本已更新。完整 npm run background:restart 会停旧服务、生成 Prisma Client、应用 migration、构建并启动；有活跃 Run 时应先等待结束，避免打断执行。CaseIQ 与配对会话新增 WorkSessionPair 表及 Run.providerId 列，Pin 新增 WorkConversationPin 表，旧的 Run/Steering 附件元数据迁移仍需保留；不重置数据库，旧记录无需补附件、配对或 Pin。登录自启和 --skip-build 不代做迁移或构建。",
+        en: "Latest source does not mean a background instance is current. A full npm run background:restart stops the old server, generates Prisma Client, applies migrations, builds and starts; wait for active Runs first to avoid interrupting them. CaseIQ and paired sessions add WorkSessionPair and Run.providerId, Pins add WorkConversationPin, and older Run/Steering attachment migrations still apply. The database is not reset and older records need no attachment/Pin backfill. Login startup and --skip-build do not migrate or build.",
         code: "npm run background:restart\nnpm run background:status",
       },
       {

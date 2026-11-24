@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import SessionUsagePanel from "./SessionUsagePanel";
@@ -52,5 +53,14 @@ describe("Session usage panel", () => {
     const partial = renderToStaticMarkup(<SessionUsagePanel usage={{ ...usage, partial: true }} expanded />);
     expect(partial).toContain("Some session records could not be counted.");
     expect(partial).toContain("case-triage");
+  });
+
+  it("lets the desktop sidebar shelf auto-size to full content until constrained by the section tabs above", () => {
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+    const desktopBlock = css.slice(css.indexOf("@media (min-width: 1024px)"));
+    expect(desktopBlock).toContain("flex-shrink: 0;");
+    expect(desktopBlock).toContain(".work-conversation-sidebar .work-session-usage-content");
+    expect(desktopBlock).toContain("max-height: none;");
+    expect(desktopBlock).not.toContain("max-height: min(36dvh, 18rem);");
   });
 });

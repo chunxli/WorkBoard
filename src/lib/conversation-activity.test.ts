@@ -221,23 +221,48 @@ describe("completed activity summaries", () => {
       .toEqual([["Completed", 1], ["Completed", 1]]);
   });
 
-  it("leaves failures and running or unconfirmed tools visible instead of absorbing them", () => {
+  it("folds consecutive settled turns including failed calls while keeping active live tools separate", () => {
     const timeline = conversationTimeline([
-      event("tool.execution_complete", 0, { success: true }),
+      event("tool.execution_complete", 0, { toolCallId: "t1", success: true }),
       event("assistant.turn_end", 1),
       event("assistant.turn_start", 2),
-      event("tool.execution_complete", 3, { success: false }),
-      event("assistant.turn_end", 4),
-      event("assistant.turn_start", 5),
-      event("tool.execution_complete", 6, { success: true }),
-      event("assistant.turn_end", 7),
-      event("assistant.turn_start", 8),
-      event("tool.execution_start", 9),
+      event("tool.execution_complete", 3, { toolCallId: "t2", success: false }),
+      event("tool.execution_complete", 4, { toolCallId: "t3", success: false }),
+      event("assistant.turn_end", 5),
+      event("assistant.turn_start", 6),
+      event("tool.execution_complete", 7, { toolCallId: "t4", success: true }),
+      event("assistant.turn_end", 8),
+      event("assistant.turn_start", 9),
+      event("tool.execution_complete", 10, { toolCallId: "t5", success: false }),
+      event("assistant.turn_end", 11),
+      event("assistant.turn_start", 12),
+      event("tool.execution_complete", 13, { toolCallId: "t6", success: true }),
+      event("assistant.turn_end", 14),
+      event("assistant.turn_start", 15),
+      event("tool.execution_start", 16, { toolCallId: "t7", toolName: "rg" }),
     ]);
-    const statuses = (live: boolean) => conversationTimelineRows(timeline, live)
-      .filter((item) => item.kind === "activity").map(({ status }) => status);
-    expect(statuses(true)).toEqual(["Completed", "Failed", "Completed", "Running"]);
-    expect(statuses(false)).toEqual(["Completed", "Failed", "Completed", "Recorded"]);
+    const liveGroups = conversationTimelineRows(timeline, true).filter((item) => item.kind === "activity");
+    expect(liveGroups.map(({ status, toolCount, failures }) => ({ status, toolCount, failures }))).toEqual([
+      { status: "Failed", toolCount: 6, failures: 3 },
+      { status: "Running", toolCount: 1, failures: 0 },
+    ]);
+
+    const settledGroups = conversationTimelineRows(timeline, false).filter((item) => item.kind === "activity");
+    expect(settledGroups.map(({ status, toolCount, failures }) => ({ status, toolCount, failures }))).toEqual([
+      { status: "Failed", toolCount: 7, failures: 3 },
+    ]);
+  });
+
+  it("reports Recorded when a folded settled group has an unconfirmed tool and no failures", () => {
+    const timeline = conversationTimeline([
+      event("tool.execution_complete", 0, { toolCallId: "done", success: true }),
+      event("assistant.turn_end", 1),
+      event("assistant.turn_start", 2),
+      event("tool.execution_start", 3, { toolCallId: "open", toolName: "view" }),
+    ]);
+    const groups = conversationTimelineRows(timeline, false).filter((item) => item.kind === "activity");
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ status: "Recorded", toolCount: 2, failures: 0 });
   });
 
   it("does not collapse metadata-only turns when there are no tool calls", () => {

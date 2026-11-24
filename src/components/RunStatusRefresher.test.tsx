@@ -43,9 +43,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function mount(snapshot = initial) {
+function mount(snapshot = initial, workId?: string) {
   harness.stateIndex = 0;
-  RunStatusRefresher({ initialState: snapshot });
+  RunStatusRefresher({ initialState: snapshot, workId });
   cleanup = harness.effect?.();
 }
 
@@ -78,19 +78,25 @@ describe("Run status observation independent of history and output tabs", () => 
   });
 
   it("refreshes for activity-only changes and keeps polling SYNCING without a refresh loop", async () => {
+    const finishedEvents: Array<{ runId: string; workId?: string }> = [];
+    windowTarget.addEventListener("workboard:run-finished", (event) => {
+      finishedEvents.push((event as CustomEvent<{ runId: string; workId?: string }>).detail);
+    });
     const stopped = { ...initial, displayStatus: "SYNCING", terminalActive: false };
     fetchStatus.mockImplementation(() => respond(stopped));
-    mount();
+    mount(initial, "work-1");
     await flush();
     await vi.advanceTimersByTimeAsync(12_000);
     expect(harness.refresh).toHaveBeenCalledOnce();
+    expect(finishedEvents).toEqual([]);
     expect(fetchStatus).toHaveBeenCalledTimes(4);
     if (typeof cleanup === "function") cleanup();
-    mount(stopped);
+    mount(stopped, "work-1");
     fetchStatus.mockImplementation(() => respond({ ...stopped, status: "SUCCESS", displayStatus: "SUCCESS", terminalActive: null }));
     await flush();
     await vi.advanceTimersByTimeAsync(4000);
     expect(harness.refresh).toHaveBeenCalledTimes(2);
+    expect(finishedEvents).toEqual([{ runId: "status-run", workId: "work-1" }]);
   });
 
   it("retries failures explicitly without fetching any conversation or log data", async () => {

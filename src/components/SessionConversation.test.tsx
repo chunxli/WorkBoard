@@ -676,5 +676,25 @@ describe("session conversation messages", () => {
     expect(markup.indexOf('title="view"')).toBeGreaterThan(markup.indexOf("2 tools"));
     expect(markup.indexOf('title="rg"')).toBeGreaterThan(markup.indexOf('title="view"'));
   });
+
+  it("folds consecutive completed and failed tool turns into one closed summary with total failure count", () => {
+    const events = [
+      { type: "tool.execution_complete", data: { toolCallId: "t1", toolName: "view", success: true } },
+      { type: "assistant.turn_end" },
+      { type: "assistant.turn_start" },
+      { type: "tool.execution_complete", data: { toolCallId: "t2", toolName: "kusto", success: false } },
+      { type: "assistant.turn_end" },
+      { type: "assistant.turn_start" },
+      { type: "tool.execution_complete", data: { toolCallId: "t3", toolName: "rg", success: true } },
+      { type: "assistant.turn_end" },
+    ].map((entry, offset) => normalizeConversationEvent(entry, "source", offset)!);
+    const markup = renderToStaticMarkup(<ConversationTimelineEntries
+      timeline={conversationTimeline(events)} workId="work" isLive={false} />);
+    expect(markup.match(/class="work-activity-group\b/g)).toHaveLength(1);
+    expect(markup).not.toMatch(/<details class="work-activity-group[^>]*\sopen(?:=|\s|>)/);
+    const summary = markup.slice(markup.indexOf("<summary"), markup.indexOf("</summary>"));
+    expect(summary).toContain("text-red-400");
+    expect(summary).toContain("3 tools · 8 events · Failed · 1 failed");
+  });
 });
 import Link from "next/link";

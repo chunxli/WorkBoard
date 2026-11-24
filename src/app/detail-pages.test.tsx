@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Experiment, ExperimentVariant, Repo, Run, Task, Work } from "@/generated/prisma/client";
@@ -366,15 +367,30 @@ describe("compact Work details", () => {
     },
   );
 
-  it("keeps Follow Up in the primary row and puts labeled secondary shortcuts in a closed disclosure", async () => {
+  it("keeps Follow Up and icon-only secondary shortcuts inline in the primary toolbar row", async () => {
     const markup = header(await renderWork());
-    const more = disclosure(markup, "More Work actions");
-    expect(more).toMatch(/<button[^>]*title="Copy path"[^>]*aria-label="Copy path"/);
-    for (const label of ["Copy path", "Open in Explorer", "Open in VS Code", "Resume in Terminal", "Archive Work"]) {
-      expect(more).toContain(`>${label}</span>`);
+    expect(markup).not.toContain("More Work actions");
+    expect(markup).toMatch(/<button[^>]*title="Copy path"[^>]*aria-label="Copy path"/);
+    expect(markup).toContain('<span class="sr-only" aria-live="polite">Copy path</span>');
+    for (const label of [
+      "Open Conversation layout in Windows Explorer",
+      "Open Conversation layout in VS Code",
+      "Resume Conversation layout in Windows Terminal",
+      "Archive Conversation layout",
+    ]) {
+      expect(markup).toContain(`aria-label="${label}"`);
+      expect(markup.indexOf("Follow Up")).toBeLessThan(markup.indexOf(`aria-label="${label}"`));
     }
-    expect(more).not.toContain("Follow Up");
-    expect(markup.indexOf("Follow Up")).toBeLessThan(markup.indexOf("More Work actions"));
+  });
+
+  it("tints the unified Work toolbar to match dark and light themes instead of stark white", () => {
+    const css = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
+    const lightRoot = css.match(/:root\[data-theme="light"\]\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    const toolbarRule = css.match(/(?:^|\n)\.work-detail-unified-toolbar\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(lightRoot).toContain("--toolbar-background:");
+    expect(lightRoot).not.toMatch(/--toolbar-background:\s*(?:#fff\b|#ffffff\b|rgb\(\s*255\s*,\s*255\s*,\s*255)/i);
+    expect(toolbarRule).toContain("background: var(--toolbar-background);");
+    expect(toolbarRule).not.toContain("background: var(--surface);");
   });
 
   it("uses Work-local lightweight actions and removes only the header separator", async () => {

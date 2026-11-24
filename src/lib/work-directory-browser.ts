@@ -4,6 +4,9 @@ import { isPrivateRuntimePath } from "@/lib/native-runtime-paths";
 
 const PAGE_SIZE = 200;
 const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
+const MAX_DIFF_SCAN_BYTES = 8 * 1024 * 1024;
+const MAX_CREATED_RUN_FILES = 500;
+const HIDDEN_NEW_FILE_SEGMENTS = new Set([".git", ".workboard"]);
 
 export class WorkDirectoryError extends Error {
   constructor(message: string, readonly status: number) {
@@ -118,4 +121,172 @@ export async function previewWorkFile(directoryPath: string, relativePath: strin
   } finally {
     await file.close();
   }
+}
+
+function unquoteGitPath(raw: string): string {
+  const trimmed = raw.replace(/\t.*$/, "").trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || trimmed.length < 2) return trimmed;
+  const inner = trimmed.slice(1, -1);
+  const bytes: number[] = [];
+  for (let index = 0; index < inner.length; index++) {
+    const ch = inner[index];
+    if (ch !== "\\") {
+      bytes.push(...Buffer.from(ch, "utf8"));
+      continue;
+    }
+    const next = inner[++index];
+    if (next === undefined) break;
+    if (next >= "0" && next <= "7") {
+      let octal = next;
+      while (octal.length < 3 && index + 1 < inner.length && inner[index + 1] >= "0" && inner[index + 1] <= "7") {
+        octal += inner[++index];
+      }
+      bytes.push(Number.parseInt(octal, 8) & 0xff);
+    } else {
+      const escaped: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, "\\": 92, '"': 34 };
+      bytes.push(escaped[next] ?? next.charCodeAt(0));
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+function extractGitHeaderDestination(line: string): string | null {
+  const body = line.slice("diff --git ".length).trim();
+  if (body.startsWith('"')) {
+    const match = body.match(/^"(?:\\.|[^"\\])*"\s+("(?:\\.|[^"\\])*")$/);
+    if (!match) return null;
+    const target = unquoteGitPath(match[1]);
+    return target.startsWith("b/") ? target.slice(2) : null;
+  }
+  const bIndex = body.indexOf(" b/");
+  if (bIndex <= 0) return null;
+  const left = body.slice(0, bIndex);
+  const right = body.slice(bIndex + 3);
+  if (left === `a/${right}`) return right;
+  const fallback = body.lastIndexOf(" b/");
+  return fallback > 0 ? body.slice(fallback + 3) : null;
+}
+
+function normalizeCreatedRelativePath(candidate: string): string | null {
+  if (!candidate) return null;
+  try {
+    const segments = safeSegments(candidate);
+    if (!segments.length || segments.some((segment) => HIDDEN_NEW_FILE_SEGMENTS.has(segment.toLowerCase()))) {
+      return null;
+    }
+    return segments.join("/");
+  } catch {
+    return null;
+  }
+}
+
+export function extractCreatedPathsFromDiff(diffText: string): string[] {
+  if (!diffText) return [];
+  const created = new Set<string>();
+  const lines = diffText.split(/\r?\n/);
+  let gitCandidate: string | null = null;
+  let sawDevNullMinus = false;
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      gitCandidate = extractGitHeaderDestination(line);
+      sawDevNullMinus = false;
+      continue;
+    }
+    if (line.startsWith("diff --workboard /dev/null ")) {
+      gitCandidate = null;
+      sawDevNullMinus = false;
+      const target = unquoteGitPath(line.slice("diff --workboard /dev/null ".length));
+      const normalized = target.startsWith("b/") ? normalizeCreatedRelativePath(target.slice(2)) : null;
+      if (normalized) created.add(normalized);
+      continue;
+    }
+    if (gitCandidate !== null && line.startsWith("new file mode ")) {
+      const normalized = normalizeCreatedRelativePath(gitCandidate);
+      if (normalized) created.add(normalized);
+      gitCandidate = null;
+      continue;
+    }
+    if (line === "--- /dev/null" || line.startsWith("--- /dev/null\t")) {
+      sawDevNullMinus = true;
+      continue;
+    }
+    if (sawDevNullMinus && line.startsWith("+++ ")) {
+      sawDevNullMinus = false;
+      const target = unquoteGitPath(line.slice(4));
+      const normalized = target.startsWith("b/") ? normalizeCreatedRelativePath(target.slice(2)) : null;
+      if (normalized) created.add(normalized);
+      continue;
+    }
+    if (!line.startsWith("index ") && !line.startsWith("similarity ") && !line.startsWith("old mode ")) {
+      sawDevNullMinus = false;
+    }
+  }
+
+  return [...created].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+function relativeInsideWorkRoot(workRoot: string, targetPath: string): string | null {
+  const relative = path.relative(workRoot, targetPath);
+  if (relative === "") return "";
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep).join("/");
+}
+
+async function readBoundedTextFile(filePath: string, maxBytes: number): Promise<string | null> {
+  const file = await open(filePath, "r").catch(() => null);
+  if (!file) return null;
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size <= 0) return "";
+    const limit = Math.min(info.size, maxBytes);
+    const buffer = Buffer.alloc(limit);
+    let read = 0;
+    while (read < limit) {
+      const { bytesRead } = await file.read(buffer, read, limit - read, read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    return buffer.subarray(0, read).toString("utf8");
+  } finally {
+    await file.close();
+  }
+}
+
+export async function listCreatedRunFiles(
+  workDirectoryPath: string,
+  run: { id: string; executionPath: string | null; outputDir: string | null },
+): Promise<string[]> {
+  const workRoot = await realpath(workDirectoryPath);
+  const executionCandidate = run.executionPath ? await realpath(run.executionPath).catch(() => null) : workRoot;
+  if (!executionCandidate) return [];
+  const executionPrefix = relativeInsideWorkRoot(workRoot, executionCandidate);
+  if (executionPrefix === null) return [];
+  if (executionPrefix !== "") {
+    const verifiedExecution = await resolveEntry(workDirectoryPath, executionPrefix).catch(() => null);
+    if (!verifiedExecution?.info.isDirectory()) return [];
+  }
+
+  const outputDirectory = run.outputDir
+    ? await realpath(run.outputDir).catch(() => null)
+    : path.join(executionCandidate, ".workboard", "outputs", run.id);
+  if (!outputDirectory) return [];
+  const relativeOutputDir = relativeInsideWorkRoot(workRoot, outputDirectory);
+  if (!relativeOutputDir) return [];
+  const verifiedDiff = await resolveEntry(workDirectoryPath, `${relativeOutputDir}/diff.patch`).catch(() => null);
+  if (!verifiedDiff?.info.isFile()) return [];
+
+  const diffContent = await readBoundedTextFile(verifiedDiff.resolved, MAX_DIFF_SCAN_BYTES);
+  if (!diffContent) return [];
+
+  const rawPaths = extractCreatedPathsFromDiff(diffContent).slice(0, MAX_CREATED_RUN_FILES);
+  const verified: string[] = [];
+  for (const relativeFile of rawPaths) {
+    const workRelative = executionPrefix ? `${executionPrefix}/${relativeFile}` : relativeFile;
+    const normalized = normalizeCreatedRelativePath(workRelative);
+    if (!normalized) continue;
+    const entry = await resolveEntry(workDirectoryPath, normalized).catch(() => null);
+    if (entry?.info.isFile()) verified.push(normalized);
+  }
+  return verified;
 }

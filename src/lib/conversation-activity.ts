@@ -143,21 +143,26 @@ function summarizeActivity(activity: ConversationActivity, live: boolean): Conve
 export function conversationTimelineRows(timeline: readonly ConversationTimelineItem[], isLive: boolean) {
   const latestActivity = isLive ? timeline.findLast((item) => item.kind === "activity") : undefined;
   const rows: (ConversationMessageItem | ConversationActivitySummary)[] = [];
-  let completed: ConversationActivitySummary[] = [];
+  let settled: ConversationActivitySummary[] = [];
   const flush = () => {
-    if (completed.length > 1 && completed.some((item) => item.toolCount > 0)) {
+    if (settled.length > 1 && settled.some((item) => item.toolCount > 0)) {
+      const failures = settled.reduce((count, item) => count + item.failures, 0);
+      const hasUnconfirmedTool = settled.some((item) => item.status === "Recorded" && item.toolCount > 0);
+      const hasCompleted = settled.some((item) => item.status === "Completed");
       rows.push({
-        ...completed[0],
+        ...settled[0],
         // Correlation is scoped to the original activity; IDs can be reused in later turns.
-        records: completed.flatMap((item) => item.records),
-        toolCount: completed.reduce((count, item) => count + item.toolCount, 0),
-        eventCount: completed.reduce((count, item) => count + item.eventCount, 0),
-        timestamp: completed[completed.length - 1].timestamp,
+        records: settled.flatMap((item) => item.records),
+        toolCount: settled.reduce((count, item) => count + item.toolCount, 0),
+        eventCount: settled.reduce((count, item) => count + item.eventCount, 0),
+        failures,
+        status: failures > 0 ? "Failed" : !hasUnconfirmedTool && hasCompleted ? "Completed" : "Recorded",
+        timestamp: settled.findLast((item) => item.timestamp !== null)?.timestamp ?? settled[settled.length - 1].timestamp,
       });
     } else {
-      completed.forEach((item) => rows.push(item));
+      settled.forEach((item) => rows.push(item));
     }
-    completed = [];
+    settled = [];
   };
   for (const item of timeline) {
     if (item.kind === "message") {
@@ -167,7 +172,7 @@ export function conversationTimelineRows(timeline: readonly ConversationTimeline
     }
     if (item.startsUserTurn || startsRootSession(item.events[0])) flush();
     const summary = summarizeActivity(item, item === latestActivity);
-    if (summary.status === "Completed") completed.push(summary);
+    if (summary.status !== "Running") settled.push(summary);
     else {
       flush();
       rows.push(summary);

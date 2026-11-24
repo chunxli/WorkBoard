@@ -28,6 +28,13 @@ describe("in-app documentation content", () => {
     expect(releaseNotes.filter((release) => release.status === "latest")).toHaveLength(1);
     const latestTitles = releaseNotes[0]?.notes.map((note) => note.title) ?? [];
     expect(latestTitles).toEqual(expect.arrayContaining([
+      "Streamlined Work Details & Activity",
+      "CaseIQ Cancellation & Recovery",
+      "Paired CLI & CaseIQ Sessions",
+      "CaseIQ Auth & MCP Approvals",
+      "Session MCP & Skill Usage",
+      "Pending Run Preparation",
+      "CaseIQ Web Runtime",
       "Quick Work Renaming",
       "First Run in Terminal",
       "Background System Notifications",
@@ -51,6 +58,35 @@ describe("in-app documentation content", () => {
       "Conversation Code Copy",
       "Scroll-to-load Earlier History",
     ]));
+  });
+
+  it("documents paired sessions, CaseIQ MCP defaults/approvals, recovery hardening and streamlined Work details", () => {
+    const features = docsSections.flatMap((section) => section.features);
+    const paired = features.find((feature) => feature.title === "Paired Work Sessions");
+    for (const label of ["Create & Run Both", "Send to both Sessions", "work-results-", "Shared / Copilot CLI / CaseIQ"]) {
+      expect(paired?.en).toContain(label);
+    }
+    const caseIqMcp = features.find((feature) => feature.title === "CaseIQ Sign-in & MCP Configuration");
+    expect(caseIqMcp?.href).toBe("/docs/caseiq");
+    for (const label of ["/mcp auth SupportIQ", "MCP configuration", "/mcp", "CaseIQ Terminal (legacy)"]) {
+      expect(caseIqMcp?.en).toContain(label);
+    }
+    const mcpDefaults = features.find((feature) => feature.title === "CaseIQ MCP Defaults");
+    expect(mcpDefaults?.href).toBe("/settings#mcp-defaults");
+    for (const label of ["automatic approval", "existing saved configurations", "organization policy"]) {
+      expect(mcpDefaults?.en).toContain(label);
+    }
+    const recovery = features.find((feature) => feature.title === "Recovery & Cancellation");
+    for (const label of ["22s", "202", "409", "artifactWarnings", "TIMED_OUT", "end-state snapshots"]) {
+      expect(recovery?.en).toContain(label);
+    }
+    const compactDetails = features.find((feature) => feature.title === "Compact Work Details");
+    const conversation = features.find((feature) => feature.title === "Session Conversation");
+    const usage = features.find((feature) => feature.title === "Session MCP & Skill Usage");
+    expect(compactDetails?.en).toContain("Copy path");
+    expect(compactDetails?.en).toContain("Work details");
+    expect(conversation?.en).toContain("Consecutive finished tool calls");
+    expect(usage?.en).toContain("red parentheses");
   });
 
   it("documents queued delivery separately from immediate SDK Steering", () => {

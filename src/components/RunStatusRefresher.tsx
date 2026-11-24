@@ -5,13 +5,27 @@ import { useRouter } from "next/navigation";
 import { getRunStatusRevision, isRunStatusSnapshot, type RunStatusSnapshot } from "@/lib/work-run-status";
 import PendingRunFeedback from "@/components/PendingRunFeedback";
 
-export default function RunStatusRefresher({ initialState }: { initialState: RunStatusSnapshot }) {
+export function isRunSnapshotActive(snapshot: Pick<RunStatusSnapshot, "status" | "displayStatus">): boolean {
+  return snapshot.status === "PENDING" ||
+    snapshot.status === "RUNNING" ||
+    snapshot.displayStatus === "IN_TERMINAL" ||
+    snapshot.displayStatus === "SYNCING";
+}
+
+export default function RunStatusRefresher({
+  initialState,
+  workId,
+}: {
+  initialState: RunStatusSnapshot;
+  workId?: string;
+}) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [observation, setObservation] = useState<RunStatusSnapshot | null>(null);
   const retry = useRef<() => void>(() => {});
   const runId = initialState.id;
   const initialRevision = getRunStatusRevision(initialState);
+  const initialActive = isRunSnapshotActive(initialState);
   const polling = ["PENDING", "RUNNING", "UNKNOWN"].includes(initialState.status);
   const pending = initialState.displayStatus === "PENDING";
   const current = observation?.id === runId ? observation : initialState;
@@ -21,6 +35,7 @@ export default function RunStatusRefresher({ initialState }: { initialState: Run
     let stopped = false;
     let busy = false;
     let revision = initialRevision;
+    let wasActive = initialActive;
     async function load() {
       if (stopped || busy || document.hidden) return;
       busy = true;
@@ -39,6 +54,15 @@ export default function RunStatusRefresher({ initialState }: { initialState: Run
         if (!isRunStatusSnapshot(body) || body.id !== runId) throw new Error("Invalid Run status response");
         setError(null);
         if (pending) setObservation(body);
+        const nowActive = isRunSnapshotActive(body);
+        if (wasActive && !nowActive) {
+          wasActive = false;
+          window.dispatchEvent(new CustomEvent("workboard:run-finished", {
+            detail: { runId, ...(workId ? { workId } : {}) },
+          }));
+        } else {
+          wasActive = nowActive;
+        }
         const nextRevision = getRunStatusRevision(body);
         if (nextRevision !== revision) {
           revision = nextRevision;
@@ -65,7 +89,7 @@ export default function RunStatusRefresher({ initialState }: { initialState: Run
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [runId, initialRevision, pending, polling, router]);
+  }, [runId, workId, initialRevision, initialActive, pending, polling, router]);
 
   if (!error && pending && current.displayStatus === "PENDING") {
     return <PendingRunFeedback preparation={current.preparation} />;

@@ -1,8 +1,39 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { FollowUpComposerContext } from "./FollowUpComposerContext";
 import { WorkFileNavigationContext, type WorkFileLocation } from "./WorkFileNavigationContext";
-import WorkFileBrowser, { directoryPageSchema, WorkPathReferenceButton } from "./WorkFileBrowser";
+import WorkFileBrowser, {
+  activateNewFileHighlights,
+  Directory,
+  directoryPageSchema,
+  discoverNewDirectoryFiles,
+  finishNewFileFade,
+  hasHighlightedDescendant,
+  scopeHasHighlightedFiles,
+  startNewFileFade,
+  WorkPathReferenceButton,
+  type NewFileHighlightState,
+} from "./WorkFileBrowser";
+
+const routeMocks = vi.hoisted(() => ({
+  user: vi.fn(),
+  workFindFirst: vi.fn(),
+  runFindFirst: vi.fn(),
+  listCreatedRunFiles: vi.fn(),
+}));
+vi.mock("@/lib/session", () => ({ getSessionUserId: routeMocks.user }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    work: { findFirst: routeMocks.workFindFirst },
+    run: { findFirst: routeMocks.runFindFirst },
+  },
+}));
+vi.mock("@/lib/work-directory-browser", async (original) => ({
+  ...await original<typeof import("@/lib/work-directory-browser")>(),
+  listCreatedRunFiles: routeMocks.listCreatedRunFiles,
+}));
+import { GET as getWorkFilesRoute } from "@/app/api/works/[id]/files/route";
 
 describe("Work file locations", () => {
   const pairedOutputRoot = "work-results-a794edab-8889-4898-8ba5-32c22111253f";
@@ -86,5 +117,124 @@ describe("Work file path references", () => {
     expect(directoryPageSchema.safeParse({ entries: [{ ...file, absolutePath: null }], nextOffset: null }).success).toBe(false);
     expect(directoryPageSchema.safeParse({ entries: [{ ...file, kind: "unsupported", absolutePath: null }], nextOffset: null }).success).toBe(true);
     expect(directoryPageSchema.safeParse({ entries: [{ ...file, kind: "directory" }], nextOffset: null }).success).toBe(true);
+  });
+});
+
+describe("Run completion auto-refresh and newly generated file highlights", () => {
+  const pairedOutputRoot = "work-results-a794edab-8889-4898-8ba5-32c22111253f";
+
+  it("identifies newly created user files while ignoring pre-existing entries and .workboard/.git", () => {
+    const previous = new Set(["PROMPT.md", "existing.html"]);
+    const current = [
+      { path: ".workboard", kind: "directory" as const },
+      { path: ".workboard/outputs/run-1/result.md", kind: "file" as const },
+      { path: "PROMPT.md", kind: "file" as const },
+      { path: "existing.html", kind: "file" as const },
+      { path: "foundry-fireworks-rate-limit-followup.html", kind: "file" as const },
+    ];
+    expect(discoverNewDirectoryFiles(null, false, current)).toEqual([]);
+    expect(discoverNewDirectoryFiles(previous, false, current)).toEqual([]);
+    expect(discoverNewDirectoryFiles(previous, true, current)).toEqual([
+      "foundry-fireworks-rate-limit-followup.html",
+    ]);
+  });
+
+  it("marks collapsed parent folders and unselected paired location tabs that contain active new files", () => {
+    const highlights = new Map<string, NewFileHighlightState>([
+      ["output/report.html", "active"],
+      [`${pairedOutputRoot}/caseiq/analysis.html`, "active"],
+      [`${pairedOutputRoot}/copilot-cli/fading.html`, "fading"],
+    ]);
+    expect(hasHighlightedDescendant(highlights, "output")).toBe(true);
+    expect(hasHighlightedDescendant(highlights, "docs")).toBe(false);
+    expect(scopeHasHighlightedFiles(highlights, pairedOutputRoot, "shared")).toBe(true);
+    expect(scopeHasHighlightedFiles(highlights, pairedOutputRoot, "CASEIQ")).toBe(true);
+    expect(scopeHasHighlightedFiles(highlights, pairedOutputRoot, "CLI")).toBe(false);
+
+    const directoryMarkup = renderToStaticMarkup(
+      <Directory
+        workId="work"
+        directory=""
+        version={0}
+        highlights={highlights}
+        initialEntries={[
+          { name: "output", path: "output", absolutePath: "C:\\Work\\output", kind: "directory" },
+          { name: "new-summary.html", path: "output/report.html", absolutePath: "C:\\Work\\output\\report.html", kind: "file" },
+        ]}
+      />,
+    );
+    expect(directoryMarkup).toContain('data-has-new-files="true"');
+    expect(directoryMarkup).toContain('data-new-file="active"');
+    expect(directoryMarkup).toContain("work-file-new-badge");
+
+    const pairedMarkup = renderToStaticMarkup(
+      <WorkFileBrowser
+        workId="paired-work"
+        pairedOutputRoot={pairedOutputRoot}
+        initialHighlights={[`${pairedOutputRoot}/caseiq/analysis.html`]}
+      />,
+    );
+    expect(pairedMarkup).toContain("work-file-scope-dot");
+    expect(pairedMarkup).toContain("(new files)");
+  });
+
+  it("transitions highlighted files from active to fading on click and clears after fade completes", () => {
+    const entries = [
+      { name: "followup.html", path: "followup.html", absolutePath: "C:\\Work\\followup.html", kind: "file" as const },
+      { name: "PROMPT.md", path: "PROMPT.md", absolutePath: "C:\\Work\\PROMPT.md", kind: "file" as const },
+    ];
+    const activeMap = activateNewFileHighlights(new Map(), ["followup.html", ".workboard/outputs/r1/result.md"]);
+    expect([...activeMap.entries()]).toEqual([["followup.html", "active"]]);
+
+    const activeMarkup = renderToStaticMarkup(
+      <Directory workId="work" directory="" version={0} highlights={activeMap} initialEntries={entries} />,
+    );
+    expect(activeMarkup).toContain('title="Open followup.html in a new tab" data-new-file="active"');
+    expect(activeMarkup).not.toContain('title="Open PROMPT.md in a new tab" data-new-file=');
+
+    const fadingMap = startNewFileFade(activeMap, "followup.html");
+    expect(fadingMap.get("followup.html")).toBe("fading");
+    const fadingMarkup = renderToStaticMarkup(
+      <Directory workId="work" directory="" version={0} highlights={fadingMap} initialEntries={entries} />,
+    );
+    expect(fadingMarkup).toContain('title="Open followup.html in a new tab" data-new-file="fading"');
+    expect(fadingMarkup).toContain('aria-hidden="true">New</span>');
+
+    const clearedMap = finishNewFileFade(fadingMap, "followup.html");
+    expect(clearedMap.size).toBe(0);
+    const clearedMarkup = renderToStaticMarkup(
+      <Directory workId="work" directory="" version={0} highlights={clearedMap} initialEntries={entries} />,
+    );
+    expect(clearedMarkup).not.toContain("data-new-file=");
+    expect(clearedMarkup).not.toContain("work-file-new-badge");
+  });
+
+  it("exposes owned Run createdPaths from /api/works/[id]/files?createdInRun and blocks active or invalid requests", async () => {
+    routeMocks.user.mockResolvedValue("owner");
+    routeMocks.workFindFirst.mockResolvedValue({ directoryPath: "C:\\Work" });
+
+    const conflict = await getWorkFilesRoute(
+      new NextRequest("http://localhost:3100/api/works/w1/files?open=1&createdInRun=run-1"),
+      { params: Promise.resolve({ id: "w1" }) },
+    );
+    expect(conflict.status).toBe(400);
+
+    routeMocks.runFindFirst.mockResolvedValueOnce({ id: "run-1", status: "RUNNING", executionPath: "C:\\Work", outputDir: null });
+    const runningRes = await getWorkFilesRoute(
+      new NextRequest("http://localhost:3100/api/works/w1/files?createdInRun=run-1"),
+      { params: Promise.resolve({ id: "w1" }) },
+    );
+    expect(runningRes.status).toBe(200);
+    expect(await runningRes.json()).toEqual({ createdPaths: [] });
+    expect(routeMocks.listCreatedRunFiles).not.toHaveBeenCalled();
+
+    routeMocks.runFindFirst.mockResolvedValueOnce({ id: "run-1", status: "SUCCESS", executionPath: "C:\\Work", outputDir: "C:\\Work\\.workboard\\outputs\\run-1" });
+    routeMocks.listCreatedRunFiles.mockResolvedValueOnce(["output/checks.kql", "summary.html"]);
+    const doneRes = await getWorkFilesRoute(
+      new NextRequest("http://localhost:3100/api/works/w1/files?createdInRun=run-1"),
+      { params: Promise.resolve({ id: "w1" }) },
+    );
+    expect(doneRes.status).toBe(200);
+    expect(await doneRes.json()).toEqual({ createdPaths: ["output/checks.kql", "summary.html"] });
   });
 });
