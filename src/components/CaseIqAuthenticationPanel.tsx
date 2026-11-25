@@ -3,12 +3,21 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Copy, RefreshCw, Terminal } from "lucide-react";
+import { Copy, RefreshCw, Terminal, Trash2 } from "lucide-react";
 import { z } from "zod";
-import { CASEIQ_AUTHENTICATION_COMMAND, caseIqAuthenticationStatusSchema, type CaseIqAuthenticationStatus } from "@/lib/caseiq-options";
+import {
+  CASEIQ_AUTHENTICATION_COMMAND,
+  caseIqAuthenticationStatusSchema,
+  type CaseIqAuthenticationStatus,
+  type CaseIqCredentialManagerCleanup,
+} from "@/lib/caseiq-options";
 import { copyCodeText } from "@/components/CopyableCodeBlock";
 import CaseIqAccessBanner from "@/components/CaseIqAccessBanner";
 import CaseIqSignInProgress from "@/components/CaseIqSignInProgress";
+
+export function formatCredentialKilobytes(bytes: number): string {
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 
 export function useCaseIqAuthentication(workId: string, runId: string | null, enabled: boolean, automaticEnabled = false) {
   const router = useRouter();
@@ -21,8 +30,11 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
   const [trustWorkFolder, setTrustWorkFolder] = useState(true);
   const [commandCopied, setCommandCopied] = useState(false);
   const [clipboardError, setClipboardError] = useState<string | null>(null);
+  const [cleaningCredentials, setCleaningCredentials] = useState(false);
+  const [credentialNotice, setCredentialNotice] = useState<CaseIqCredentialManagerCleanup | null>(null);
   const openingRef = useRef(false);
   const checkingRef = useRef(false);
+  const cleaningRef = useRef(false);
   const requestVersion = useRef(0);
   const request = useRef<{ runId: string; requestId: string; trustWorkFolder: boolean; automatic?: boolean } | null>(null);
   const automaticAttempts = useRef(new Set<string>());
@@ -71,7 +83,7 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
     const controller = new AbortController();
     scope.current = `${workId}:${runId}`;
     requestVersion.current++;
-    checkingRef.current = false; openingRef.current = false;
+    checkingRef.current = false; openingRef.current = false; cleaningRef.current = false;
     request.current = null;
     automaticAttempts.current.clear();
     lastReserved.current = false;
@@ -80,6 +92,7 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
       setStatus(null); setError(null); setUncertain(false);
       setCheckedAt(null); setChecking(false); setOpening(false);
       setCommandCopied(false); setClipboardError(null);
+      setCleaningCredentials(false); setCredentialNotice(null);
       if (trustPreference.current?.workId !== workId) trustPreference.current = null;
       setTrustWorkFolder(trustPreference.current?.value ?? true);
       await refresh(controller.signal);
@@ -197,7 +210,7 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
     return () => { cancelled = true; };
   }, [status, automaticEnabled, enabled, runId, opening, uncertain, error, start, reportError]);
   async function refreshManually() {
-    if (checkingRef.current || openingRef.current) return;
+    if (checkingRef.current || openingRef.current || cleaningRef.current) return;
     const currentScope = `${workId}:${runId}`;
     checkingRef.current = true; setChecking(true);
     try {
@@ -207,10 +220,44 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
       if (scope.current === currentScope) { checkingRef.current = false; setChecking(false); }
     }
   }
+  async function cleanCredentials() {
+    if (!enabled || !runId || cleaningRef.current || openingRef.current) return;
+    const currentScope = `${workId}:${runId}`;
+    const version = ++requestVersion.current;
+    cleaningRef.current = true;
+    setCleaningCredentials(true);
+    setError(null);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId, action: "clean-credentials" }),
+      });
+      const body: unknown = await response.json();
+      if (!response.ok) {
+        const failure = z.object({ error: z.string() }).safeParse(body);
+        throw new Error(failure.success ? failure.data.error : "Stale MCP credentials could not be cleaned.");
+      }
+      const parsed = caseIqAuthenticationStatusSchema.safeParse(body);
+      if (!parsed.success) throw new Error("CaseIQ returned an invalid credential cleanup response.");
+      if (scope.current === currentScope && requestVersion.current === version) {
+        apply(parsed.data);
+        if (parsed.data.credentialCleanup) setCredentialNotice(parsed.data.credentialCleanup);
+      }
+    } catch (reason) {
+      if (scope.current === currentScope && requestVersion.current === version) reportError(reason);
+    } finally {
+      if (scope.current === currentScope && requestVersion.current === version) {
+        cleaningRef.current = false;
+        setCleaningCredentials(false);
+      }
+    }
+  }
   return {
     status, error, opening, uncertain, checking, checkedAt, trustWorkFolder,
     setTrustWorkFolder: (value: boolean) => { trustPreference.current = { workId, value }; setTrustWorkFolder(value); },
     commandCopied, clipboardError, copyCommand,
+    cleaningCredentials, credentialNotice, cleanCredentials,
     reserved: opening || uncertain || Boolean(status?.operation?.reserved), refresh, refreshManually, start, reportError,
   };
 }
@@ -223,9 +270,13 @@ export function CaseIqAuthenticationPanel({ authentication }: {
   const pendingAutomatic = Boolean(status?.automaticSignIn && !status.automaticSignIn.attempted);
   const failure = error ?? (status?.operation && ["failed", "unconfirmed"].includes(status.operation.status) &&
     !pendingAutomatic ? status.operation.message : null);
-  const summary = opening ? "Opening window" : authentication.checking || !status ? "Checking..."
+  const credManager = status?.credentialManager;
+  const quotaAlert = Boolean(credManager?.quotaExceeded);
+  const summary = opening ? "Opening window" : authentication.cleaningCredentials ? "Cleaning credentials..."
+    : authentication.checking || !status ? "Checking..."
     : status.operation?.reserved ? connected ? "OAuth checked · Close Terminal"
       : status.operation.phase === "native-started" ? "Waiting for TSE sign-in" : "Preparing Session"
+      : quotaAlert ? `Credential Manager full · ${credManager?.staleCopilotCount ?? 0} stale`
       : connected ? `OAuth checked · ${status.connection?.toolCount} tools`
         : status.connection?.status === "needs-auth"
           ? status.automaticSignIn && !status.automaticSignIn.attempted && !status.available
@@ -233,12 +284,38 @@ export function CaseIqAuthenticationPanel({ authentication }: {
           : "Not verified";
   const revealKey = opening || status?.operation?.reserved ? "signing-in"
       : status?.automaticSignIn && !status.automaticSignIn.attempted ? status.automaticSignIn.requestId : null;
-  const settledVerified = connected && !opening && !uncertain && !status?.operation?.reserved && !failure;
-  return <CaseIqAccessBanner label="SupportIQ sign-in" summary={summary} verified={connected}
-    busy={opening || authentication.checking || !status && !error} error={failure}
+  const settledVerified = connected && !quotaAlert && !opening && !uncertain && !status?.operation?.reserved && !failure;
+  return <CaseIqAccessBanner label="SupportIQ sign-in" summary={summary} verified={connected && !quotaAlert}
+    busy={opening || authentication.cleaningCredentials || authentication.checking || !status && !error} error={failure}
     revealKey={revealKey} autoCollapse={settledVerified}>
     <CaseIqSignInProgress status={status} opening={opening} uncertain={uncertain} error={failure}
       commandCopied={authentication.commandCopied} clipboardError={authentication.clipboardError} />
+    {quotaAlert && credManager && <div role="alert" className="mb-2 space-y-1.5 rounded-md border border-amber-700 bg-amber-950/70 p-2 text-amber-200">
+      <p className="font-semibold">
+        {credManager.writeFailureDetected
+          ? "Windows Credential Manager is full (CredWriteW error 8) — SupportIQ refresh tokens could not be saved."
+          : "Windows Credential Manager is near its storage limit — SupportIQ refresh tokens may fail to save."}
+      </p>
+      <p className="text-neutral-300">
+        Without a saved refresh token, later Runs in the same Session will repeatedly reopen Terminal after the short-lived access token expires.
+        Current usage: {credManager.totalCount} entries ({formatCredentialKilobytes(credManager.totalBytes)}).
+        {credManager.staleCopilotCount > 0
+          ? ` ${credManager.staleCopilotCount} stale Copilot MCP entries older than ${credManager.staleMaxAgeDays} days (${formatCredentialKilobytes(credManager.staleCopilotBytes)}) can be safely removed.`
+          : " Remove unused generic entries in Windows Credential Manager to free space."}
+      </p>
+      {credManager.staleCopilotCount > 0 && authentication.cleanCredentials && (
+        <button type="button" className="ui-subtle-button" disabled={Boolean(authentication.cleaningCredentials)}
+          onClick={() => { void authentication.cleanCredentials?.(); }}>
+          <Trash2 size={13} aria-hidden="true" />
+          {authentication.cleaningCredentials
+            ? "Cleaning stale MCP credentials..."
+            : `Clean ${credManager.staleCopilotCount} stale MCP credentials`}
+        </button>
+      )}
+    </div>}
+    {authentication.credentialNotice && <p role="status" className="mb-2 text-emerald-400">
+      Cleaned {authentication.credentialNotice.deletedCount} stale Copilot MCP credentials ({formatCredentialKilobytes(authentication.credentialNotice.freedBytes)} freed; {authentication.credentialNotice.remainingCount} total entries remaining). Sign in once more when prompted so SupportIQ can persist its refresh token.
+    </p>}
     {connected && <p className="mb-2 text-neutral-400">{status?.connection?.toolCount} tools discovered · OAuth checked at {status?.connection?.checkedAt &&
       <time dateTime={status.connection.checkedAt}>{new Date(status.connection.checkedAt).toLocaleString()}</time>}</p>}
     {connected && <p role="status" className="mb-2 text-neutral-400">{status?.operation?.reserved
@@ -300,18 +377,34 @@ export function CaseIqSignInCallout({ authentication }: {
   const connected = authentication.status?.authenticationVerified && authentication.status.connection?.status === "connected";
   const otherWindowOpen = authentication.status?.sessionId && authentication.status.operation?.reserved &&
     authentication.status.operation.sessionId !== authentication.status.sessionId;
+  const credManager = authentication.status?.credentialManager;
   return <CaseIqSignInProgress compact status={authentication.status} opening={authentication.opening}
     uncertain={authentication.uncertain} error={authentication.error}
     commandCopied={authentication.commandCopied} clipboardError={authentication.clipboardError}
     actions={<>
+      {credManager?.quotaExceeded && <p role="alert" className="text-amber-200">
+        {credManager.writeFailureDetected
+          ? "Windows Credential Manager is full (CredWriteW error 8): clean stale MCP credentials first so your refresh token can be saved."
+          : "Windows Credential Manager is near its storage limit: clean stale MCP credentials before signing in."}
+      </p>}
+      {authentication.credentialNotice && <p role="status" className="text-emerald-400">
+        Cleaned {authentication.credentialNotice.deletedCount} stale MCP credentials ({formatCredentialKilobytes(authentication.credentialNotice.freedBytes)} freed).
+      </p>}
       {!authentication.reserved && !connected && authentication.status?.available && <label className="flex items-start gap-2">
         <input type="checkbox" aria-label="Trust this Work's exact folder" checked={authentication.trustWorkFolder}
           onChange={(event) => authentication.setTrustWorkFolder(event.target.checked)} />
         <span>Trust exact Work folder; no Full access.</span>
       </label>}
       <div className="flex flex-wrap items-center gap-2">
+        {credManager?.quotaExceeded && credManager.staleCopilotCount > 0 && authentication.cleanCredentials && (
+          <button type="button" className="ui-subtle-button" disabled={Boolean(authentication.cleaningCredentials)}
+            onClick={() => { void authentication.cleanCredentials?.(); }}>
+            <Trash2 size={13} aria-hidden="true" />
+            {authentication.cleaningCredentials ? "Cleaning..." : `Clean ${credManager.staleCopilotCount} stale credentials`}
+          </button>
+        )}
         {!authentication.reserved && !connected && <button type="button" className="ui-primary-button"
-          disabled={!authentication.status?.available || authentication.checking || Boolean(authentication.error)}
+          disabled={!authentication.status?.available || authentication.checking || Boolean(authentication.cleaningCredentials) || Boolean(authentication.error)}
           onClick={() => { void authentication.start().catch(authentication.reportError); }}>
           <Terminal size={13} aria-hidden="true" />Sign in to SupportIQ
         </button>}

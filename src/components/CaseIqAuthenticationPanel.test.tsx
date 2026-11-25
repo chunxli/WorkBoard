@@ -10,6 +10,7 @@ function control(status: CaseIqAuthenticationStatus, checking = false, checkedAt
     status, error: null, opening: false, uncertain: false, reserved: status.operation?.reserved ?? false,
     refresh: vi.fn(), refreshManually: vi.fn(), start: vi.fn(), reportError: vi.fn(), checking, checkedAt,
     trustWorkFolder: true, setTrustWorkFolder: vi.fn(), commandCopied: false, clipboardError: null, copyCommand: vi.fn(),
+    cleaningCredentials: false, credentialNotice: null, cleanCredentials: vi.fn(),
     ...overrides,
   };
   return authentication;
@@ -183,5 +184,40 @@ describe("visible manual SupportIQ sign-in", () => {
   });
   it.each(["Please run /mcp auth SupportIQ", "/mcp auth other", "/mcp auth SupportIQ --allow-all", "/mcp auth SupportIQ\nrun a task"])("does not reinterpret another prompt: %s", (command) => {
     expect(isCaseIqAuthenticationCommand(command)).toBe(false);
+  });
+  it("warns when Windows Credential Manager is full and exposes one-click stale MCP cleanup", () => {
+    const credentialManager = {
+      supported: true,
+      quotaExceeded: true,
+      writeFailureDetected: true,
+      lastWriteFailureAt: "2026-11-25T08:55:07.970Z",
+      totalCount: 275,
+      totalBytes: 399_935,
+      staleCopilotCount: 252,
+      staleCopilotBytes: 385_894,
+      staleMaxAgeDays: 7,
+    };
+    const bannerMarkup = render({
+      available: true,
+      blockedReason: null,
+      authenticationVerified: true,
+      operation: null,
+      connection: { status: "connected", toolCount: 16, checkedAt: "2026-11-25T08:55:11.000Z" },
+      credentialManager,
+    });
+    expect(bannerMarkup).toContain("Credential Manager full · 252 stale");
+    expect(bannerMarkup).toContain("CredWriteW error 8");
+    expect(bannerMarkup).toContain("Clean 252 stale MCP credentials");
+
+    const calloutMarkup = callout({
+      available: true,
+      blockedReason: null,
+      authenticationVerified: false,
+      operation: null,
+      connection: { status: "needs-auth", toolCount: null, checkedAt: null },
+      credentialManager,
+    });
+    expect(calloutMarkup).toContain("CredWriteW error 8");
+    expect(calloutMarkup).toContain("Clean 252 stale credentials");
   });
 });

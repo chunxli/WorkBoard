@@ -2,8 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw, Save } from "lucide-react";
-import { caseIqMcpDefaultsStatusSchema, type CaseIqMcpDefaults } from "@/lib/caseiq-options";
+import { RefreshCw, Save, Trash2 } from "lucide-react";
+import {
+  caseIqMcpDefaultsStatusSchema,
+  type CaseIqCredentialManagerCleanup,
+  type CaseIqCredentialManagerStatus,
+  type CaseIqMcpDefaults,
+} from "@/lib/caseiq-options";
+import { formatCredentialKilobytes } from "@/components/CaseIqAuthenticationPanel";
 
 export default function CaseIqMcpDefaultsSettings() {
   const [value, setValue] = useState<CaseIqMcpDefaults | null>(null);
@@ -11,12 +17,16 @@ export default function CaseIqMcpDefaultsSettings() {
   const [available, setAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [credentialManager, setCredentialManager] = useState<CaseIqCredentialManagerStatus | null>(null);
+  const [credentialCleanup, setCredentialCleanup] = useState<CaseIqCredentialManagerCleanup | null>(null);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
   const savingRef = useRef(false);
+  const cleaningRef = useRef(false);
   const requestVersion = useRef(0);
 
   useEffect(() => {
@@ -33,6 +43,7 @@ export default function CaseIqMcpDefaultsSettings() {
       if (!controller.signal.aborted && requestVersion.current === version) {
         setValue(parsed.data.settings); setKnownServers(parsed.data.knownServers); setAvailable(parsed.data.available);
         setBlockedReason(parsed.data.blockedReason); setWarnings(parsed.data.warnings);
+        setCredentialManager(parsed.data.credentialManager ?? null);
       }
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted && requestVersion.current === version) setError(reason instanceof Error ? reason.message : "MCP defaults could not be loaded.");
@@ -40,6 +51,37 @@ export default function CaseIqMcpDefaultsSettings() {
     const invalidate = () => { requestVersion.current++; };
     return () => { controller.abort(); invalidate(); };
   }, [revision]);
+
+  async function cleanCredentials() {
+    if (cleaningRef.current || savingRef.current || loading || !available) return;
+    cleaningRef.current = true;
+    const version = ++requestVersion.current;
+    setCleaning(true); setError(null); setNotice(null);
+    try {
+      const response = await fetch("/api/caseiq/mcp-defaults", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clean-credentials" }),
+      });
+      const body: unknown = await response.json();
+      if (!response.ok) {
+        const failure = body !== null && typeof body === "object" && "error" in body && typeof body.error === "string"
+          ? body.error : "Stale MCP credentials could not be cleaned.";
+        throw new Error(failure);
+      }
+      const parsed = caseIqMcpDefaultsStatusSchema.safeParse(body);
+      if (!parsed.success) throw new Error("Credential cleanup response is invalid.");
+      if (requestVersion.current === version) {
+        setCredentialManager(parsed.data.credentialManager ?? null);
+        if (parsed.data.credentialCleanup) setCredentialCleanup(parsed.data.credentialCleanup);
+      }
+    } catch (reason) {
+      if (requestVersion.current === version) setError(reason instanceof Error ? reason.message : "Stale MCP credentials could not be cleaned.");
+    } finally {
+      cleaningRef.current = false;
+      if (requestVersion.current === version) setCleaning(false);
+    }
+  }
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -99,15 +141,45 @@ export default function CaseIqMcpDefaultsSettings() {
         </label>)}
       </div>
     </fieldset>}
+    {credentialManager && (
+      <section aria-label="Windows Credential Manager quota" className={`rounded-md border p-3 text-xs ${
+        credentialManager.quotaExceeded ? "border-amber-700 bg-amber-950/60 text-amber-200" : "border-neutral-800 text-neutral-400"
+      }`}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="font-semibold text-neutral-200">
+              Windows Credential Manager: {credentialManager.totalCount} entries ({formatCredentialKilobytes(credentialManager.totalBytes)})
+            </p>
+            <p className="mt-0.5 text-neutral-400">
+              {credentialManager.staleCopilotCount > 0
+                ? `${credentialManager.staleCopilotCount} stale Copilot MCP entries older than ${credentialManager.staleMaxAgeDays} days (${formatCredentialKilobytes(credentialManager.staleCopilotBytes)}) can be safely cleaned without touching GitHub, CLI sign-in, or recent tokens.`
+                : `No stale Copilot MCP entries older than ${credentialManager.staleMaxAgeDays} days.`}
+            </p>
+          </div>
+          {credentialManager.staleCopilotCount > 0 && (
+            <button type="button" className="ui-subtle-button" disabled={loading || saving || cleaning || !available}
+              onClick={() => { void cleanCredentials(); }}>
+              <Trash2 size={13} aria-hidden="true" />
+              {cleaning ? "Cleaning..." : `Clean ${credentialManager.staleCopilotCount} stale MCP credentials`}
+            </button>
+          )}
+        </div>
+        {credentialCleanup && (
+          <p role="status" className="mt-2 text-emerald-400">
+            Cleaned {credentialCleanup.deletedCount} stale Copilot MCP entries ({formatCredentialKilobytes(credentialCleanup.freedBytes)} freed).
+          </p>
+        )}
+      </section>
+    )}
     {blockedReason && <p role="status" className="text-xs text-amber-300">{blockedReason}</p>}
     {warnings.map((warning) => <p role="alert" key={warning} className="text-xs text-amber-300">{warning}</p>)}
     {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
     {notice && <p role="status" className="text-xs text-emerald-400">{notice}</p>}
     <div className="flex flex-wrap items-center justify-end gap-2">
-      <button type="button" className="ui-subtle-button" disabled={loading || saving} onClick={() => setRevision((current) => current + 1)}>
+      <button type="button" className="ui-subtle-button" disabled={loading || saving || cleaning} onClick={() => setRevision((current) => current + 1)}>
         <RefreshCw size={13} aria-hidden="true" />Refresh defaults
       </button>
-      <button type="submit" className="ui-primary-button" disabled={!value || loading || saving || Boolean(error) || !available}>
+      <button type="submit" className="ui-primary-button" disabled={!value || loading || saving || cleaning || Boolean(error) || !available}>
         <Save size={14} aria-hidden="true" />{saving ? "Saving..." : "Save MCP defaults"}
       </button>
     </div>

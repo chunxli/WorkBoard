@@ -383,12 +383,14 @@ describe("compact Work details", () => {
     }
   });
 
-  it("tints the unified Work toolbar to match dark and light themes instead of stark white", () => {
+  it("tints the unified Work toolbar and paired/light surfaces to match dark and light themes instead of stark white", () => {
     const css = readFileSync(new URL("./globals.css", import.meta.url), "utf8");
     const lightRoot = css.match(/:root\[data-theme="light"\]\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
     const toolbarRule = css.match(/(?:^|\n)\.work-detail-unified-toolbar\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(lightRoot).toContain("--toolbar-background:");
-    expect(lightRoot).not.toMatch(/--toolbar-background:\s*(?:#fff\b|#ffffff\b|rgb\(\s*255\s*,\s*255\s*,\s*255)/i);
+    for (const token of ["--toolbar-background", "--surface", "--surface-raised", "--panel-background", "--composer-background"]) {
+      expect(lightRoot).not.toMatch(new RegExp(`${token}:\\s*(?:#fff\\b|#ffffff\\b|rgba?\\(\\s*255\\s*,\\s*255\\s*,\\s*255)`, "i"));
+    }
     expect(toolbarRule).toContain("background: var(--toolbar-background);");
     expect(toolbarRule).not.toContain("background: var(--surface);");
   });

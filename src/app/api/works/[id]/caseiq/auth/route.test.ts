@@ -3,11 +3,13 @@ import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
 
-const mocks = vi.hoisted(() => ({ user: vi.fn(), local: vi.fn(), status: vi.fn(), start: vi.fn() }));
+const mocks = vi.hoisted(() => ({ user: vi.fn(), local: vi.fn(), status: vi.fn(), start: vi.fn(), clean: vi.fn() }));
 vi.mock("@/lib/session", () => ({ getSessionUserId: mocks.user }));
 vi.mock("@/lib/local-terminal-policy", () => ({ localTerminalAvailable: mocks.local }));
 vi.mock("@/lib/caseiq-authentication", () => ({
-  getCaseIqAuthenticationStatus: mocks.status, startCaseIqAuthentication: mocks.start,
+  getCaseIqAuthenticationStatus: mocks.status,
+  startCaseIqAuthentication: mocks.start,
+  cleanCaseIqStaleCredentials: mocks.clean,
 }));
 import { GET, POST } from "./route";
 const params = { params: Promise.resolve({ id: "work" }) };
@@ -67,5 +69,30 @@ describe("owned CaseIQ sign-in API", () => {
     const result = await post();
     expect(result.status).toBe(409);
     expect(await result.json()).toEqual({ error: "The original binding is unavailable." });
+  });
+  it("supports guarded local cleanup of stale Copilot MCP credentials without starting a Terminal", async () => {
+    mocks.clean.mockResolvedValueOnce({
+      available: true,
+      blockedReason: null,
+      authenticationVerified: false,
+      operation: null,
+      credentialCleanup: {
+        deletedCount: 12,
+        freedBytes: 24576,
+        remainingCount: 20,
+        remainingBytes: 12000,
+        remainingStaleCopilotCount: 0,
+        remainingStaleCopilotBytes: 0,
+        staleMaxAgeDays: 7,
+      },
+    });
+    const response = await POST(new NextRequest("http://localhost/api/works/work/caseiq/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+      body: JSON.stringify({ runId: "run", action: "clean-credentials" }),
+    }), params);
+    expect(response.status).toBe(200);
+    expect(mocks.clean).toHaveBeenCalledWith("owner", "work", "run");
+    expect(mocks.start).not.toHaveBeenCalled();
   });
 });

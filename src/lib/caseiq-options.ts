@@ -124,6 +124,32 @@ export const caseIqAuthenticationOperationSchema = z.object({
   automatic: z.boolean().optional(),
 }).strict();
 
+export const caseIqCredentialManagerStatusSchema = z.object({
+  supported: z.boolean(),
+  quotaExceeded: z.boolean(),
+  writeFailureDetected: z.boolean(),
+  lastWriteFailureAt: z.iso.datetime().nullable(),
+  totalCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  staleCopilotCount: z.number().int().nonnegative(),
+  staleCopilotBytes: z.number().int().nonnegative(),
+  staleMaxAgeDays: z.number().int().positive(),
+}).strict();
+
+export type CaseIqCredentialManagerStatus = z.infer<typeof caseIqCredentialManagerStatusSchema>;
+
+export const caseIqCredentialManagerCleanupSchema = z.object({
+  deletedCount: z.number().int().nonnegative(),
+  freedBytes: z.number().int().nonnegative(),
+  remainingCount: z.number().int().nonnegative(),
+  remainingBytes: z.number().int().nonnegative(),
+  remainingStaleCopilotCount: z.number().int().nonnegative(),
+  remainingStaleCopilotBytes: z.number().int().nonnegative(),
+  staleMaxAgeDays: z.number().int().positive(),
+}).strict();
+
+export type CaseIqCredentialManagerCleanup = z.infer<typeof caseIqCredentialManagerCleanupSchema>;
+
 export const caseIqAuthenticationStatusSchema = z.object({
   sessionId: z.uuid().optional(),
   available: z.boolean(), blockedReason: z.string().nullable(),
@@ -136,6 +162,8 @@ export const caseIqAuthenticationStatusSchema = z.object({
     status: z.enum(["connected", "needs-auth", "failed", "pending", "disabled", "not-configured", "unknown"]),
     toolCount: z.number().int().nonnegative().nullable(), checkedAt: z.iso.datetime().nullable(),
   }).strict().optional(),
+  credentialManager: caseIqCredentialManagerStatusSchema.optional(),
+  credentialCleanup: caseIqCredentialManagerCleanupSchema.optional(),
   operation: caseIqAuthenticationOperationSchema.nullable(),
   automaticSignIn: z.object({
     requestId: z.uuid(), requiredAt: z.iso.datetime({ offset: true }), attempted: z.boolean(),
@@ -190,6 +218,8 @@ export type CaseIqMcpDefaults = z.infer<typeof caseIqMcpDefaultsSchema>;
 export const caseIqMcpDefaultsStatusSchema = z.object({
   settings: caseIqMcpDefaultsSchema, knownServers: z.array(caseIqMcpServerNameSchema).max(64),
   available: z.boolean(), blockedReason: z.string().nullable(), warnings: z.array(z.string()),
+  credentialManager: caseIqCredentialManagerStatusSchema.nullable().optional(),
+  credentialCleanup: caseIqCredentialManagerCleanupSchema.optional(),
 }).strict();
 export const caseIqMcpSessionIndexSchema = z.object({
   sessions: z.array(z.object({

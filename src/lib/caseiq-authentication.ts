@@ -23,6 +23,7 @@ import {
   caseIqAuthenticationActivity, caseIqAuthenticationDirectory, readCaseIqAuthentication,
   readCaseIqNativeConnection, writeCaseIqAuthentication, type StoredCaseIqAuthentication,
 } from "@/lib/caseiq-authentication-state";
+import { cleanStaleCopilotCredentials, inspectWindowsCredentialManager } from "@/lib/windows-credential-manager";
 import type { CaseIqAuthenticationStatus } from "@/lib/caseiq-options";
 
 const nativeAuthenticationSignalSchema = z.object({
@@ -166,10 +167,28 @@ export async function getCaseIqAuthenticationStatus(
     : work.status === "ARCHIVED" ? "Restore this Work before signing in."
       : state?.reserved ? state.message
         : await activeCaseIqWorkReason(workId, binding.sessionId, run.id, work);
+  const credentialManager = local
+    ? await inspectWindowsCredentialManager({
+        sessionHome: nativeSessionBindingHome(binding),
+        verifiedAt: connection.status === "connected" ? connection.checkedAt : null,
+      }).catch(() => null)
+    : null;
   return { sessionId: binding.sessionId, available: blockedReason === null, blockedReason,
     authenticationVerified: connection.status === "connected", connection, operation: state,
+    ...(credentialManager ? { credentialManager } : {}),
     ...(binding.oauthStorage ? { oauthStorage: { mode: binding.oauthStorage.mode, reason: binding.oauthStorage.reason } } : {}),
     automaticSignIn: local && work.status !== "ARCHIVED" ? automaticSignIn : null };
+}
+
+export async function cleanCaseIqStaleCredentials(
+  userId: string, workId: string, runId: string,
+): Promise<CaseIqAuthenticationStatus> {
+  await resolveCaseIqSessionOwner(userId, workId, runId);
+  return withRunStartLock([`credential-manager:${userId}`], async () => {
+    const credentialCleanup = await cleanStaleCopilotCredentials();
+    const status = await getCaseIqAuthenticationStatus(userId, workId, runId, true);
+    return { ...status, credentialCleanup };
+  });
 }
 
 const monitors = new Set<string>();

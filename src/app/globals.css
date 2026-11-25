@@ -105,9 +105,9 @@
 :root[data-theme="light"] {
   --background: #f4f7f5;
   --foreground: #18201c;
-  --surface: #fff;
-  --surface-raised: #f8faf9;
-  --line: #d1d9d5;
+  --surface: #edf3ef;
+  --surface-raised: #e3ece7;
+  --line: #c7d4cd;
   --accent: #147a57;
   --strong-foreground: #111a16;
   --on-accent: #fff;
@@ -158,31 +158,31 @@
   --page-bottom: #f4f7f5;
   --selection-background: rgba(20, 122, 87, 0.2);
   --selection-foreground: #111a16;
-  --panel-border: rgba(190, 202, 196, 0.85);
-  --panel-background: rgba(255, 255, 255, 0.9);
-  --composer-background: rgba(255, 255, 255, 0.96);
-  --panel-shadow: rgba(31, 55, 43, 0.08);
-  --panel-highlight: rgba(255, 255, 255, 0.95);
+  --panel-border: rgba(182, 198, 190, 0.88);
+  --panel-background: rgba(238, 245, 241, 0.88);
+  --composer-background: rgba(235, 243, 238, 0.94);
+  --panel-shadow: rgba(31, 55, 43, 0.06);
+  --panel-highlight: rgba(255, 255, 255, 0.55);
   --focus-ring: rgba(20, 122, 87, 0.12);
-  --input-border: #c4cec9;
-  --input-background: rgba(255, 255, 255, 0.9);
+  --input-border: #bfcdc5;
+  --input-background: rgba(244, 249, 246, 0.92);
   --input-foreground: #18201c;
   --input-hover-border: #98a79f;
   --input-focus-border: #16805c;
   --primary-background: #16875f;
   --primary-hover: #0f6b4d;
   --primary-foreground: #fff;
-  --secondary-border: #c8d1cc;
-  --secondary-background: #fff;
+  --secondary-border: #c2cfc8;
+  --secondary-background: #e9f0ec;
   --secondary-foreground: #34413b;
   --secondary-hover-border: #98a79f;
-  --secondary-hover-background: #e8eeeb;
-  --table-border: #d1d9d5;
-  --table-background: rgba(255, 255, 255, 0.86);
-  --table-header-background: rgba(232, 238, 235, 0.9);
-  --table-header-foreground: #64736c;
-  --table-row-hover: rgba(228, 234, 231, 0.6);
-  --nav-background: rgba(250, 252, 251, 0.9);
+  --secondary-hover-background: #dde7e2;
+  --table-border: #c9d5ce;
+  --table-background: rgba(240, 246, 243, 0.88);
+  --table-header-background: rgba(226, 236, 231, 0.92);
+  --table-header-foreground: #5c6b64;
+  --table-row-hover: rgba(220, 231, 226, 0.65);
+  --nav-background: rgba(241, 246, 243, 0.9);
   --toolbar-background: rgba(232, 242, 237, 0.88);
   --toolbar-border: rgba(190, 206, 198, 0.88);
   --toolbar-shadow: rgba(22, 52, 39, 0.05);
@@ -937,10 +937,10 @@ body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
   max-width: 100%;
   align-items: stretch;
   gap: 0.1875rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--toolbar-border);
   border-radius: 0.625rem;
   padding: 0.1875rem;
-  background: var(--surface);
+  background: var(--toolbar-switch-background);
 }
 
 .work-paired-tab {
@@ -1480,10 +1480,10 @@ body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
   flex-shrink: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.1875rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--toolbar-border);
   border-radius: 0.5rem;
   padding: 0.1875rem;
-  background: var(--surface);
+  background: var(--toolbar-switch-background);
 }
 
 .work-file-scope {

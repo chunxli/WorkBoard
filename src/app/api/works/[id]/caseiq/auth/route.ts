@@ -4,14 +4,23 @@ import { getSessionUserId } from "@/lib/session";
 import { localTerminalAvailable } from "@/lib/local-terminal-policy";
 import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
 import { RunStartInProgressError } from "@/lib/run-start-lock";
-import { getCaseIqAuthenticationStatus, startCaseIqAuthentication } from "@/lib/caseiq-authentication";
+import {
+  cleanCaseIqStaleCredentials,
+  getCaseIqAuthenticationStatus,
+  startCaseIqAuthentication,
+} from "@/lib/caseiq-authentication";
 
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "private, no-store", Vary: "Cookie" };
 const querySchema = z.object({ runId: z.string().min(1).max(128) });
-const actionSchema = querySchema.extend({
-  requestId: z.uuid(), trustWorkFolder: z.boolean().default(false), automatic: z.boolean().default(false),
-}).strict();
+const actionSchema = z.union([
+  querySchema.extend({
+    action: z.literal("clean-credentials"),
+  }).strict(),
+  querySchema.extend({
+    requestId: z.uuid(), trustWorkFolder: z.boolean().default(false), automatic: z.boolean().default(false),
+  }).strict(),
+]);
 
 function failure(error: unknown) {
   if (error instanceof CaseIqIntegrationError || error instanceof RunStartInProgressError) {
@@ -47,7 +56,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const input = actionSchema.safeParse(await request.json().catch(() => null));
   if (!input.success) return NextResponse.json({ error: "Invalid CaseIQ authentication request." }, { status: 400, headers });
   try {
-    return NextResponse.json(await startCaseIqAuthentication(userId, (await params).id, input.data.runId,
-      input.data.requestId, input.data.trustWorkFolder, input.data.automatic), { status: 202, headers });
+    const workId = (await params).id;
+    const payload = input.data;
+    if ("action" in payload) {
+      return NextResponse.json(await cleanCaseIqStaleCredentials(userId, workId, payload.runId), { status: 200, headers });
+    }
+    return NextResponse.json(await startCaseIqAuthentication(userId, workId, payload.runId,
+      payload.requestId, payload.trustWorkFolder, payload.automatic), { status: 202, headers });
   } catch (error) { return failure(error); }
 }

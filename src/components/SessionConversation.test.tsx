@@ -110,6 +110,7 @@ describe("session conversation toolbar", () => {
           status: "active", reserved: true, phase: "native-started", message: "Waiting for TSE." } },
       error: null, opening: false, uncertain: false, checking: false, checkedAt: null, trustWorkFolder: true,
       commandCopied: false, clipboardError: null, reserved: true, setTrustWorkFolder: vi.fn(),
+      cleaningCredentials: false, credentialNotice: null, cleanCredentials: vi.fn(),
       copyCommand: vi.fn(), refresh: vi.fn(), refreshManually: vi.fn(), start: vi.fn(), reportError: vi.fn(),
     });
     try {
