@@ -233,8 +233,10 @@ export function CaseIqAuthenticationPanel({ authentication }: {
           : "Not verified";
   const revealKey = opening || status?.operation?.reserved ? "signing-in"
       : status?.automaticSignIn && !status.automaticSignIn.attempted ? status.automaticSignIn.requestId : null;
+  const settledVerified = connected && !opening && !uncertain && !status?.operation?.reserved && !failure;
   return <CaseIqAccessBanner label="SupportIQ sign-in" summary={summary} verified={connected}
-    busy={opening || authentication.checking || !status && !error} error={failure} revealKey={revealKey}>
+    busy={opening || authentication.checking || !status && !error} error={failure}
+    revealKey={revealKey} autoCollapse={settledVerified}>
     <CaseIqSignInProgress status={status} opening={opening} uncertain={uncertain} error={failure}
       commandCopied={authentication.commandCopied} clipboardError={authentication.clipboardError} />
     {connected && <p className="mb-2 text-neutral-400">{status?.connection?.toolCount} tools discovered · OAuth checked at {status?.connection?.checkedAt &&

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import CaseIqAccessBanner from "./CaseIqAccessBanner";
+import CaseIqAccessBanner, { syncRuntimeBannerDisclosure } from "./CaseIqAccessBanner";
 
 function render(overrides: Partial<Parameters<typeof CaseIqAccessBanner>[0]> = {}) {
   return renderToStaticMarkup(<CaseIqAccessBanner label="SupportIQ sign-in" summary="Previously verified · 10 tools"
@@ -41,5 +41,64 @@ describe("compact theme-aware runtime access entries", () => {
     expect(markup).toContain('aria-busy="true"');
     expect(markup).toContain("motion-reduce:animate-none");
     expect(markup).toContain('width="12" height="12"');
+  });
+  it("auto-collapses once sign-in verification completes and Work is released, without closing later manual inspection", () => {
+    const disclosure = { open: false };
+    let state = { autoOpened: false, autoCollapsed: false };
+
+    // Auto-opens when sign-in starts
+    state = syncRuntimeBannerDisclosure({
+      disclosure,
+      revealKey: "signing-in",
+      autoCollapse: false,
+      wasAutoOpened: state.autoOpened,
+      wasAutoCollapsed: state.autoCollapsed,
+    });
+    expect(disclosure.open).toBe(true);
+    expect(state).toEqual({ autoOpened: true, autoCollapsed: false });
+
+    // Stays open while OAuth is checked but Terminal is still open (revealKey="signing-in", autoCollapse=false)
+    state = syncRuntimeBannerDisclosure({
+      disclosure,
+      revealKey: "signing-in",
+      autoCollapse: false,
+      wasAutoOpened: state.autoOpened,
+      wasAutoCollapsed: state.autoCollapsed,
+    });
+    expect(disclosure.open).toBe(true);
+
+    // Automatically collapses as soon as Terminal closes and verification settles
+    state = syncRuntimeBannerDisclosure({
+      disclosure,
+      revealKey: null,
+      autoCollapse: true,
+      wasAutoOpened: state.autoOpened,
+      wasAutoCollapsed: state.autoCollapsed,
+    });
+    expect(disclosure.open).toBe(false);
+    expect(state).toEqual({ autoOpened: false, autoCollapsed: true });
+
+    // If user manually opens the verified banner later, background refreshes do not force-close it
+    disclosure.open = true;
+    state = syncRuntimeBannerDisclosure({
+      disclosure,
+      revealKey: null,
+      autoCollapse: true,
+      wasAutoOpened: state.autoOpened,
+      wasAutoCollapsed: state.autoCollapsed,
+    });
+    expect(disclosure.open).toBe(true);
+
+    // Also auto-collapses if user manually opened an unverified banner and then refreshed into verified state
+    const manualDisclosure = { open: true };
+    const manualSettled = syncRuntimeBannerDisclosure({
+      disclosure: manualDisclosure,
+      revealKey: null,
+      autoCollapse: true,
+      wasAutoOpened: false,
+      wasAutoCollapsed: false,
+    });
+    expect(manualDisclosure.open).toBe(false);
+    expect(manualSettled).toEqual({ autoOpened: false, autoCollapsed: true });
   });
 });
