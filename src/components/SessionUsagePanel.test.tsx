@@ -61,6 +61,7 @@ describe("Session usage panel", () => {
     expect(desktopBlock).toContain("flex-shrink: 0;");
     expect(desktopBlock).toContain(".work-conversation-sidebar .work-session-usage-content");
     expect(desktopBlock).toContain("max-height: none;");
+    expect(desktopBlock).toContain("overflow: visible;");
     expect(desktopBlock).not.toContain("max-height: min(36dvh, 18rem);");
   });
 });

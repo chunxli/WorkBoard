@@ -165,6 +165,80 @@ export function handleConversationHistoryWheel(
   loadEarlier();
 }
 
+export interface ConversationScrollMetrics {
+  top: number;
+  height: number;
+  clientHeight: number;
+}
+
+function currentScrollMetrics(
+  element: Pick<HTMLElement, "scrollTop" | "scrollHeight" | "clientHeight">,
+): ConversationScrollMetrics {
+  const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  return {
+    top: element.clientHeight > 0 ? Math.min(element.scrollTop, maxTop) : element.scrollTop,
+    height: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  };
+}
+
+export function updateConversationNearBottom(options: {
+  element: Pick<HTMLElement, "scrollTop" | "scrollHeight" | "clientHeight">;
+  previousMetrics: ConversationScrollMetrics | null;
+  nearBottom: boolean;
+  pendingFollowScroll: boolean;
+  pinned: boolean;
+  threshold: number;
+}): { nearBottom: boolean; metrics: ConversationScrollMetrics } {
+  const { element, previousMetrics, nearBottom, pendingFollowScroll, pinned, threshold } = options;
+  const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+  const previousTop = previousMetrics?.top ?? element.scrollTop;
+  const scrolledUp = element.scrollTop < previousTop - 1;
+  const nextNearBottom = pinned
+    ? false
+    : pendingFollowScroll
+      ? true
+      : distanceFromBottom < threshold
+        ? true
+        : scrolledUp || !nearBottom
+          ? false
+          : true;
+  return {
+    nearBottom: nextNearBottom,
+    metrics: currentScrollMetrics(element),
+  };
+}
+
+export function syncConversationScrollPosition(options: {
+  element: Pick<HTMLElement, "scrollTop" | "scrollHeight" | "clientHeight">;
+  earlierScroll: { top: number; height: number } | null;
+  nearBottom: boolean;
+  pendingFollowScroll: boolean;
+  pinned: boolean;
+}): {
+  earlierScroll: null;
+  nearBottom: boolean;
+  pendingFollowScroll: boolean;
+  metrics: ConversationScrollMetrics;
+} {
+  const { element, earlierScroll, nearBottom, pendingFollowScroll, pinned } = options;
+  let nextNearBottom = nearBottom;
+  let nextPendingFollowScroll = pendingFollowScroll;
+  if (earlierScroll) {
+    element.scrollTop = earlierScroll.top + element.scrollHeight - earlierScroll.height;
+  } else if ((pendingFollowScroll || nearBottom) && !pinned) {
+    if (element.clientHeight > 0) nextPendingFollowScroll = false;
+    nextNearBottom = true;
+    element.scrollTop = element.scrollHeight;
+  }
+  return {
+    earlierScroll: null,
+    nearBottom: nextNearBottom,
+    pendingFollowScroll: nextPendingFollowScroll,
+    metrics: currentScrollMetrics(element),
+  };
+}
+
 export async function readEarlierConversationPages<Page extends Pick<SessionConversationData, "events" | "previousCursor">>(
   before: string,
   readPage: (before: string) => Promise<Page>,
@@ -310,9 +384,13 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     window.history.replaceState(null, "", url.href);
   }, [hasWorkspace]);
   const [pending, setPending] = useState<{ runId: string; text: string; afterOffset: number; attachments?: WorkAttachment[] } | null>(null);
+  const [scrollRequest, setScrollRequest] = useState(0);
   const container = useRef<HTMLDivElement>(null);
   const startupContainer = useRef<HTMLDivElement>(null);
   const earlierScroll = useRef<{ top: number; height: number } | null>(null);
+  const lastScrollMetrics = useRef<ConversationScrollMetrics | null>(null);
+  const pendingFollowScroll = useRef(false);
+  const queuedByUserRunIds = useRef(new Set<string>());
   const textarea = useRef<HTMLTextAreaElement>(null);
   const submitButton = useRef<HTMLButtonElement>(null);
   const nearBottom = useRef(true);
@@ -427,6 +505,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   useEffect(() => {
     if (hasPairedSessions || laneSessionId && !runId) return;
     let stopped = false;
+    let activeLoad = false;
     const controller = new AbortController();
     const url = (nextCursor: string | null) => {
       const query = new URLSearchParams({ ...(runId ? { runId } : {}), ...(nextCursor ? { cursor: nextCursor } : {}) });
@@ -435,6 +514,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     async function load(retryReset = true) {
       if (stopped || readBusy.current || document.hidden) return;
       readBusy.current = true;
+      activeLoad = true;
       let again = false;
       try {
         const response = await fetch(url(cursor.current), { cache: "no-store", signal: controller.signal });
@@ -499,7 +579,10 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
           setLoading(false);
         }
       } finally {
-        readBusy.current = false;
+        if (activeLoad) {
+          activeLoad = false;
+          readBusy.current = false;
+        }
         if (again && !stopped) void load(false);
       }
     }
@@ -517,23 +600,15 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     document.addEventListener("visibilitychange", refresh);
     return () => {
       stopped = true; controller.abort(); clearInterval(timer);
+      if (activeLoad) {
+        activeLoad = false;
+        readBusy.current = false;
+      }
       window.removeEventListener("focus", refresh);
       window.removeEventListener("workboard:paired-follow-up-changed", refreshPaired);
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [workId, runId, router, hasPairedSessions, laneSessionId]);
-
-  const pairedPendingPromptId = laneSessionId ? data?.pendingPrompt?.runId : undefined;
-  useLayoutEffect(() => {
-    const element = container.current;
-    if (!element || laneSessionId && (!visible || !element.clientHeight)) return;
-    if (earlierScroll.current) {
-      element.scrollTop = earlierScroll.current.top + element.scrollHeight - earlierScroll.current.height;
-      earlierScroll.current = null;
-    } else if (nearBottom.current && !pinWindow) {
-      element.scrollTop = element.scrollHeight;
-    }
-  }, [events, pending, pinWindow, laneSessionId, visible, pairedPendingPromptId]);
 
   useEffect(() => () => {
     earlierController.current?.abort();
@@ -579,6 +654,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
       const target = page.events?.find((event) => event.id === pin.eventId);
       if (controller.signal.aborted || page.sessionId !== session.current || !target) throw new Error("The Pin no longer matches the selected Session.");
       nearBottom.current = false;
+      pendingFollowScroll.current = false;
       earlierScroll.current = null;
       setPinWindow(history.current.get(pin.eventId)?.text === target.text ? null : page);
       setSelectedPanel("conversation");
@@ -592,15 +668,27 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     }
   }, [workId, runId, setSelectedPanel]);
 
-  function showLatest() {
+  function clearPinnedHistoryView() {
     earlierController.current?.abort();
     setEarlierReadError(null);
     pinController.current?.abort();
     pendingPinJump.current?.reject(new Error("Pin navigation was cancelled."));
     pendingPinJump.current = null;
-    setPinWindow(null); setPinTarget(null);
-    setSelectedPanel("conversation"); setView("conversation");
+    setPinWindow(null);
+    setPinTarget(null);
+  }
+
+  function requestFollowLatest() {
+    clearPinnedHistoryView();
+    earlierScroll.current = null;
     nearBottom.current = true;
+    pendingFollowScroll.current = true;
+    setScrollRequest((current) => current + 1);
+  }
+
+  function showLatest() {
+    requestFollowLatest();
+    setSelectedPanel("conversation"); setView("conversation");
     if (laneSessionId) setNewPairedMessages(false);
     const behavior = laneSessionId ? "instant" : "smooth";
     requestAnimationFrame(() => {
@@ -635,6 +723,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     setEarlierLoading(true);
     setEarlierReadError(null);
     nearBottom.current = false;
+    pendingFollowScroll.current = false;
     try {
       await readEarlierConversationPages(before, async (cursor) => {
         const response = await fetch(endpoint({ before: cursor }), { cache: "no-store", signal: controller.signal });
@@ -846,7 +935,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
         updateDraft("");
         attachments.clear();
         setFrozenDraft(false); attempt.current = null;
-        nearBottom.current = true;
+        requestFollowLatest();
         setNotice("Accepted by the active session. Acceptance does not guarantee the model has applied the instruction yet.");
         window.dispatchEvent(new CustomEvent("workboard:prompt-updated", { detail: { workId } }));
         router.refresh();
@@ -866,12 +955,13 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
         throw new Error(typeof body.error === "string" ? body.error : useQueue ? "Queue admission was not confirmed. Retry this same request." : "Follow Up did not start");
       }
       if (useQueue) {
+        queuedByUserRunIds.current.add(body.runId);
         setNotice("Message added to queue.");
       } else {
+        requestFollowLatest();
         setPending({ runId: body.runId, text, attachments: savedAttachments, afterOffset: events.at(-1)?.offset ?? -1 });
       }
       updateDraft("");
-      if (!useQueue) nearBottom.current = true;
       attachments.clear(); setFrozenDraft(false); attempt.current = null;
       if (!useQueue) window.dispatchEvent(new CustomEvent("workboard:prompt-updated", { detail: { workId } }));
       router.refresh();
@@ -906,6 +996,30 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     ...(fileBrowser && !wideFiles ? [{ id: "files", label: "Files" }] : []),
   ];
   const activePanel = tabs.some((tab) => tab.id === selectedPanel) ? selectedPanel : "conversation";
+  const pendingMessageRunId = pendingMessage?.runId ?? null;
+  const pendingPromptKey = pendingMessage
+    ? `${pendingMessage.runId}:${pendingRun?.status ?? ""}:${"timestamp" in pendingMessage ? pendingMessage.timestamp ?? "" : ""}:${pendingMessage.attachments?.length ?? 0}`
+    : "";
+
+  useLayoutEffect(() => {
+    if (pendingMessageRunId && !pinWindow && queuedByUserRunIds.current.delete(pendingMessageRunId)) {
+      nearBottom.current = true;
+      pendingFollowScroll.current = true;
+    }
+    const element = container.current;
+    if (!element || view !== "conversation" || activePanel !== "conversation" || !element.clientHeight || (laneSessionId && !visible)) return;
+    const synced = syncConversationScrollPosition({
+      element,
+      earlierScroll: earlierScroll.current,
+      nearBottom: nearBottom.current,
+      pendingFollowScroll: pendingFollowScroll.current,
+      pinned: Boolean(pinWindow),
+    });
+    earlierScroll.current = synced.earlierScroll;
+    nearBottom.current = synced.nearBottom;
+    pendingFollowScroll.current = synced.pendingFollowScroll;
+    lastScrollMetrics.current = synced.metrics;
+  }, [events, pending, pendingMessageRunId, pendingPromptKey, pinWindow, laneSessionId, visible, view, activePanel, runId, isLive, awaitingRunStart, scrollRequest]);
   useLayoutEffect(() => {
     const target = pendingWorkspaceFocus.current;
     if (target === "files" && (wideFiles || activePanel === "files")) {
@@ -945,14 +1059,23 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   useEffect(() => {
     const progress = startupContainer.current;
     const history = container.current;
-    if (!history || pinWindow || view !== "conversation" || activePanel !== "conversation" || !visible ||
-        (!laneSessionId && (!caseIqLive || !progress))) return;
+    if (!history || pinWindow || view !== "conversation" || activePanel !== "conversation" || !visible || typeof ResizeObserver === "undefined") return;
     const follow = () => {
-      if (nearBottom.current && history.clientHeight) history.scrollTop = history.scrollHeight;
+      if (!history.clientHeight) return;
+      const synced = syncConversationScrollPosition({
+        element: history,
+        earlierScroll: null,
+        nearBottom: nearBottom.current,
+        pendingFollowScroll: pendingFollowScroll.current,
+        pinned: false,
+      });
+      nearBottom.current = synced.nearBottom;
+      pendingFollowScroll.current = synced.pendingFollowScroll;
+      lastScrollMetrics.current = synced.metrics;
     };
     follow();
     const observer = new ResizeObserver(follow);
-    if (laneSessionId) observer.observe(history);
+    observer.observe(history);
     if (caseIqLive && progress) observer.observe(progress);
     return () => observer.disconnect();
   }, [caseIqLive, runId, pinWindow, view, activePanel, laneSessionId, visible]);
@@ -1108,9 +1231,17 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
             onWheel={(event) => handleConversationHistoryWheel(event, () => void loadEarlier())}
             onScroll={(change) => {
               const element = change.currentTarget;
-              if (laneSessionId && (!visible || !element.clientHeight)) return;
-              nearBottom.current = !pinWindow && !pinLoading &&
-                element.scrollHeight - element.scrollTop - element.clientHeight < (laneSessionId ? 24 : 100);
+              if (!element.clientHeight || (laneSessionId && !visible)) return;
+              const updated = updateConversationNearBottom({
+                element,
+                previousMetrics: lastScrollMetrics.current,
+                nearBottom: nearBottom.current,
+                pendingFollowScroll: pendingFollowScroll.current,
+                pinned: Boolean(pinWindow || pinLoading),
+                threshold: laneSessionId ? 24 : 100,
+              });
+              nearBottom.current = updated.nearBottom;
+              lastScrollMetrics.current = updated.metrics;
               if (laneSessionId && nearBottom.current) setNewPairedMessages(false);
             }}>
             {lane && !runId ? <p role="status" className="py-3 text-sm text-neutral-400">The original Run is unavailable. No other Session was selected.</p>

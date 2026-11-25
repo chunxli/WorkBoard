@@ -1,6 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import SessionConversation, { conversationControlCapabilities, ConversationMessage, ConversationTimelineEntries, handleConversationComposerKeyDown, handleConversationHistoryWheel, readEarlierConversationPages } from "./SessionConversation";
+import SessionConversation, {
+  conversationControlCapabilities,
+  ConversationMessage,
+  ConversationTimelineEntries,
+  handleConversationComposerKeyDown,
+  handleConversationHistoryWheel,
+  readEarlierConversationPages,
+  syncConversationScrollPosition,
+  updateConversationNearBottom,
+} from "./SessionConversation";
 import { normalizeConversationEvent, type ConversationEvent } from "@/lib/session-conversation";
 import { conversationTimeline, conversationToolActivityAt, withPendingFollowUp } from "@/lib/conversation-activity";
 import * as authentication from "./CaseIqAuthenticationPanel";
@@ -695,6 +704,97 @@ describe("session conversation messages", () => {
     const summary = markup.slice(markup.indexOf("<summary"), markup.indexOf("</summary>"));
     expect(summary).toContain("text-red-400");
     expect(summary).toContain("3 tools · 8 events · Failed · 1 failed");
+  });
+});
+
+describe("Follow Up latest-message auto-scroll and resize pinning", () => {
+  function mockScrollBox(scrollHeight: number, clientHeight: number, initialScrollTop = 0) {
+    let currentTop = initialScrollTop;
+    return {
+      scrollHeight,
+      clientHeight,
+      get scrollTop() { return currentTop; },
+      set scrollTop(next: number) {
+        currentTop = Math.max(0, Math.min(next, Math.max(0, this.scrollHeight - this.clientHeight)));
+      },
+    };
+  }
+
+  it("scrolls to the newly sent Follow Up even when scrolled up and a stale scroll event fires before commit", () => {
+    const box = mockScrollBox(2400, 560, 800);
+    const staleScroll = updateConversationNearBottom({
+      element: box,
+      previousMetrics: { top: 800, height: 2400, clientHeight: 560 },
+      nearBottom: true,
+      pendingFollowScroll: true,
+      pinned: false,
+      threshold: 100,
+    });
+    expect(staleScroll.nearBottom).toBe(true);
+
+    box.scrollHeight = 2468;
+    const synced = syncConversationScrollPosition({
+      element: box,
+      earlierScroll: null,
+      nearBottom: staleScroll.nearBottom,
+      pendingFollowScroll: true,
+      pinned: false,
+    });
+    expect(box.scrollTop).toBe(2468 - 560);
+    expect(synced.nearBottom).toBe(true);
+    expect(synced.pendingFollowScroll).toBe(false);
+    expect(synced.metrics).toEqual({ top: 1908, height: 2468, clientHeight: 560 });
+  });
+
+  it("keeps the newly sent Follow Up visible when PendingRunFeedback or composer notices shrink clientHeight", () => {
+    const box = mockScrollBox(2468, 560, 1908);
+    const initialMetrics = { top: 1908, height: 2468, clientHeight: 560 };
+
+    // PendingRunFeedback mounts above the log and shrinks clientHeight by 120px (>= 100px threshold).
+    box.clientHeight = 440;
+    const afterLayoutScroll = updateConversationNearBottom({
+      element: box,
+      previousMetrics: initialMetrics,
+      nearBottom: true,
+      pendingFollowScroll: false,
+      pinned: false,
+      threshold: 100,
+    });
+    expect(afterLayoutScroll.nearBottom).toBe(true);
+
+    const resized = syncConversationScrollPosition({
+      element: box,
+      earlierScroll: null,
+      nearBottom: afterLayoutScroll.nearBottom,
+      pendingFollowScroll: false,
+      pinned: false,
+    });
+    expect(box.scrollTop).toBe(2468 - 440);
+    expect(resized.nearBottom).toBe(true);
+  });
+
+  it("stops auto-scrolling as soon as the user scrolls upward away from the bottom", () => {
+    const box = mockScrollBox(2468, 560, 1908);
+    box.scrollTop = 1750;
+    const afterUserScrollUp = updateConversationNearBottom({
+      element: box,
+      previousMetrics: { top: 1908, height: 2468, clientHeight: 560 },
+      nearBottom: true,
+      pendingFollowScroll: false,
+      pinned: false,
+      threshold: 100,
+    });
+    expect(afterUserScrollUp.nearBottom).toBe(false);
+
+    box.scrollHeight = 2600;
+    syncConversationScrollPosition({
+      element: box,
+      earlierScroll: null,
+      nearBottom: afterUserScrollUp.nearBottom,
+      pendingFollowScroll: false,
+      pinned: false,
+    });
+    expect(box.scrollTop).toBe(1750);
   });
 });
 import Link from "next/link";

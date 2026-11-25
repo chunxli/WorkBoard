@@ -1686,39 +1686,18 @@ body:has(main > .page-enter > .work-detail-page) > nav > .app-nav-content {
   }
 
   .work-conversation-sidebar > .work-session-usage {
-    display: flex;
     min-height: 0;
     flex: 0 1 auto;
-    flex-direction: column;
     margin-top: auto;
+    overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
     padding-inline: 0.375rem;
   }
 
-  .work-conversation-sidebar > .work-session-usage > details[open] {
-    display: flex;
-    min-height: 0;
-    flex: 0 1 auto;
-    flex-direction: column;
-  }
-
-  .work-conversation-sidebar > .work-session-usage > details[open]::details-content {
-    display: flex;
-    min-height: 0;
-    flex: 0 1 auto;
-    flex-direction: column;
-  }
-
-  .work-conversation-sidebar > .work-session-usage > details > summary {
-    flex-shrink: 0;
-  }
-
   .work-conversation-sidebar .work-session-usage-content {
-    min-height: 0;
     max-height: none;
-    flex: 0 1 auto;
-    overflow-y: auto;
+    overflow: visible;
   }
 
   .work-conversation-sidebar .work-session-usage-groups {
