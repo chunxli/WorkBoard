@@ -29,6 +29,7 @@ import { spawn } from 'node:child_process';
 const [scenario, record, ...args] = process.argv.slice(2);
 const emit = event => process.stdout.write(JSON.stringify(event) + '\\n');
 const save = extra => appendFileSync(record, JSON.stringify({ args, cwd: process.cwd(), sdkEntra: process.env.WORKBOARD_COPILOT_ENTRA_CLIENT_ID ?? null,
+  entraOneAuth: process.env.COPILOT_ENTRA_ONEAUTH ?? null,
   instructions: process.env.COPILOT_CUSTOM_INSTRUCTIONS_DIRS ?? null, ...extra }) + '\\n');
 if (scenario === 'hang') {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
@@ -81,7 +82,7 @@ function options(scenario = "success") {
     executable: process.execPath, executableArgs: [script, scenario, path.join(root, `${runId}.jsonl`)],
   };
 }
-async function records(runId: string): Promise<{ args: string[]; cwd: string; sdkEntra: string | null; instructions: string | null; childPid?: number }[]> {
+async function records(runId: string): Promise<{ args: string[]; cwd: string; sdkEntra: string | null; entraOneAuth: string | null; instructions: string | null; childPid?: number }[]> {
   return (await readFile(path.join(root, `${runId}.jsonl`), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 }
 
@@ -176,6 +177,38 @@ describe("native CLI process execution without SDK", () => {
     });
     const result = await startCopilotRun({ ...options("long"), outputFormat: "text" });
     expect(result).toMatchObject({ exitCode: 0, incomplete: false, finalOutput: text });
+  });
+
+  it.skipIf(process.platform !== "win32")("overrides HTTP SupportIQ MCP with the local WAM TSE bridge without disabling OneAuth", async () => {
+    const withoutSiqHome = path.join(root, "home-without-siq");
+    const withHttpSiqHome = path.join(root, "home-with-http-siq");
+    await mkdir(withoutSiqHome, { recursive: true });
+    await mkdir(withHttpSiqHome, { recursive: true });
+    await writeFile(
+      path.join(withoutSiqHome, "mcp-config.json"),
+      JSON.stringify({ mcpServers: { workiq: { type: "http", url: "https://workiq.svc.cloud.microsoft/mcp" } } }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(withHttpSiqHome, "mcp-config.json"),
+      JSON.stringify({ mcpServers: { SupportIQ: { type: "http", url: "https://api.support.microsoft.com/v2/supportiq/mcp" } } }),
+      "utf8",
+    );
+
+    vi.stubEnv("COPILOT_ENTRA_ONEAUTH", undefined);
+    vi.stubEnv("COPILOT_HOME", withoutSiqHome);
+    const plainInput = options();
+    expect((await startCopilotRun(plainInput)).exitCode).toBe(0);
+    const [plainRecord] = await records(plainInput.runId);
+    expect(plainRecord.entraOneAuth).toBeNull();
+    expect(plainRecord.args).not.toContain("--additional-mcp-config");
+
+    vi.stubEnv("COPILOT_HOME", withHttpSiqHome);
+    const siqInput = options();
+    expect((await startCopilotRun(siqInput)).exitCode).toBe(0);
+    const [siqRecord] = await records(siqInput.runId);
+    expect(siqRecord.entraOneAuth).toBeNull();
+    expect(siqRecord.args).toContain("--additional-mcp-config");
   });
 
   it.each(["cancel", "timeout"] as const)("terminates only the owned CLI process tree on %s", async (kind) => {

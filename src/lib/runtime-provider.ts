@@ -1,11 +1,13 @@
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
+
 export const CASEIQ_PROVIDER_ID = "caseiq";
 
 export function isCaseIqRuntime(run: { providerId?: string | null }): boolean {
   return run.providerId === CASEIQ_PROVIDER_ID;
 }
 
-export function isCaseIqWebRun(run: { providerId?: string | null; engine?: string | null }): boolean {
-  return isCaseIqRuntime(run) && run.engine === "CASEIQ";
+export function isCaseIqWebRun(run: { providerId?: string | null; engine?: string | null; trigger?: string | null }): boolean {
+  return isCaseIqRuntime(run) && run.engine === "CASEIQ" && (!run.trigger || !isTerminalRunTrigger(run.trigger));
 }
 
 export function runtimeProviderLabel(run: { providerId?: string | null; engine?: string | null }): string {

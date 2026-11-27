@@ -122,4 +122,13 @@ describe("truthful guided SupportIQ sign-in", () => {
     expect(markup).toContain("will not replace its Session");
     expect(markup).not.toContain('data-state="complete"');
   });
+  it("reports stopping progress while cancelling the active Run before opening SupportIQ sign-in", () => {
+    const markup = render(status(null, {
+      canStopRunsToSignIn: true,
+      blockingRunCount: 1,
+      automaticSignIn: { requestId: "00000000-0000-4000-8000-000000000003", requiredAt: at, attempted: false },
+    }), { stoppingRuns: true, compact: true });
+    expect(markup).toContain("Stopping current Run to verify SupportIQ");
+    expect(markup).not.toContain("caseiq-signin-command");
+  });
 });

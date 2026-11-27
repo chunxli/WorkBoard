@@ -5,6 +5,10 @@ import { EventEmitter } from "node:events";
 import pidusage from "pidusage";
 import { CopilotCompletionTracker } from "@/lib/copilot-completion";
 import { resolveCopilotCliExecutable } from "@/lib/copilot-cli-executable";
+import {
+  extractDisabledMcpServersFromArgs,
+  resolveSupportIqCliBridgeArgs,
+} from "@/lib/copilot-entra";
 import { stopCopilotProcess } from "@/lib/copilot-process";
 import { workspaceInstructionEnvironment, type PairedCopilotWorkspace } from "@/lib/work-pair-directories";
 import {
@@ -188,6 +192,9 @@ export function buildCopilotEnvironment(
     "COPILOT_CACHE_HOME",
     "COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
     "COPILOT_SKILLS_DIRS",
+    "COPILOT_ENTRA_ONEAUTH",
+    "COPILOT_ENTRA_DISABLE_ONEAUTH",
+    "COPILOT_ENTRA_ONEAUTH_SCOPE_BINDING_MODE",
     "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -332,10 +339,17 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
       automaticContinuation = false,
       sessionEventCursor = sessionBaseline?.eventCount ?? 0
     ) => {
-      const args = buildArgs(opts, model, resumeSession, automaticContinuation);
+      const cliEnvironment = buildCopilotEnvironment();
+      const baseArgs = buildArgs(opts, model, resumeSession, automaticContinuation);
+      const bridgeArgs = resolveSupportIqCliBridgeArgs({
+        environment: cliEnvironment,
+        workingDirectory: opts.repoPath,
+        disabledServers: extractDisabledMcpServersFromArgs(baseArgs),
+      });
+      const args = [...baseArgs, ...bridgeArgs];
       const testExecutableArgs = process.env.NODE_ENV === "test" ? opts.executableArgs : undefined;
       const processArgs = [...(testExecutableArgs ?? []), ...args];
-      const commandArgs = args.map((arg, index) => (index > 0 && args[index - 1] === "-p" ? "<prompt>" : arg));
+      const commandArgs = baseArgs.map((arg, index) => (index > 0 && baseArgs[index - 1] === "-p" ? "<prompt>" : arg));
       const command = `copilot ${commandArgs.join(" ")}`;
       let timedOut = false;
       let settled = false;
@@ -349,7 +363,7 @@ export async function startCopilotRun(opts: StartCopilotRunOptions): Promise<{
         processArgs,
         {
         cwd: opts.repoPath,
-        env: workspaceInstructionEnvironment(buildCopilotEnvironment(), opts.pairedWorkspace),
+        env: workspaceInstructionEnvironment(cliEnvironment, opts.pairedWorkspace),
         windowsHide: true,
         detached: process.platform !== "win32",
         }

@@ -286,18 +286,75 @@ describe("Terminal history reconciliation", () => {
   });
 
   it.skipIf(process.platform !== "win32")("persists the real exit code through the Windows launcher without a callback", async () => {
+    const envCaptureFile = path.join(directory, "captured-env.json");
     const launchFile = path.join(directory, "launch.json");
-    await writeFile(launchFile, JSON.stringify({ workingDirectory: directory, sessionId, copilotArgs: ["--resume", sessionId] }));
+    await writeFile(
+      launchFile,
+      JSON.stringify({
+        workingDirectory: directory,
+        sessionId,
+        copilotArgs: ["--resume", sessionId],
+        environment: {
+          COPILOT_ENTRA_ONEAUTH: "0",
+          COPILOT_ENTRA_ONEAUTH_SCOPE_BINDING_MODE: "allow_unbound_scopes",
+          COPILOT_ENTRA_DISABLE_ONEAUTH: null,
+          GH_TOKEN: "must-not-be-applied-from-manifest",
+        },
+      }),
+    );
     const script = path.join(repositoryRoot, "scripts", "workboard-resume.ps1").replaceAll("'", "''");
     const quotedLaunch = launchFile.replaceAll("'", "''");
-    const command = `function global:copilot { $global:LASTEXITCODE = 7 }; & '${script}' -LaunchFile '${quotedLaunch}'; exit $LASTEXITCODE`;
+    const quotedCapture = envCaptureFile.replaceAll("'", "''");
+    const command = [
+      "$env:COPILOT_ENTRA_DISABLE_ONEAUTH = '0'",
+      "Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue",
+      `function global:copilot { @{ oneAuth = $env:COPILOT_ENTRA_ONEAUTH; scopeBinding = $env:COPILOT_ENTRA_ONEAUTH_SCOPE_BINDING_MODE; disableOneAuth = $env:COPILOT_ENTRA_DISABLE_ONEAUTH; ghToken = $env:GH_TOKEN } | ConvertTo-Json | Set-Content -LiteralPath '${quotedCapture}' -Encoding UTF8; $global:LASTEXITCODE = 7 }`,
+      `& '${script}' -LaunchFile '${quotedLaunch}'`,
+      "exit $LASTEXITCODE",
+    ].join("; ");
     await expect(promisify(execFile)("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]))
       .rejects.toMatchObject({ code: 7 });
     const saved = JSON.parse(await readFile(launchFile, "utf8"));
     expect(saved).toMatchObject({ sessionId, exitCode: 7 });
     expect(saved.wrapperPid).toBeGreaterThan(0);
     expect(saved).not.toHaveProperty("callbackToken");
+    const capturedEnv = JSON.parse((await readFile(envCaptureFile, "utf8")).replace(/^\uFEFF/, ""));
+    expect(capturedEnv).toEqual({
+      oneAuth: "0",
+      scopeBinding: "allow_unbound_scopes",
+      disableOneAuth: null,
+      ghToken: null,
+    });
     await expect(readFile(`${launchFile}.tmp`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "win32")("passes --resume and --add-dir as separate native arguments when copilotArgs is omitted", async () => {
+    const argsCaptureFile = path.join(directory, "captured-args.json");
+    const sharedDir = path.join(directory, "shared input folder");
+    await mkdir(sharedDir, { recursive: true });
+    const launchFile = path.join(directory, "paired-resume-launch.json");
+    await writeFile(
+      launchFile,
+      JSON.stringify({
+        workingDirectory: directory,
+        sessionId,
+        sharedInputDirectory: sharedDir,
+      }),
+    );
+    const script = path.join(repositoryRoot, "scripts", "workboard-resume.ps1").replaceAll("'", "''");
+    const quotedLaunch = launchFile.replaceAll("'", "''");
+    const quotedCapture = argsCaptureFile.replaceAll("'", "''");
+    const command = [
+      `function global:copilot { @{ args = @($args); interactive = $env:SUPPORTIQ_INTERACTIVE_AUTH } | ConvertTo-Json -Compress | Set-Content -LiteralPath '${quotedCapture}' -Encoding UTF8; $global:LASTEXITCODE = 0 }`,
+      `& '${script}' -LaunchFile '${quotedLaunch}'`,
+      "exit $LASTEXITCODE",
+    ].join("; ");
+    await promisify(execFile)("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]);
+    const captured = JSON.parse((await readFile(argsCaptureFile, "utf8")).replace(/^\uFEFF/, ""));
+    expect(captured).toEqual({
+      args: [`--resume=${sessionId}`, "--add-dir", sharedDir],
+      interactive: "1",
+    });
   });
 
   it("continues scanning other sessions after a read failure", async () => {

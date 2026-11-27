@@ -6,6 +6,15 @@ export interface PromptTemplateOption {
   builtIn: boolean;
 }
 
+export interface SavedPromptTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  content: string;
+}
+
+export type SavedPromptApplyMode = "append" | "replace";
+
 export const PROMPT_TEMPLATE_FILE_ACCEPT = ".md,.markdown,.txt,.prompt,text/markdown,text/plain";
 export const MAX_PROMPT_TEMPLATE_CONTENT_LENGTH = 100000;
 
@@ -109,6 +118,55 @@ Inspect the existing architecture first. Include data-model changes, API and UI 
 export function applyPromptTemplate(currentPrompt: string, templateContent: string): string {
   const current = currentPrompt.trimEnd();
   return current ? `${current}\n\n${templateContent}` : templateContent;
+}
+
+export function resolveSavedPromptDraft(
+  currentPrompt: string,
+  templateContent: string,
+  mode: SavedPromptApplyMode = "append"
+): { ok: true; value: string } | { ok: false; error: string } {
+  const next = mode === "replace" ? templateContent : applyPromptTemplate(currentPrompt, templateContent);
+  if (!next.trim()) {
+    return { ok: false, error: "Saved prompt content is empty." };
+  }
+  if (next.length > MAX_PROMPT_TEMPLATE_CONTENT_LENGTH) {
+    return { ok: false, error: "The message would exceed the 100,000-character Prompt limit." };
+  }
+  return { ok: true, value: next };
+}
+
+export function filterSavedPrompts(templates: SavedPromptTemplate[], query: string): SavedPromptTemplate[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return templates;
+  return templates.filter(
+    (template) =>
+      template.name.toLowerCase().includes(needle) ||
+      (template.description?.toLowerCase().includes(needle) ?? false) ||
+      template.content.toLowerCase().includes(needle)
+  );
+}
+
+export function extractPromptTemplateApiError(body: unknown, fallback: string): string {
+  if (!body || typeof body !== "object") return fallback;
+  const error = (body as { error?: unknown }).error;
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error === "object") {
+    const formErrors = (error as { formErrors?: unknown }).formErrors;
+    if (Array.isArray(formErrors)) {
+      const first = formErrors.find((item): item is string => typeof item === "string" && item.trim().length > 0);
+      if (first) return first;
+    }
+    const fieldErrors = (error as { fieldErrors?: Record<string, unknown> }).fieldErrors;
+    if (fieldErrors && typeof fieldErrors === "object") {
+      for (const messages of Object.values(fieldErrors)) {
+        if (Array.isArray(messages)) {
+          const first = messages.find((item): item is string => typeof item === "string" && item.trim().length > 0);
+          if (first) return first;
+        }
+      }
+    }
+  }
+  return fallback;
 }
 
 export function parsePromptTemplateFile(fileName: string, rawContent: string) {

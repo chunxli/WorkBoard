@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,6 +15,13 @@ import {
 import { stopOwnedProcess } from "./owned-process.mjs";
 import { nativeMcpPermissionRules } from "./native-mcp-permissions.mjs";
 import { connectCaseIqSharedOAuth } from "./native-shared-oauth.mjs";
+import {
+  DEFAULT_SUPPORTIQ_URL,
+  DEFAULT_TSE_TENANT_ID,
+  DEFAULT_WAM_CLIENT_ID,
+  findMsalNodeRuntimePath,
+  selectTseWamAccount,
+} from "./supportiq-mcp-bridge.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const errorMessage = (error) => error instanceof Error ? error.message : String(error);
@@ -353,6 +361,136 @@ async function stageAuthenticationObserver(request, binding) {
   return directory;
 }
 
+async function hasCachedTseWamAccount({
+  msalRuntime,
+  clientId = process.env.SUPPORTIQ_CLIENT_ID?.trim() || DEFAULT_WAM_CLIENT_ID,
+  tenantId = process.env.SUPPORTIQ_TENANT_ID?.trim() || DEFAULT_TSE_TENANT_ID,
+} = {}) {
+  try {
+    let runtime = msalRuntime;
+    if (!runtime) {
+      const runtimePath = findMsalNodeRuntimePath();
+      if (!runtimePath) return false;
+      const require = createRequire(import.meta.url);
+      runtime = require(runtimePath);
+    }
+    if (!runtime || typeof runtime.DiscoverAccountsAsync !== "function") return false;
+    return await new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 3000);
+      try {
+        runtime.DiscoverAccountsAsync(clientId, randomUUID(), (result) => {
+          clearTimeout(timeout);
+          try {
+            result.CheckError();
+            resolve(selectTseWamAccount(result.accounts ?? [], { tenantId }) !== null);
+          } catch {
+            resolve(false);
+          }
+        });
+      } catch {
+        clearTimeout(timeout);
+        resolve(false);
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @param {any} request
+ * @param {any} invocation
+ * @param {{
+ *   platform?: NodeJS.Platform;
+ *   bridgeScriptPath?: string;
+ *   nodeExecutable?: string;
+ *   msalRuntime?: any;
+ *   forceEnable?: boolean;
+ * }} [options]
+ */
+export async function applyCaseIqSupportIqWamBridge(
+  request,
+  invocation,
+  {
+    platform = process.platform,
+    bridgeScriptPath = fileURLToPath(new URL("./supportiq-mcp-bridge.mjs", import.meta.url)),
+    nodeExecutable = process.execPath,
+    msalRuntime = null,
+    forceEnable = false,
+  } = {},
+) {
+  if (request.authenticationOnly || platform !== "win32") return invocation;
+  if (process.env.NODE_ENV === "test" && !forceEnable && process.env.WORKBOARD_ENABLE_TEST_WAM_BRIDGE !== "1") {
+    return invocation;
+  }
+  if (!await hasCachedTseWamAccount({ msalRuntime })) return invocation;
+
+  const nextArgs = [...invocation.nativeArguments];
+  let stagedCount = 0;
+  for (let index = 0; index < nextArgs.length; index++) {
+    const arg = nextArgs[index];
+    let rawValue = null;
+    let inline = false;
+    if (arg === "--additional-mcp-config" && index + 1 < nextArgs.length) {
+      rawValue = nextArgs[index + 1];
+    } else if (arg.startsWith("--additional-mcp-config=")) {
+      rawValue = arg.slice("--additional-mcp-config=".length);
+      inline = true;
+    }
+    if (!rawValue || !rawValue.startsWith("@")) continue;
+    const configFile = rawValue.slice(1);
+    let parsed;
+    try {
+      const info = await lstat(configFile);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_BRIDGE_FILE_BYTES) continue;
+      parsed = JSON5.parse(await readFile(configFile, "utf8"));
+    } catch {
+      continue;
+    }
+    const server = parsed?.mcpServers?.SupportIQ;
+    if (!server || typeof server !== "object" || Array.isArray(server)) continue;
+    const serverType = typeof server.type === "string" ? server.type.trim().toLowerCase() : "";
+    if (serverType !== "http" && serverType !== "sse") continue;
+
+    const tools =
+      Array.isArray(server.tools) && server.tools.every((item) => typeof item === "string")
+        ? server.tools
+        : ["*"];
+    const url = typeof server.url === "string" && server.url.trim() ? server.url.trim() : DEFAULT_SUPPORTIQ_URL;
+    const timeout =
+      typeof server.timeout === "number" && Number.isFinite(server.timeout) && server.timeout > 0
+        ? server.timeout
+        : 120_000;
+
+    const stagedFile = path.join(
+      request.requestDirectory,
+      `supportiq-wam-bridge-${++stagedCount}.json`,
+    );
+    await writeJson(stagedFile, {
+      ...parsed,
+      mcpServers: {
+        ...parsed.mcpServers,
+        SupportIQ: {
+          type: "local",
+          command: nodeExecutable,
+          args: [bridgeScriptPath],
+          tools,
+          timeout,
+          ...(url !== DEFAULT_SUPPORTIQ_URL ? { env: { SUPPORTIQ_MCP_URL: url } } : {}),
+        },
+      },
+    });
+    if (inline) {
+      nextArgs[index] = `--additional-mcp-config=@${stagedFile}`;
+    } else {
+      nextArgs[index + 1] = `@${stagedFile}`;
+      index += 1;
+    }
+  }
+
+  return stagedCount > 0 ? { ...invocation, nativeArguments: nextArgs } : invocation;
+}
+
 export async function executeInvocation(file) {
   const originalInvocation = nativeBridgeInvocationSchema.parse(await readJson(file));
   const request = await checkedRequest(originalInvocation.requestFile);
@@ -367,16 +505,18 @@ export async function executeInvocation(file) {
     const binding = await prepareBinding(request, invocation);
     await journal.append("prepared", { binding });
     let stopped = await waitForAcceptance(request, binding);
+    let runtimeInvocation = invocation;
     if (!stopped) {
       await trustAuthenticationWorkFolder(request, binding);
       observerDirectory = await stageAuthenticationObserver(request, binding);
+      runtimeInvocation = await applyCaseIqSupportIqWamBridge(request, invocation);
       const control = await cancellation(request);
       stopped = control?.reason ?? (timedOut(request) ? "timeout" : null);
     }
     result = stopped ? {
       pid: null, exitCode: null, signal: null,
       cancelled: stopped !== "timeout", timedOut: stopped === "timeout", forced: false, error: null,
-    } : await runNative(request, invocation, journal);
+    } : await runNative(request, runtimeInvocation, journal);
   } catch (error) {
     result = {
       pid: null, exitCode: null, signal: null, cancelled: false, timedOut: false, forced: false,

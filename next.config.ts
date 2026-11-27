@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
       "./scripts/native-shared-oauth.mjs",
       "./scripts/owned-process.mjs",
       "./scripts/private-runtime-directory.ps1",
+      "./scripts/supportiq-mcp-bridge.mjs",
       "./scripts/workboard-resume.ps1",
       "./node_modules/zod/**/*",
       "./node_modules/json5/**/*",

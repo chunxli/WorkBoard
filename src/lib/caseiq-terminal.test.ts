@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +20,9 @@ vi.mock("@/lib/prisma", () => ({ prisma: {
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), spawn: mocks.spawn }));
 vi.mock("@/lib/caseiq-integration", () => ({
   prepareCaseIqTerminal: mocks.prepare, monitorCaseIqPreparation: mocks.monitor,
-  ensurePrivateRuntimeDirectory: vi.fn(async () => {}),
+  ensurePrivateRuntimeDirectory: vi.fn(async (directory: string) => {
+    await mkdir(directory, { recursive: true });
+  }),
   acceptCaseIqPreparation: vi.fn(async () => true),
 }));
 vi.mock("@/lib/native-session-bindings", async (original) => ({
@@ -92,6 +94,7 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   await rm(root, { recursive: true, force: true });
 });
@@ -157,5 +160,71 @@ describe("CaseIQ native Terminal dispatch", () => {
     mocks.exists.mockResolvedValue(true);
     await expect(isTerminalResumeReady(run)).resolves.toBe(true);
     expect(mocks.exists).toHaveBeenLastCalledWith("12345678-1234-4234-8234-123456789abc", "C:\\synthetic");
+  });
+
+  it("resumes a CaseIQ web or paired CaseIQ lane session via CaseIQ with verified PowerShell 7 and preserves CASEIQ engine", async () => {
+    const cliSessionId = "11111111-1111-4111-8111-111111111111";
+    const caseIqSessionId = "12345678-1234-4234-8234-123456789abc";
+    const { mkdir: makeDir } = await import("node:fs/promises");
+    const workDirectory = path.join(root, "paired-workspace");
+    await makeDir(workDirectory, { recursive: true });
+    vi.stubEnv("WORKBOARD_CASEIQ_STATE_ROOT", path.join(root, "private-state"));
+    const { provisionPairedWorkspaces } = await import("./work-pair-directories");
+    const pairedDirs = await provisionPairedWorkspaces(workDirectory, { cliSessionId, caseIqSessionId });
+    const pairedWork = {
+      ...(await mocks.work()),
+      directoryPath: workDirectory,
+      sessionPair: { cliSessionId, caseIqSessionId },
+    };
+    mocks.run.mockResolvedValue({
+      id: "12345678-1234-4234-8234-000000000001",
+      providerId: "caseiq",
+      engine: "CASEIQ",
+      workId: pairedWork.id,
+      taskId: null,
+      work: pairedWork,
+      task: null,
+      status: "SUCCESS",
+      trigger: "WORK",
+      hostname: hostname(),
+      copilotSessionId: caseIqSessionId,
+      executionPath: pairedDirs.caseIq,
+      promptSnapshot: "Investigate case",
+      model: null,
+      agent: null,
+      fallbackModel: null,
+      contextTier: null,
+      reasoningEffort: null,
+      permissionMode: "default",
+    });
+    mocks.prepare.mockResolvedValueOnce({
+      requestFile: path.join(root, "paired-request.json"),
+      runId: "resumed-caseiq",
+      sessionId: caseIqSessionId,
+      launchId: "launch-caseiq",
+      powerShellExecutable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      script: path.join(root, "trusted-caseiq.ps1"),
+      arguments: ["-RequestFile", path.join(root, "paired-request.json")],
+      environment: { CASEIQ_HOME: path.join(root, "private-caseiq") },
+    });
+
+    await launchTerminalResume("12345678-1234-4234-8234-000000000001");
+
+    expect(mocks.prepare).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: caseIqSessionId,
+      workingDirectory: pairedDirs.caseIq,
+      sharedInputDirectory: workDirectory,
+      resume: true,
+    }));
+    expect(mocks.createRun.mock.calls[0][0].data).toMatchObject({
+      engine: "CASEIQ",
+      providerId: "caseiq",
+      trigger: "TERMINAL_RESUME",
+      executionPath: pairedDirs.caseIq,
+      copilotSessionId: caseIqSessionId,
+    });
+    const spawnArgs: string[] = mocks.spawn.mock.calls[0][1];
+    expect(spawnArgs).toContain("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+    expect(spawnArgs).toContain(path.join(root, "trusted-caseiq.ps1"));
   });
 });

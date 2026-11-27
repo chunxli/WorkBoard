@@ -4,6 +4,11 @@ import { hostname } from "node:os";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "@/lib/prisma";
+import {
+  buildTerminalLaunchEnvironmentOverrides,
+  extractDisabledMcpServersFromArgs,
+  resolveSupportIqCliBridgeArgs,
+} from "@/lib/copilot-entra";
 import { buildCopilotEnvironment } from "@/lib/copilot-runner";
 import {
   assertCopilotSessionNotInUse,
@@ -53,8 +58,16 @@ import {
   prepareCaseIqTerminal, type CaseIqTerminalSpec,
 } from "@/lib/caseiq-integration";
 import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
-import { readNativeSessionBindingSync } from "@/lib/native-session-bindings";
+import { nativeSessionBindingHome, readNativeSessionBindingSync } from "@/lib/native-session-bindings";
 import { WINDOWS_PROCESS_START_TIME, windowsProcessMatchesStartTime } from "@/lib/copilot-process";
+import {
+  verifyPairedRunDirectory,
+  WorkPairError,
+  workspaceInstructionEnvironment,
+  writePairedWorkspaceInstructions,
+  type PairWorkspaceWork,
+} from "@/lib/work-pair-directories";
+import { pairedWorkLane } from "@/lib/work-session-pair";
 
 export class TerminalResumeInProgressError extends Error {
   constructor() {
@@ -178,7 +191,10 @@ export async function launchTerminalResume(parentRunId: string): Promise<{
 }> {
   const candidate = await prisma.run.findUniqueOrThrow({
     where: { id: parentRunId },
-    select: { copilotSessionId: true, workId: true, taskId: true, status: true, trigger: true, providerId: true },
+    select: {
+      copilotSessionId: true, workId: true, taskId: true, status: true, trigger: true, providerId: true,
+      work: { select: { sessionPair: { select: { cliSessionId: true, caseIqSessionId: true } } } },
+    },
   });
   if (!candidate.copilotSessionId) {
     throw new Error("This run does not have a resumable Copilot session");
@@ -186,13 +202,19 @@ export async function launchTerminalResume(parentRunId: string): Promise<{
   if (candidate.status === "RUNNING" && isTerminalRunTrigger(candidate.trigger)) {
     await reconcileTerminalRun(parentRunId, new Date(), { settleStopped: true });
   }
-  const ownerKey = candidate.workId
-    ? `work:${candidate.workId}`
-    : `task:${candidate.taskId}`;
+  const pairedLane = candidate.work?.sessionPair
+    ? pairedWorkLane(candidate.work.sessionPair, candidate.copilotSessionId)
+    : null;
+  const ownerKey = pairedLane
+    ? `paired:${candidate.workId}:${pairedLane}`
+    : candidate.workId
+      ? `work:${candidate.workId}`
+      : `task:${candidate.taskId}`;
   try {
     return await withRunStartLock(
       [ownerKey, `session:${candidate.copilotSessionId}`],
-      () => launchTerminalResumeUnlocked(parentRunId)
+      () => launchTerminalResumeUnlocked(parentRunId),
+      { checkWorkAuthentication: !pairedLane || pairedLane === "CASEIQ" }
     );
   } catch (error) {
     if (error instanceof RunStartInProgressError) {
@@ -210,7 +232,6 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
     where: { id: parentRunId },
     include: { work: { include: { sessionPair: true } }, task: { include: { repo: true } } },
   });
-  if (parentRun.work?.sessionPair) throw new TerminalStartError("Continue paired Sessions from the Work's Conversation.");
   if (parentRun.providerId && parentRun.providerId !== CASEIQ_PROVIDER_ID) {
     throw new TerminalStartError("This runtime does not have a supported native Terminal adapter.");
   }
@@ -218,8 +239,9 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
   if (caseIq && !parentRun.work) throw new TerminalStartError("CaseIQ Automations are not supported.");
   if (caseIq) {
     const binding = parentRun.copilotSessionId ? readNativeSessionBindingSync(parentRun.copilotSessionId) : null;
-    if (!binding?.home || binding.workId !== parentRun.workId || binding.userId !== parentRun.work?.userId ||
-        !await copilotSessionHasHistory(binding.sessionId, binding.home)) {
+    const boundHome = binding ? nativeSessionBindingHome(binding) : null;
+    if (!boundHome || binding?.workId !== parentRun.workId || binding?.userId !== parentRun.work?.userId ||
+        !await copilotSessionHasHistory(binding.sessionId, boundHome)) {
       throw new CaseIqIntegrationError("The original CaseIQ binding is unavailable. Start a new CaseIQ Terminal session explicitly.");
     }
   }
@@ -235,39 +257,60 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
   if (parentRun.hostname && parentRun.hostname !== hostname()) {
     throw new Error("This session belongs to another machine");
   }
+
+  const work = parentRun.work;
+  const task = parentRun.task;
+  const pair = work?.sessionPair ?? null;
+  let pairedArtifactRoot: string | null = null;
+  if (pair && work) {
+    try {
+      pairedArtifactRoot = await verifyPairedRunDirectory(work, parentRun);
+    } catch (error) {
+      if (error instanceof WorkPairError) throw new TerminalStartError(error.message, error.status);
+      throw error;
+    }
+  }
   const activeOwnerRun = await prisma.run.findFirst({
-    where: {
-      ...(parentRun.workId
-        ? { workId: parentRun.workId }
-        : { taskId: parentRun.taskId }),
-      status: { in: ["PENDING", "RUNNING"] },
-    },
+    where: pair
+      ? {
+          status: { in: ["PENDING", "RUNNING"] },
+          OR: [
+            { copilotSessionId: parentRun.copilotSessionId },
+            { workId: parentRun.workId, copilotSessionId: { notIn: [pair.cliSessionId, pair.caseIqSessionId] } },
+          ],
+        }
+      : {
+          ...(parentRun.workId
+            ? { workId: parentRun.workId }
+            : { taskId: parentRun.taskId }),
+          status: { in: ["PENDING", "RUNNING"] },
+        },
     select: { id: true },
   });
   if (activeOwnerRun) {
     throw new TerminalResumeInProgressError();
   }
 
-  const work = parentRun.work;
-  const task = parentRun.task;
   const executionPath =
+    pairedArtifactRoot ??
     parentRun.executionPath ??
     work?.directoryPath ??
     (task ? getRepoWorkdirPath(task.repo) : null);
   if (!executionPath) throw new Error("The run has no working directory");
+  const workArtifactRoot = pairedArtifactRoot ?? work?.directoryPath ?? null;
   const runId = randomUUID();
   const launchId = randomUUID();
   const paths = task
     ? getAutomationRunArtifactPaths(runId)
-    : getWorkRunArtifactPaths(work!.directoryPath, runId);
+    : getWorkRunArtifactPaths(workArtifactRoot!, runId);
   const parentPaths = task
     ? getAutomationRunArtifactPaths(parentRun.id)
-    : getWorkRunArtifactPaths(work!.directoryPath, parentRun.id);
+    : getWorkRunArtifactPaths(workArtifactRoot!, parentRun.id);
   const parentSnapshot = await readWorkRunSnapshot(parentPaths.snapshot).catch(() => null);
   if (!parentSnapshot?.finishedAt) throw new TerminalResumeNotReadyError();
 
-  const sourceArtifactRoot = task ? parentPaths.outputDirectory : work!.directoryPath;
-  const artifactRoot = task ? paths.outputDirectory : work!.directoryPath;
+  const sourceArtifactRoot = task ? parentPaths.outputDirectory : workArtifactRoot!;
+  const artifactRoot = task ? paths.outputDirectory : workArtifactRoot!;
   const baselineReady = await isRunSourceBaselineReady({
     workDirectory: sourceArtifactRoot,
     runId: parentRun.id,
@@ -286,10 +329,11 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
     targetWorkDirectory: artifactRoot,
     targetRunId: runId,
   });
-  const baseCommit = await getHeadCommit(executionPath).catch(() => null);
+  const baseCommit = pair ? null : await getHeadCommit(executionPath).catch(() => null);
   const sessionEventCursorStart = repairResult.eventCount;
   const startedAt = new Date();
   const prompt = parentRun.promptSnapshot ?? task?.prompt ?? work?.promptCache ?? "";
+  const resumedEngine = caseIq && parentRun.engine === "CASEIQ" ? "CASEIQ" : "CLI";
   const snapshot: WorkRunSnapshot = {
     schemaVersion: 1,
     runId,
@@ -298,7 +342,7 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
     promptFileName: task ? null : work!.promptFileName,
     prompt,
     promptHash: hashWorkContent(prompt),
-    engine: "CLI",
+    engine: resumedEngine,
     providerId: parentRun.providerId,
     sessionId: parentRun.copilotSessionId,
     executionPath,
@@ -334,7 +378,7 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
         workId: parentRun.workId,
         status: "RUNNING",
         trigger: "TERMINAL_RESUME",
-        engine: "CLI",
+        engine: resumedEngine,
         providerId: parentRun.providerId,
         executionPath,
         promptSnapshot: snapshot.prompt,
@@ -367,11 +411,28 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
   const launchFile = path.join(process.cwd(), "data", "terminal-launches", `${launchId}.json`);
   const launcherScript = path.join(process.cwd(), "scripts", "workboard-resume.ps1");
   try {
+    const pairedWorkspace = pair && work
+      ? await writePairedWorkspaceInstructions(work.directoryPath, executionPath, runId, ensurePrivateRuntimeDirectory)
+      : undefined;
     const caseIqSpec = caseIq ? await prepareCaseIqTerminal({
       userId: work!.userId, workId: work!.id, workingDirectory: executionPath,
       sessionId: parentRun.copilotSessionId, runId, launchId, prompt: "",
       launch: { packs: [], caseNumber: null, sendPrompt: false }, resume: true,
+      sharedInputDirectory: pairedWorkspace?.inputDirectory,
     }) : null;
+    const cliEnvironment = caseIqSpec
+      ? null
+      : workspaceInstructionEnvironment(buildCopilotEnvironment(), pairedWorkspace);
+    const cliBridgeArgs = cliEnvironment
+      ? resolveSupportIqCliBridgeArgs({
+          environment: cliEnvironment,
+          workingDirectory: executionPath,
+          interactiveAuth: true,
+        })
+      : [];
+    const launchEnvironmentOverrides = cliEnvironment
+      ? buildTerminalLaunchEnvironmentOverrides(cliEnvironment)
+      : undefined;
     if (caseIq) await ensurePrivateRuntimeDirectory(path.dirname(launchFile));
     await mkdir(path.dirname(launchFile), { recursive: true });
     await writeFile(
@@ -379,6 +440,9 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
       JSON.stringify({
         sessionId: parentRun.copilotSessionId,
         workingDirectory: executionPath,
+        ...(pairedWorkspace && !caseIqSpec ? { sharedInputDirectory: pairedWorkspace.inputDirectory } : {}),
+        ...(cliBridgeArgs.length > 0 ? { extraArgs: cliBridgeArgs } : {}),
+        ...(launchEnvironmentOverrides ? { environment: launchEnvironmentOverrides } : {}),
         ...(caseIqSpec ? { providerId: CASEIQ_PROVIDER_ID, caseIqRequestFile: caseIqSpec.requestFile } : {}),
       }),
       { encoding: "utf8", flag: "wx" }
@@ -392,8 +456,8 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
         "--startingDirectory",
         executionPath,
         "--title",
-        `Work Board ${runId.slice(0, 8)}`,
-        "powershell.exe",
+        `${caseIq ? "CaseIQ" : "Work Board"} ${runId.slice(0, 8)}`,
+        caseIqSpec?.powerShellExecutable ?? "powershell.exe",
         "-NoLogo",
         "-NoProfile",
         ...(caseIq ? [] : ["-ExecutionPolicy", "Bypass"]),
@@ -402,7 +466,9 @@ async function launchTerminalResumeUnlocked(parentRunId: string): Promise<{
         ...(caseIqSpec?.arguments ?? ["-LaunchFile", launchFile]),
       ],
       executionPath,
-      caseIqSpec?.environment
+      caseIqSpec
+        ? workspaceInstructionEnvironment(caseIqSpec.environment as NodeJS.ProcessEnv, pairedWorkspace)
+        : cliEnvironment!
     );
     await prisma.terminalLaunch.updateMany({
       where: { id: launchId, status: "PENDING" },
@@ -438,13 +504,46 @@ export async function isTerminalResumeReady(run: {
   id: string;
   taskId: string | null;
   status: string;
-  work: { directoryPath: string; sessionPair?: object | null } | null;
+  executionPath?: string | null;
+  copilotSessionId?: string | null;
+  engine?: string | null;
+  providerId?: string | null;
+  work: { directoryPath: string; sessionPair?: PairWorkspaceWork["sessionPair"] | object | null } | null;
 }): Promise<boolean> {
-  if (run.status === "PENDING" || run.status === "RUNNING" || run.work?.sessionPair) return false;
+  if (run.status === "PENDING" || run.status === "RUNNING") return false;
+  let workArtifactRoot: string | null = null;
+  if (!run.taskId && run.work) {
+    if (run.work.sessionPair) {
+      if (
+        !("cliSessionId" in run.work.sessionPair) ||
+        !("caseIqSessionId" in run.work.sessionPair) ||
+        !run.copilotSessionId ||
+        !run.executionPath
+      ) {
+        return false;
+      }
+      try {
+        workArtifactRoot = await verifyPairedRunDirectory(
+          { directoryPath: run.work.directoryPath, sessionPair: run.work.sessionPair },
+          {
+            id: run.id,
+            copilotSessionId: run.copilotSessionId,
+            engine: run.engine ?? null,
+            providerId: run.providerId ?? null,
+            executionPath: run.executionPath,
+          },
+        );
+      } catch {
+        return false;
+      }
+    } else {
+      workArtifactRoot = run.work.directoryPath;
+    }
+  }
   const paths = run.taskId
     ? getAutomationRunArtifactPaths(run.id)
-    : run.work
-      ? getWorkRunArtifactPaths(run.work.directoryPath, run.id)
+    : workArtifactRoot
+      ? getWorkRunArtifactPaths(workArtifactRoot, run.id)
       : null;
   if (!paths) return false;
 
@@ -453,14 +552,15 @@ export async function isTerminalResumeReady(run: {
   if (snapshot.providerId === CASEIQ_PROVIDER_ID) {
     try {
       const binding = readNativeSessionBindingSync(snapshot.sessionId);
-      if (!binding?.home || !await copilotSessionHasHistory(snapshot.sessionId, binding.home)) return false;
+      const boundHome = binding ? nativeSessionBindingHome(binding) : null;
+      if (!boundHome || !await copilotSessionHasHistory(snapshot.sessionId, boundHome)) return false;
     } catch (error) {
       console.error("[CaseIQ] Native Resume binding could not be verified.", error);
       return false;
     }
   }
   return isRunSourceBaselineReady({
-    workDirectory: run.taskId ? paths.outputDirectory : run.work!.directoryPath,
+    workDirectory: run.taskId ? paths.outputDirectory : workArtifactRoot!,
     runId: run.id,
     gitTree: snapshot.gitAfterTree,
   });
@@ -477,24 +577,30 @@ async function finalizeTerminalRun(
   return serializeRunFinalization(runId, async () => {
     const run = await prisma.run.findUnique({
       where: { id: runId },
-      include: { work: true, task: { include: { repo: true } } },
+      include: { work: { include: { sessionPair: true } }, task: { include: { repo: true } } },
     });
     if (!run || !isTerminalRunTrigger(run.trigger)) return false;
     if (run.status !== "RUNNING") return false;
 
+    const workRoot = run.work
+      ? run.work.sessionPair
+        ? await verifyPairedRunDirectory(run.work, run).catch(() => null)
+        : run.work.directoryPath
+      : null;
     const paths = run.task
       ? getAutomationRunArtifactPaths(run.id)
-      : run.work
-        ? getWorkRunArtifactPaths(run.work.directoryPath, run.id)
+      : workRoot
+        ? getWorkRunArtifactPaths(workRoot, run.id)
         : null;
     const executionPath =
+      workRoot ??
       run.executionPath ??
       run.work?.directoryPath ??
       (run.task ? getRepoWorkdirPath(run.task.repo) : null);
     if (paths && executionPath) {
       const snapshot = await readWorkRunSnapshot(paths.snapshot).catch(() => null);
       if (snapshot) {
-        const artifactRoot = run.task ? paths.outputDirectory : run.work!.directoryPath;
+        const artifactRoot = run.task ? paths.outputDirectory : workRoot!;
         const sourceDiff = await captureRunSourceDiff({
           executionPath,
           workDirectory: artifactRoot,
@@ -552,7 +658,8 @@ export async function getTerminalSessionActivity(
   sessionId: string, launchId: string | null, createdAt?: Date, observedAt = Date.now(),
 ) {
   try {
-    if (readNativeSessionBindingSync(sessionId)?.home !== null) await assertCopilotSessionNotInUse(sessionId);
+    const binding = readNativeSessionBindingSync(sessionId);
+    if (!binding || nativeSessionBindingHome(binding) !== null) await assertCopilotSessionNotInUse(sessionId);
   } catch (error) {
     if (!(error instanceof CopilotSessionInUseError)) throw error;
     return { active: true, wrapperExited: false, exitCode: null, starting: false };
@@ -605,7 +712,7 @@ export async function reconcileTerminalRun(
 ): Promise<void> {
   const run = await prisma.run.findUniqueOrThrow({
     where: { id: runId },
-    include: { work: true, task: { include: { repo: true } }, resumedRuns: { select: { id: true }, take: 1 } },
+    include: { work: { include: { sessionPair: true } }, task: { include: { repo: true } }, resumedRuns: { select: { id: true }, take: 1 } },
   });
   if (
     (!run.work && !run.task) || !run.copilotSessionId || !isTerminalRunTrigger(run.trigger) ||
@@ -624,10 +731,14 @@ export async function reconcileTerminalRun(
     data: { syncToken: token, syncOwnerPid: process.pid },
   });
   if (claim.count === 0) return;
+  const pairedLane = run.work?.sessionPair ? pairedWorkLane(run.work.sessionPair, run.copilotSessionId) : null;
+  const ownerLockKey = pairedLane
+    ? `paired:${run.workId}:${pairedLane}`
+    : run.workId ? `work:${run.workId}` : `task:${run.taskId}`;
   try {
     await withRunStartLock([
       `terminal-sync:${runId}`,
-      run.workId ? `work:${run.workId}` : `task:${run.taskId}`,
+      ownerLockKey,
       `session:${run.copilotSessionId}`,
     ], () => serializeRunFinalization(runId, async () => {
       const conflictingRun = await prisma.run.findFirst({
@@ -646,7 +757,12 @@ export async function reconcileTerminalRun(
         }
         return;
       }
-      const paths = run.task ? getAutomationRunArtifactPaths(run.id) : getWorkRunArtifactPaths(run.work!.directoryPath, run.id);
+      const workArtifactRoot = run.work
+        ? run.work.sessionPair
+          ? await verifyPairedRunDirectory(run.work, run)
+          : run.work.directoryPath
+        : null;
+      const paths = run.task ? getAutomationRunArtifactPaths(run.id) : getWorkRunArtifactPaths(workArtifactRoot!, run.id);
       const priorSnapshot = await readWorkRunSnapshot(paths.snapshot);
       const persistedExitCode = activity.exitCode;
       const launchFile = path.join(process.cwd(), "data", "terminal-launches", `${terminalLaunch.id}.json`);
@@ -706,18 +822,25 @@ export async function reconcileTerminalRun(
         });
         return;
       }
-      const executionPath = run.executionPath ?? run.work?.directoryPath ?? (run.task ? getRepoWorkdirPath(run.task.repo) : null);
+      const executionPath = workArtifactRoot ?? run.executionPath ?? run.work?.directoryPath ?? (run.task ? getRepoWorkdirPath(run.task.repo) : null);
       if (!executionPath) throw new Error("The run has no working directory");
       const otherOwnerRun = await prisma.run.findFirst({
-        where: {
-          id: { not: run.id }, ...(run.workId ? { workId: run.workId } : { taskId: run.taskId }),
-          status: { in: ["PENDING", "RUNNING"] },
-        },
+        where: run.work?.sessionPair
+          ? {
+              id: { not: run.id },
+              copilotSessionId: run.copilotSessionId,
+              status: { in: ["PENDING", "RUNNING"] },
+            }
+          : {
+              id: { not: run.id },
+              ...(run.workId ? { workId: run.workId } : { taskId: run.taskId }),
+              status: { in: ["PENDING", "RUNNING"] },
+            },
         select: { id: true },
       });
       if (otherOwnerRun) return;
       const sourceDiff = await captureRunSourceDiff({
-        executionPath, workDirectory: run.task ? paths.outputDirectory : run.work!.directoryPath,
+        executionPath, workDirectory: run.task ? paths.outputDirectory : workArtifactRoot!,
         runId: run.id, beforeGitTree: priorSnapshot.gitBeforeTree,
       });
       const finalActivity = await getTerminalSessionActivity(run.copilotSessionId!, terminalLaunch.id, run.createdAt);
@@ -736,7 +859,7 @@ export async function reconcileTerminalRun(
       const outcome = history.incompleteTail
         ? { status: "UNKNOWN" as const, exitCode: finalActivity.exitCode, errorMessage: "Session history ends with an incomplete record" }
         : resolveTerminalRunOutcome(finalActivity.exitCode, insights.completion, run.providerId === CASEIQ_PROVIDER_ID);
-      const finalCommit = await getHeadCommit(executionPath).catch(() => null);
+      const finalCommit = run.work?.sessionPair ? null : await getHeadCommit(executionPath).catch(() => null);
       await finalizeWorkRunArtifacts({
         paths,
         snapshot: { ...checkpoint, ...outcome, finishedAt: now.toISOString(), gitAfterTree: sourceDiff.afterGitTree },
@@ -754,10 +877,18 @@ export async function reconcileTerminalRun(
         }),
       ]);
       if (run.work && run.work.status !== "ARCHIVED") {
-        await prisma.work.update({ where: { id: run.work.id }, data: { status: outcome.status === "SUCCESS" ? "REVIEW" : "ACTIVE" } });
+        const remainingActive = run.work.sessionPair
+          ? Boolean(await prisma.run.findFirst({
+              where: { id: { not: run.id }, workId: run.work.id, status: { in: ["PENDING", "RUNNING"] } },
+              select: { id: true },
+            }))
+          : false;
+        if (!remainingActive) {
+          await prisma.work.update({ where: { id: run.work.id }, data: { status: outcome.status === "SUCCESS" ? "REVIEW" : "ACTIVE" } });
+        }
       }
       if (outcome.status !== "UNKNOWN") await rm(launchFile, { force: true }).catch(() => {});
-    }));
+    }), { checkWorkAuthentication: !pairedLane || pairedLane === "CASEIQ" });
   } catch (error) {
     if (error instanceof RunStartInProgressError || error instanceof CopilotSessionInUseError) return;
     await prisma.terminalLaunch.updateMany({
@@ -956,6 +1087,18 @@ export async function launchNewWorkTerminal(
           userId, workId: work.id, workingDirectory: work.directoryPath,
           sessionId, runId, launchId, prompt, launch: caseIqOptions, resume: false,
         }) : null;
+        const cliEnvironment = caseIqSpec ? null : buildCopilotEnvironment();
+        const cliBridgeArgs = cliEnvironment
+          ? resolveSupportIqCliBridgeArgs({
+              environment: cliEnvironment,
+              workingDirectory: work.directoryPath,
+              disabledServers: extractDisabledMcpServersFromArgs(copilotArgs),
+              interactiveAuth: true,
+            })
+          : [];
+        const launchEnvironmentOverrides = cliEnvironment
+          ? buildTerminalLaunchEnvironmentOverrides(cliEnvironment)
+          : undefined;
         if (caseIqOptions) await ensurePrivateRuntimeDirectory(path.dirname(launchFile));
         await mkdir(path.dirname(launchFile), { recursive: true });
         await writeFile(
@@ -964,7 +1107,8 @@ export async function launchNewWorkTerminal(
             mode: "new",
             sessionId,
             workingDirectory: work.directoryPath,
-            copilotArgs,
+            copilotArgs: [...copilotArgs, ...cliBridgeArgs],
+            ...(launchEnvironmentOverrides ? { environment: launchEnvironmentOverrides } : {}),
             ...(caseIqSpec ? { providerId: CASEIQ_PROVIDER_ID, caseIqRequestFile: caseIqSpec.requestFile } : {}),
           }),
           { encoding: "utf8", flag: "wx" }
@@ -988,7 +1132,7 @@ export async function launchNewWorkTerminal(
             ...(caseIqSpec?.arguments ?? ["-LaunchFile", launchFile]),
           ],
           work.directoryPath,
-          caseIqSpec?.environment
+          caseIqSpec?.environment ?? cliEnvironment!
         );
         if (caseIqSpec) monitorCaseIqPreparation(caseIqSpec);
       } catch (error) {

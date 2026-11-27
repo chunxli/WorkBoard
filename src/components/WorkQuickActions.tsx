@@ -15,6 +15,8 @@ export default function WorkQuickActions({
   archiveTarget,
   archived,
   archiveRedirect,
+  hideTerminal = false,
+  stayOnPageOnTerminal = false,
 }: {
   name: string;
   directoryPath: string;
@@ -24,6 +26,8 @@ export default function WorkQuickActions({
   archiveTarget: { kind: "work" | "task"; id: string } | null;
   archived: boolean;
   archiveRedirect?: string;
+  hideTerminal?: boolean;
+  stayOnPageOnTerminal?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<QuickAction | null>(null);
@@ -66,7 +70,7 @@ export default function WorkQuickActions({
       if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Action failed");
       if (action === "terminal") {
         if (typeof body.runId !== "string") throw new Error("Terminal Resume did not start");
-        router.push(`/runs/${encodeURIComponent(body.runId)}`);
+        if (!stayOnPageOnTerminal) router.push(`/runs/${encodeURIComponent(body.runId)}`);
       } else if (action === "archive") {
         if (!archived && archiveRedirect) router.push(archiveRedirect);
         else router.refresh();
@@ -85,13 +89,13 @@ export default function WorkQuickActions({
   const actions: { action: QuickAction; icon: LucideIcon; label: string; disabled: boolean }[] = [
     { action: "explorer", icon: FolderOpen, label: `Open ${name} in Windows Explorer`, disabled: !canOpenLocal || !directoryPath },
     { action: "vscode", icon: Code2, label: `Open ${name} in VS Code`, disabled: !canOpenLocal || !directoryPath },
-    {
-      action: "terminal", icon: TerminalSquare,
+    ...(!hideTerminal ? [{
+      action: "terminal" as const, icon: TerminalSquare,
       label: terminalState === "active" ? `Check and resume ${name} in Windows Terminal`
         : terminalState === "ready" ? `Resume ${name} in Windows Terminal`
           : `${name} has no resumable Terminal session`,
       disabled: !canOpenLocal || !terminalRunId || terminalState === "unavailable" || archived,
-    },
+    }] : []),
     { action: "archive", icon: archived ? RotateCcw : Archive, label: `${archived ? "Restore" : "Archive"} ${name}`, disabled: !archiveTarget },
   ];
 

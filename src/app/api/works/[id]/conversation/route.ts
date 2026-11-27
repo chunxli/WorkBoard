@@ -71,7 +71,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     const pairedWork = work.sessionPair ? { directoryPath: work.directoryPath, sessionPair: work.sessionPair } : null;
     if (pairedWork && (!anchor || work.hostname !== hostname() || anchor.hostname !== hostname() ||
-        anchor.taskId || !["WORK", "FOLLOW_UP"].includes(anchor.trigger) || !matchesPairedWorkspace(pairedWork, anchor))) {
+        anchor.taskId || !["WORK", "FOLLOW_UP", "TERMINAL_RESUME"].includes(anchor.trigger) || !matchesPairedWorkspace(pairedWork, anchor))) {
       throw new ConversationReadError("Select an original paired Session in this Work.", 409);
     }
     const conflicts = await findActiveRunConflicts(userId, pairedWork ? work.directoryPath : anchor?.executionPath ?? work.directoryPath, Boolean(pairedWork));
@@ -132,7 +132,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     });
     const siblingRuns = pairedWork ? new Set(activeWorkRuns.filter((run) =>
       run.copilotSessionId !== sessionId && run.hostname === hostname() && !run.experimentVariantId && !run.taskId &&
-      ["WORK", "FOLLOW_UP"].includes(run.trigger) && matchesPairedWorkspace(pairedWork, run)).map(({ id }) => id)) : new Set<string>();
+      ["WORK", "FOLLOW_UP", "TERMINAL_RESUME"].includes(run.trigger) && matchesPairedWorkspace(pairedWork, run)).map(({ id }) => id)) : new Set<string>();
     const activeOwners = activeWorkRuns.filter(({ id }) => !siblingRuns.has(id));
     const blockingConflicts = conflicts.filter(({ id }) => id !== stoppedRunId && !siblingRuns.has(id));
     base.runs = runs.map((run) => ({ id: run.id, status: run.status, trigger: run.trigger,

@@ -7,8 +7,8 @@ import type { useCaseIqAuthentication } from "./CaseIqAuthenticationPanel";
 function control(status: CaseIqAuthenticationStatus, checking = false, checkedAt: string | null = null,
   overrides: Partial<ReturnType<typeof useCaseIqAuthentication>> = {}) {
   const authentication: ReturnType<typeof useCaseIqAuthentication> = {
-    status, error: null, opening: false, uncertain: false, reserved: status.operation?.reserved ?? false,
-    refresh: vi.fn(), refreshManually: vi.fn(), start: vi.fn(), reportError: vi.fn(), checking, checkedAt,
+    status, error: null, opening: false, stoppingRuns: false, uncertain: false, reserved: status.operation?.reserved ?? false,
+    refresh: vi.fn(), refreshManually: vi.fn(), start: vi.fn(), stopAndStart: vi.fn(), reportError: vi.fn(), checking, checkedAt,
     trustWorkFolder: true, setTrustWorkFolder: vi.fn(), commandCopied: false, clipboardError: null, copyCommand: vi.fn(),
     cleaningCredentials: false, credentialNotice: null, cleanCredentials: vi.fn(),
     ...overrides,
@@ -219,5 +219,38 @@ describe("visible manual SupportIQ sign-in", () => {
     });
     expect(calloutMarkup).toContain("CredWriteW error 8");
     expect(calloutMarkup).toContain("Clean 252 stale credentials");
+  });
+
+  it("exposes an enabled Stop Run & sign in to SupportIQ action when active CaseIQ Runs block pending sign-in", () => {
+    const waitingStatus: CaseIqAuthenticationStatus = {
+      available: false,
+      blockedReason: "Wait for this Work's Runs and queued messages to finish before signing in.",
+      canStopRunsToSignIn: true,
+      blockingRunCount: 1,
+      authenticationVerified: false,
+      operation: null,
+      connection: { status: "needs-auth", toolCount: null, checkedAt: "2026-11-27T01:55:00.000Z" },
+      automaticSignIn: {
+        requestId: "00000000-0000-4000-8000-000000000099",
+        requiredAt: "2026-11-27T01:55:00.000Z",
+        attempted: false,
+      },
+    };
+    const calloutMarkup = callout(waitingStatus);
+    expect(calloutMarkup).toContain("Stop Run &amp; sign in to SupportIQ");
+    expect(calloutMarkup).toContain("stop the current Run below to verify SupportIQ now");
+    expect(calloutMarkup).toContain("Trust exact Work folder; no Full access.");
+    expect(calloutMarkup).not.toContain(">Sign in to SupportIQ<");
+
+    const pluralCalloutMarkup = callout({ ...waitingStatus, blockingRunCount: 2 });
+    expect(pluralCalloutMarkup).toContain("Stop Runs &amp; sign in to SupportIQ");
+
+    const bannerMarkup = render(waitingStatus);
+    expect(bannerMarkup).toContain("Stop Run &amp; sign in to SupportIQ");
+    expect(bannerMarkup).toContain("Sign-in queued");
+
+    const stoppingCallout = callout(waitingStatus, { stoppingRuns: true, reserved: true });
+    expect(stoppingCallout).toContain("Stopping current Run to verify SupportIQ");
+    expect(stoppingCallout).toContain("Stopping Run &amp; opening...");
   });
 });

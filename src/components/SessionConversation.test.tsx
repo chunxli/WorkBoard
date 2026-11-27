@@ -14,6 +14,7 @@ import { normalizeConversationEvent, type ConversationEvent } from "@/lib/sessio
 import { conversationTimeline, conversationToolActivityAt, withPendingFollowUp } from "@/lib/conversation-activity";
 import * as authentication from "./CaseIqAuthenticationPanel";
 import { CaseIqStartupFeedback } from "./CaseIqStartupStatus";
+import { computeSavedPromptsFloatingStyle, SavedPromptsPanel } from "./ComposerSavedPrompts";
 
 const navigation = vi.hoisted(() => ({ query: "" }));
 vi.mock("next/navigation", () => ({
@@ -25,8 +26,14 @@ beforeEach(() => { navigation.query = ""; });
 describe("session conversation toolbar", () => {
   const pairedLayout = {
     lanes: {
-      CLI: { sessionId: "cli-synthetic-session", runId: "cli-fixture-run", initialLog: "", isLive: true, awaitingRunStart: true, outputFormat: "text" as const },
-      CASEIQ: { sessionId: "caseiq-synthetic-session", runId: "caseiq-fixture-run", initialLog: "", isLive: false, awaitingRunStart: false, outputFormat: "json" as const },
+      CLI: {
+        sessionId: "cli-synthetic-session", runId: "cli-fixture-run", initialLog: "", isLive: true, awaitingRunStart: true,
+        outputFormat: "text" as const, terminalResume: { canOpenLocal: true, state: "unavailable" as const },
+      },
+      CASEIQ: {
+        sessionId: "caseiq-synthetic-session", runId: "caseiq-fixture-run", initialLog: "", isLive: false, awaitingRunStart: false,
+        outputFormat: "json" as const, terminalResume: { canOpenLocal: true, state: "ready" as const },
+      },
     },
     sendBlockedReason: null,
   };
@@ -41,6 +48,9 @@ describe("session conversation toolbar", () => {
     expect(markup).toContain("--work-detail-viewport-height:");
     expect(markup).toContain('data-paired-view="both"');
     expect(markup.match(/aria-label="Raw output" aria-pressed="false"/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="Wait for Copilot CLI&#x27;s Run to finish before resuming in Windows Terminal"');
+    expect(markup).toMatch(/<button[^>]*aria-label="Resume CaseIQ in Windows Terminal"[^>]*>/);
+    expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*aria-label="Resume CaseIQ in Windows Terminal"/);
     expect(markup).not.toContain('aria-label="Session view"');
     expect(markup).toContain('aria-label="Copilot CLI conversation"');
     expect(markup).toContain('aria-label="CaseIQ conversation"');
@@ -108,20 +118,38 @@ describe("session conversation toolbar", () => {
       status: { available: false, blockedReason: "Waiting for TSE.", authenticationVerified: false,
         operation: { id: "operation", sessionId: "session", sourceRunId: "run", startedAt: "2026-11-12T00:00:00.000Z",
           status: "active", reserved: true, phase: "native-started", message: "Waiting for TSE." } },
-      error: null, opening: false, uncertain: false, checking: false, checkedAt: null, trustWorkFolder: true,
+      error: null, opening: false, stoppingRuns: false, uncertain: false, checking: false, checkedAt: null, trustWorkFolder: true,
       commandCopied: false, clipboardError: null, reserved: true, setTrustWorkFolder: vi.fn(),
       cleaningCredentials: false, credentialNotice: null, cleanCredentials: vi.fn(),
-      copyCommand: vi.fn(), refresh: vi.fn(), refreshManually: vi.fn(), start: vi.fn(), reportError: vi.fn(),
+      copyCommand: vi.fn(), refresh: vi.fn(), refreshManually: vi.fn(), start: vi.fn(), stopAndStart: vi.fn(), reportError: vi.fn(),
     });
     try {
       const markup = renderToStaticMarkup(<SessionConversation workId="work" runId="run" runtimeEngine="CASEIQ"
         initialLog="" isLive={false} historySync={false} outputFormat="json" />);
       expect(markup).toContain('aria-label="SupportIQ sign-in action"');
+      expect(markup).not.toContain('aria-label="SupportIQ sign-in progress"');
+      expect(markup).not.toContain(">SupportIQ sign-in<");
       expect(markup.indexOf('class="work-conversation-composer')).toBeLessThan(markup.indexOf('aria-label="SupportIQ sign-in action"'));
       expect(markup.indexOf('aria-label="SupportIQ sign-in action"')).toBeLessThan(markup.indexOf('id="session-follow-up"'));
       expect(markup.match(/aria-label="SupportIQ sign-in action"/g)).toHaveLength(1);
       expect(markup).toContain("No task prompts.");
     } finally { hook.mockRestore(); }
+  });
+
+  it("renders full-reply HTML, MD, and Plain text copy actions only at the tail of assistant messages", () => {
+    const events: ConversationEvent[] = [
+      normalizeConversationEvent({ id: "u1", type: "user.message", timestamp: "2026-11-27T08:00:00Z", data: { content: "Check status" } }, "history", 0)!,
+      normalizeConversationEvent({ id: "a1", type: "assistant.message", timestamp: "2026-11-27T08:00:05Z", data: { content: "Case is **Open**." } }, "history", 1)!,
+    ];
+    const markup = renderToStaticMarkup(
+      <ConversationTimelineEntries timeline={conversationTimeline(events)} workId="work" isLive={false} />,
+    );
+    expect(markup.match(/aria-label="Copy full reply"/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="Copy full reply as HTML"');
+    expect(markup).toContain(">Copy<");
+    expect(markup).not.toContain(">HTML<");
+    expect(markup).toContain('aria-label="Copy full reply as Markdown"');
+    expect(markup).toContain('aria-label="Copy full reply as plain text"');
   });
 
   it("opens a linked Work MCP tab without unmounting the conversation or composer", () => {
@@ -796,6 +824,167 @@ describe("Follow Up latest-message auto-scroll and resize pinning", () => {
       pinned: false,
     });
     expect(box.scrollTop).toBe(1750);
+  });
+});
+
+describe("Follow Up saved prompts composer integration", () => {
+  const sampleSavedPrompts = [
+    { id: "tpl-ado", name: "ADO", description: null, content: "Summarize linked ADO work items." },
+    { id: "tpl-aoai", name: "AOAI", description: "Check latency and TPM", content: "Inspect AOAI region metrics." },
+  ];
+
+  it("renders exactly one Saved prompts trigger next to Add files in single and paired composers", () => {
+    const singleMarkup = renderToStaticMarkup(
+      <SessionConversation
+        workId="single-work"
+        runId="run-1"
+        runtimeEngine="CLI"
+        initialLog=""
+        isLive={false}
+        historySync={false}
+        outputFormat="text"
+      />
+    );
+    expect(singleMarkup.match(/>Add files<\/button>/g)).toHaveLength(1);
+    expect(singleMarkup.match(/>Saved prompts<\/button>/g)).toHaveLength(1);
+    expect(singleMarkup.indexOf(">Add files</button>")).toBeLessThan(
+      singleMarkup.indexOf(">Saved prompts</button>")
+    );
+
+    const pairedMarkup = renderToStaticMarkup(
+      <SessionConversation
+        workId="paired-work"
+        runId={null}
+        runtimeEngine={null}
+        initialLog=""
+        isLive={false}
+        historySync={false}
+        outputFormat="text"
+        paired={{
+          lanes: {
+            CLI: { sessionId: "cli-s", runId: "cli-r", initialLog: "", isLive: false, awaitingRunStart: false, outputFormat: "text" },
+            CASEIQ: { sessionId: "ciq-s", runId: "ciq-r", initialLog: "", isLive: false, awaitingRunStart: false, outputFormat: "json" },
+          },
+          sendBlockedReason: null,
+        }}
+      />
+    );
+    expect(pairedMarkup.match(/>Add files<\/button>/g)).toHaveLength(1);
+    expect(pairedMarkup.match(/>Saved prompts<\/button>/g)).toHaveLength(1);
+  });
+
+  it("renders insert actions, direct Send/Queue controls, Append/Replace draft mode, and inline Save draft form", () => {
+    const readyListMarkup = renderToStaticMarkup(
+      <SavedPromptsPanel
+        id="saved-prompts-ready"
+        templates={sampleSavedPrompts}
+        loading={false}
+        loadError={null}
+        hasDraft={true}
+        mode="append"
+        searchQuery=""
+        creating={false}
+        createForm={{ name: "", description: "", content: "" }}
+        saving={false}
+        saveError={null}
+        savedNotice={null}
+        canDirectSend={true}
+        sendMode="queue"
+        onModeChange={vi.fn()}
+        onSearchChange={vi.fn()}
+        onRetryLoad={vi.fn()}
+        onSelectInsert={vi.fn()}
+        onSelectSend={vi.fn()}
+        onStartCreate={vi.fn()}
+        onCancelCreate={vi.fn()}
+        onCreateFormChange={vi.fn()}
+        onSavePrompt={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+    expect(readyListMarkup).toContain("Save draft");
+    expect(readyListMarkup).toContain('href="/settings#prompt-templates"');
+    expect(readyListMarkup).toContain('aria-label="Draft apply mode"');
+    expect(readyListMarkup).toContain('aria-label="Queue saved prompt ADO"');
+    expect(readyListMarkup).toContain('aria-label="Queue saved prompt AOAI"');
+    expect(readyListMarkup).toContain("Check latency and TPM");
+
+    const blockedDirectSendMarkup = renderToStaticMarkup(
+      <SavedPromptsPanel
+        id="saved-prompts-blocked"
+        templates={sampleSavedPrompts}
+        loading={false}
+        loadError={null}
+        hasDraft={false}
+        mode="append"
+        searchQuery=""
+        creating={false}
+        createForm={{ name: "", description: "", content: "" }}
+        saving={false}
+        saveError={null}
+        savedNotice={null}
+        canDirectSend={false}
+        sendMode="send"
+        sendDisabledReason="Session open in Terminal."
+        onModeChange={vi.fn()}
+        onSearchChange={vi.fn()}
+        onRetryLoad={vi.fn()}
+        onSelectInsert={vi.fn()}
+        onSelectSend={vi.fn()}
+        onStartCreate={vi.fn()}
+        onCancelCreate={vi.fn()}
+        onCreateFormChange={vi.fn()}
+        onSavePrompt={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+    expect(blockedDirectSendMarkup).not.toContain('aria-label="Draft apply mode"');
+    expect(blockedDirectSendMarkup).toMatch(
+      /<button[^>]*disabled=""[^>]*aria-label="Send saved prompt ADO"[^>]*title="Session open in Terminal\."/
+    );
+
+    const createMarkup = renderToStaticMarkup(
+      <SavedPromptsPanel
+        id="saved-prompts-create"
+        templates={sampleSavedPrompts}
+        loading={false}
+        loadError={null}
+        hasDraft={true}
+        mode="append"
+        searchQuery=""
+        creating={true}
+        createForm={{ name: "Triage", description: "", content: "Existing composer draft" }}
+        saving={false}
+        saveError={null}
+        savedNotice={null}
+        canDirectSend={true}
+        sendMode="send"
+        onModeChange={vi.fn()}
+        onSearchChange={vi.fn()}
+        onRetryLoad={vi.fn()}
+        onSelectInsert={vi.fn()}
+        onSelectSend={vi.fn()}
+        onStartCreate={vi.fn()}
+        onCancelCreate={vi.fn()}
+        onCreateFormChange={vi.fn()}
+        onSavePrompt={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+    expect(createMarkup).toContain('value="Triage"');
+    expect(createMarkup).toContain("Existing composer draft");
+    expect(createMarkup).toContain("Save prompt");
+  });
+
+  it("positions the floating popover above the composer button and clamps to viewport bounds", () => {
+    const upward = computeSavedPromptsFloatingStyle({ top: 680, bottom: 712, left: 1200 }, 1280, 800);
+    expect(upward.position).toBe("fixed");
+    expect(upward.bottom).toBe("126px");
+    expect(upward.left).toBe("848px");
+
+    const downward = computeSavedPromptsFloatingStyle({ top: 48, bottom: 80, left: 4 }, 360, 720);
+    expect(downward.top).toBe("86px");
+    expect(downward.left).toBe("12px");
   });
 });
 import Link from "next/link";

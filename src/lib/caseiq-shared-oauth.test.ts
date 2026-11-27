@@ -118,6 +118,10 @@ describe("shared OAuth link wiring without credential migration", () => {
     expect(await readFile(path.join(first.original, "old.marker"), "utf8")).toBe("old private cache");
     expect(await readdir(second.file)).toEqual(["shared.marker"]);
     expect(await readdir(first.original)).toEqual(["old.marker"]);
+    expect(await realpath(path.join(first.binding.home, "entra-broker-accounts")))
+      .toBe(await realpath(path.join(second.binding.home, "entra-broker-accounts")));
+    expect(await realpath(path.join(first.binding.home, "entra-broker-cache")))
+      .toBe(await realpath(path.join(second.binding.home, "entra-broker-cache")));
   });
 
   it("reconnects after the original launcher resets the link during Resume", async () => {

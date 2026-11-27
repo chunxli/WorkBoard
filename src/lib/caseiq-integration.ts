@@ -56,6 +56,7 @@ export interface CaseIqExecutionSpec {
 
 export interface CaseIqTerminalSpec extends CaseIqExecutionSpec {
   launchId: string;
+  powerShellExecutable?: string;
 }
 
 export interface CaseIqPromptSpec extends CaseIqExecutionSpec {
@@ -86,13 +87,16 @@ export async function prepareCaseIqAuthentication(options: {
 export async function prepareCaseIqTerminal(options: {
   userId: string; workId: string; workingDirectory: string; sessionId: string;
   runId: string; launchId: string; prompt: string; launch: CaseIqLaunchOptions; resume: boolean;
+  sharedInputDirectory?: string;
 }): Promise<CaseIqTerminalSpec> {
+  const powerShellExecutable = await getCaseIqPromptPowerShell();
   return {
     ...await prepareCaseIqExecution({
       ...options, mode: "terminal",
       terminalLaunchFile: path.join(process.cwd(), "data", "terminal-launches", `${options.launchId}.json`),
     }),
     launchId: options.launchId,
+    powerShellExecutable,
   };
 }
 

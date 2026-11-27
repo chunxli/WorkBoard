@@ -42,7 +42,7 @@ async function ownedLocalWork(userId: string, workId: string) {
 
 function assertLane(work: OwnedWork, pair: WorkSessionPairIds, run: Run) {
   if (run.workId !== work.id || run.taskId !== null || run.experimentVariantId !== null ||
-      !["WORK", "FOLLOW_UP"].includes(run.trigger) || run.hostname !== hostname() ||
+      !["WORK", "FOLLOW_UP", "TERMINAL_RESUME"].includes(run.trigger) || run.hostname !== hostname() ||
       !matchesPairedWorkspace({ directoryPath: work.directoryPath, sessionPair: pair }, run)) {
     throw new WorkPairError("A Run does not match the saved paired Session. Neither Session was sent a message.");
   }

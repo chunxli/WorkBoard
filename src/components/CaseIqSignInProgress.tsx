@@ -2,27 +2,60 @@ import { CheckCircle2, Circle, CircleAlert, LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { CASEIQ_AUTHENTICATION_COMMAND, type CaseIqAuthenticationStatus } from "@/lib/caseiq-options";
 
-export default function CaseIqSignInProgress({ status, opening, uncertain, error, commandCopied, clipboardError, compact = false, actions }: {
-  status: CaseIqAuthenticationStatus | null; opening: boolean; uncertain: boolean; error: string | null;
-  commandCopied: boolean; clipboardError: string | null;
-  compact?: boolean; actions?: ReactNode;
-}) {
+export function isCaseIqSignInCalloutVisible({
+  status,
+  opening,
+  stoppingRuns = false,
+  uncertain,
+  error,
+}: {
+  status: CaseIqAuthenticationStatus | null;
+  opening: boolean;
+  stoppingRuns?: boolean;
+  uncertain: boolean;
+  error: string | null;
+}): boolean {
   const pending = Boolean(status?.automaticSignIn && !status.automaticSignIn.attempted);
+  const isStopping = Boolean(stoppingRuns || status?.stoppingRuns);
   const otherSession = Boolean(status?.sessionId && status.operation && status.operation.sessionId !== status.sessionId);
   const operation = otherSession || pending && !status?.operation?.reserved &&
     status?.operation?.id !== status?.automaticSignIn?.requestId ? null : status?.operation;
   const otherWindowOpen = otherSession && Boolean(status?.operation?.reserved);
   const needsAuthentication = status?.connection?.status === "needs-auth";
-  if (!operation && !pending && !opening && !uncertain && !otherWindowOpen && !needsAuthentication) return null;
+  if (!operation && !pending && !opening && !isStopping && !uncertain && !otherWindowOpen && !needsAuthentication) {
+    return false;
+  }
+  const verified = Boolean(status?.authenticationVerified && status.connection?.status === "connected");
+  const reserved = Boolean(operation?.reserved);
+  const failed = Boolean(error || uncertain || operation?.status === "failed" || operation?.status === "unconfirmed");
+  const finished = verified && !reserved && !opening && !isStopping && !failed;
+  return !finished;
+}
+
+export default function CaseIqSignInProgress({
+  status, opening, stoppingRuns = false, uncertain, error, commandCopied, clipboardError, compact = false, actions,
+}: {
+  status: CaseIqAuthenticationStatus | null; opening: boolean; stoppingRuns?: boolean; uncertain: boolean; error: string | null;
+  commandCopied: boolean; clipboardError: string | null;
+  compact?: boolean; actions?: ReactNode;
+}) {
+  const pending = Boolean(status?.automaticSignIn && !status.automaticSignIn.attempted);
+  const isStopping = Boolean(stoppingRuns || status?.stoppingRuns);
+  const otherSession = Boolean(status?.sessionId && status.operation && status.operation.sessionId !== status.sessionId);
+  const operation = otherSession || pending && !status?.operation?.reserved &&
+    status?.operation?.id !== status?.automaticSignIn?.requestId ? null : status?.operation;
+  const otherWindowOpen = otherSession && Boolean(status?.operation?.reserved);
+  const needsAuthentication = status?.connection?.status === "needs-auth";
+  if (!operation && !pending && !opening && !isStopping && !uncertain && !otherWindowOpen && !needsAuthentication) return null;
   const verified = Boolean(status?.authenticationVerified && status.connection?.status === "connected");
   const reserved = Boolean(operation?.reserved);
   const ready = operation?.phase === "native-started" || verified;
   const failed = Boolean(error || uncertain || operation?.status === "failed" || operation?.status === "unconfirmed");
-  const waiting = pending && !status?.available && !reserved && !opening && !otherWindowOpen;
-  const closedUnverified = Boolean(operation && !reserved && !verified && !opening);
-  const finished = verified && !reserved && !opening && !failed;
+  const waiting = pending && !status?.available && !reserved && !opening && !isStopping && !otherWindowOpen;
+  const closedUnverified = Boolean(operation && !reserved && !verified && !opening && !isStopping);
+  const finished = verified && !reserved && !opening && !isStopping && !failed;
   const preparing = opening || operation?.status === "opening" || reserved && !ready;
-  if (compact && finished) return null;
+  if (compact && !isCaseIqSignInCalloutVisible({ status, opening, stoppingRuns, uncertain, error })) return null;
   let title: string;
   let next: string;
   let current = -1;
@@ -32,9 +65,15 @@ export default function CaseIqSignInProgress({ status, opening, uncertain, error
   } else if (failed) {
     title = uncertain || operation?.status === "unconfirmed" ? "Window acceptance or stop is unconfirmed" : "Sign-in needs attention";
     next = "Check the original Terminal and refresh sign-in state. Do not open another window until the current request is resolved.";
+  } else if (isStopping && !reserved && !opening) {
+    title = "Stopping current Run to verify SupportIQ";
+    next = "Stopping this Work's active Run so its original sign-in Terminal can open safely. Stay on this Conversation; no failed Prompt will be replayed.";
+    current = 0;
   } else if (waiting) {
     title = "Waiting for this Work's Runs and queued messages";
-    next = "When this Work is idle, its original sign-in Terminal will open automatically. Stay on this Conversation; no failed Prompt will be replayed.";
+    next = status?.canStopRunsToSignIn
+      ? "When this Work is idle, its original sign-in Terminal will open automatically — or stop the current Run below to verify SupportIQ now. Stay on this Conversation; no failed Prompt will be replayed."
+      : "When this Work is idle, its original sign-in Terminal will open automatically. Stay on this Conversation; no failed Prompt will be replayed.";
     current = 0;
   } else if (finished) {
     title = "Native OAuth check completed";
@@ -62,7 +101,7 @@ export default function CaseIqSignInProgress({ status, opening, uncertain, error
         : status?.blockedReason ?? "Refresh sign-in state before opening the original Terminal.";
     current = pending ? 0 : -1;
   }
-  const showCommand = !failed && !otherWindowOpen && !verified && !preparing && !waiting &&
+  const showCommand = !failed && !otherWindowOpen && !verified && !preparing && !waiting && !isStopping &&
     (ready && reserved || needsAuthentication && !reserved);
   const steps = [
     { label: "Request accepted", done: Boolean(operation) },

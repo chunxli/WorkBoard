@@ -344,4 +344,56 @@ describe("CaseIQ sign-in request ordering", () => {
     expect(renderAuth()).toMatchObject({ checking: false, checkedAt: null, error: "Native state unavailable." });
     await expect(renderAuth().start()).rejects.toThrow("Refresh");
   });
+
+  it("stops active CaseIQ Runs and opens SupportIQ sign-in immediately or once settlement completes", async () => {
+    const busyStatus: CaseIqAuthenticationStatus = {
+      available: false,
+      blockedReason: "Wait for this Work's Runs and queued messages to finish before signing in.",
+      canStopRunsToSignIn: true,
+      blockingRunCount: 1,
+      authenticationVerified: false,
+      operation: null,
+    };
+    fetchMock.mockResolvedValueOnce(Response.json(busyStatus));
+    await mount(renderAuth);
+
+    // Deferred settlement path (returns stoppingRuns: true, then opens once idle)
+    fetchMock.mockResolvedValueOnce(Response.json({ ...busyStatus, stoppingRuns: true }, { status: 202 }));
+    await renderAuth().stopAndStart();
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
+      action: "stop-and-sign-in",
+      runId: "run",
+      trustWorkFolder: true,
+    });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("/mcp auth SupportIQ");
+    expect(renderAuth()).toMatchObject({ stoppingRuns: true, reserved: true });
+    expect(hooks.routerRefresh).toHaveBeenCalledOnce();
+
+    // Next refresh reports Work idle -> deferred idle effect opens the sign-in window
+    fetchMock.mockResolvedValueOnce(Response.json(ready));
+    await renderAuth().refresh();
+    renderAuth();
+    const idleEffect = hooks.effects.at(-1);
+    if (!idleEffect) throw new Error("Missing idle sign-in effect.");
+    fetchMock.mockImplementationOnce(async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      return Response.json({
+        ...ready,
+        available: false,
+        operation: {
+          id: request.requestId,
+          sessionId,
+          sourceRunId: "run",
+          startedAt: new Date().toISOString(),
+          status: "opening",
+          reserved: true,
+          message: "Opening the original native session.",
+        },
+      });
+    });
+    idleEffect();
+    await flush();
+    expect(renderAuth()).toMatchObject({ stoppingRuns: false, reserved: true });
+    expect(renderAuth().status?.operation?.reserved).toBe(true);
+  });
 });

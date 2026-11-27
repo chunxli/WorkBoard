@@ -6,16 +6,22 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { v5 as uuidV5 } from "uuid";
 import { prisma } from "@/lib/prisma";
-import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
+import { CaseIqIntegrationError, CaseIqRunUnconfirmedError } from "@/lib/caseiq-errors";
 import {
   acceptCaseIqAuthentication, ensurePrivateRuntimeDirectory, prepareCaseIqAuthentication, type CaseIqAuthenticationSpec,
 } from "@/lib/caseiq-integration";
 import { assertCopilotSessionNotInUse, copilotSessionHasHistory, CopilotSessionInUseError, readCopilotSessionSnapshot } from "@/lib/copilot-session-compat";
-import { isNativeCopilotRunActive } from "@/lib/copilot-runner";
+import { cancelRun, isNativeCopilotRunActive } from "@/lib/copilot-runner";
+import { cancelSdkRun } from "@/lib/copilot-sdk-runner";
 import { buildCaseIqEnvironment } from "@/lib/caseiq-runner";
+import { requestInterruptedCaseIqCancellation } from "@/lib/caseiq-run-lifecycle";
 import { getCaseIqInstallationPaths } from "@/lib/caseiq-installation";
 import { nativeBindingCompatibilityKey } from "@/lib/native-session-identity";
 import { nativeSessionBindingHome, readNativeSessionBindingSync } from "@/lib/native-session-bindings";
+import { isCaseIqWebRun } from "@/lib/runtime-provider";
+import { isTerminalRunTrigger } from "@/lib/terminal-run";
+import { finalizeAutomationRun } from "@/lib/task-executor";
+import { cancelPendingCaseIqWorkRun, finalizeCancelledWorkRun } from "@/lib/work-executor";
 import { matchesPairedWorkspace, verifyPairedRunDirectory, WorkPairError, type PairWorkspaceWork } from "@/lib/work-pair-directories";
 import { withRunStartLock } from "@/lib/run-start-lock";
 import { spawnDetached } from "@/lib/terminal-resume";
@@ -65,7 +71,19 @@ export function supportIqAuthenticationRejectedAt(events: unknown[], verifiedAt:
 async function automaticSignInRequirement(userId: string, workId: string, sessionId: string,
   run: { id: string; status: string; startedAt: Date | null; finishedAt: Date | null },
   operation: StoredCaseIqAuthentication | null, verifiedAt: string | null) {
-  if (!run.startedAt || !run.finishedAt && run.status !== "RUNNING") return null;
+  let targetRun = run;
+  if (!targetRun.startedAt && targetRun.status === "CANCELLED" && typeof prisma.run.findFirst === "function") {
+    const latestStarted = await prisma.run.findFirst({
+      where: {
+        workId, copilotSessionId: sessionId, engine: "CASEIQ", providerId: "caseiq",
+        experimentVariantId: null, startedAt: { not: null },
+      },
+      orderBy: [{ startedAt: "desc" }, { createdAt: "desc" }],
+      select: { id: true, status: true, startedAt: true, finishedAt: true },
+    });
+    if (latestStarted) targetRun = latestStarted;
+  }
+  if (!targetRun.startedAt || !targetRun.finishedAt && targetRun.status !== "RUNNING") return null;
   let events: unknown[];
   try { events = (await readCopilotSessionSnapshot(sessionId)).events; }
   catch (error) {
@@ -73,11 +91,11 @@ async function automaticSignInRequirement(userId: string, workId: string, sessio
     throw error;
   }
   const signal = latestSupportIqAuthenticationSignal(events, {
-    since: run.startedAt.getTime(), until: run.finishedAt?.getTime() ?? Infinity,
+    since: targetRun.startedAt.getTime(), until: targetRun.finishedAt?.getTime() ?? Infinity,
   });
   if (!signal) return null;
   return {
-    requestId: uuidV5(JSON.stringify(["workboard-supportiq-signin", userId, workId, sessionId, run.id, signal.id, signal.timestamp]), uuidV5.URL),
+    requestId: uuidV5(JSON.stringify(["workboard-supportiq-signin", userId, workId, sessionId, targetRun.id, signal.id, signal.timestamp]), uuidV5.URL),
     requiredAt: signal.timestamp,
     attempted: Boolean(operation?.sessionId === sessionId && Date.parse(operation.startedAt) >= Date.parse(signal.timestamp) ||
       verifiedAt && Date.parse(verifiedAt) >= Date.parse(signal.timestamp)),
@@ -97,10 +115,11 @@ export async function resolveCaseIqSessionOwner(userId: string, workId: string, 
   if (!run || run.engine !== "CASEIQ" || run.providerId !== "caseiq" || !run.copilotSessionId) {
     throw new CaseIqIntegrationError("Select a CaseIQ web Run with an existing native session.");
   }
-  if (run.hostname !== hostname() || work.hostname && work.hostname !== hostname()) {
+  const binding = readNativeSessionBindingSync(run.copilotSessionId);
+  const effectiveRunHost = run.hostname ?? (run.startedAt === null ? binding?.hostname ?? work.hostname : null);
+  if (effectiveRunHost !== hostname() || work.hostname && work.hostname !== hostname()) {
     throw new CaseIqIntegrationError("Sign in on the Work's owning Windows host.");
   }
-  const binding = readNativeSessionBindingSync(run.copilotSessionId);
   let workingDirectory;
   try {
     workingDirectory = work.sessionPair ? await verifyPairedRunDirectory(work, run)
@@ -120,24 +139,90 @@ export async function resolveCaseIqSessionOwner(userId: string, workId: string, 
   return { work, workingDirectory, run, binding };
 }
 
-export async function activeCaseIqWorkReason(workId: string, sessionId: string, runId: string, work?: PairWorkspaceWork): Promise<string | null> {
-  if (work?.sessionPair?.caseIqSessionId === sessionId) {
-    const workspace = { directoryPath: work.directoryPath, sessionPair: work.sessionPair };
-    const active = await prisma.run.findMany({
+interface BlockingCaseIqRun {
+  id: string;
+  status: string;
+  workId: string | null;
+  copilotSessionId: string | null;
+  engine: string | null;
+  providerId: string | null;
+  executionPath: string | null;
+  hostname: string | null;
+  taskId: string | null;
+  experimentVariantId: string | null;
+  trigger: string;
+}
+
+async function inspectBlockingCaseIqRuns(
+  workId: string,
+  sessionId: string,
+  runId: string,
+  work?: PairWorkspaceWork,
+): Promise<{
+  reason: string | null;
+  blockingRuns: BlockingCaseIqRun[];
+  canStopRunsToSignIn: boolean;
+  blockingRunCount: number;
+}> {
+  const pairedCaseIq = work?.sessionPair?.caseIqSessionId === sessionId;
+  const busyMessage = pairedCaseIq
+    ? "Wait for CaseIQ's Runs and queued messages to finish before signing in."
+    : "Wait for this Work's Runs and queued messages to finish before signing in.";
+
+  if (typeof prisma.run.findMany !== "function") {
+    const count = await prisma.run.count({
       where: { status: { in: ["PENDING", "RUNNING"] }, OR: [{ workId }, { copilotSessionId: sessionId }] },
-      select: { workId: true, copilotSessionId: true, engine: true, providerId: true, executionPath: true,
-        hostname: true, taskId: true, experimentVariantId: true, trigger: true },
     });
-    const blockingRun = active.some((run) =>
-      run.workId !== workId || run.copilotSessionId !== workspace.sessionPair.cliSessionId || run.hostname !== hostname() ||
-      run.taskId || run.experimentVariantId || !["WORK", "FOLLOW_UP"].includes(run.trigger) || !matchesPairedWorkspace(workspace, run));
-    return blockingRun || isNativeCopilotRunActive(runId)
-      ? "Wait for CaseIQ's Runs and queued messages to finish before signing in." : null;
+    const active = count > 0 || isNativeCopilotRunActive(runId);
+    return {
+      reason: active ? busyMessage : null,
+      blockingRuns: [],
+      canStopRunsToSignIn: active,
+      blockingRunCount: active ? Math.max(1, count) : 0,
+    };
   }
-  const count = await prisma.run.count({
+
+  const active = await prisma.run.findMany({
     where: { status: { in: ["PENDING", "RUNNING"] }, OR: [{ workId }, { copilotSessionId: sessionId }] },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      id: true, status: true, workId: true, copilotSessionId: true, engine: true, providerId: true,
+      executionPath: true, hostname: true, taskId: true, experimentVariantId: true, trigger: true,
+    },
   });
-  return count || isNativeCopilotRunActive(runId) ? "Wait for this Work's Runs and queued messages to finish before signing in." : null;
+  const blockingRuns = pairedCaseIq && work?.sessionPair
+    ? active.filter((candidate) => {
+        const workspace = { directoryPath: work.directoryPath, sessionPair: work.sessionPair! };
+        return (
+          candidate.workId !== workId ||
+          candidate.copilotSessionId !== workspace.sessionPair.cliSessionId ||
+          candidate.hostname !== hostname() ||
+          Boolean(candidate.taskId) ||
+          Boolean(candidate.experimentVariantId) ||
+          !["WORK", "FOLLOW_UP", "TERMINAL_RESUME"].includes(candidate.trigger) ||
+          !matchesPairedWorkspace(workspace, candidate)
+        );
+      })
+    : active;
+
+  const nativeActive = isNativeCopilotRunActive(runId);
+  const hasBlocking = blockingRuns.length > 0 || nativeActive;
+  const canStopRunsToSignIn = hasBlocking && blockingRuns.every((candidate) =>
+    candidate.workId === workId &&
+    !isTerminalRunTrigger(candidate.trigger) &&
+    (!candidate.hostname || candidate.hostname === hostname())
+  );
+
+  return {
+    reason: hasBlocking ? busyMessage : null,
+    blockingRuns,
+    canStopRunsToSignIn,
+    blockingRunCount: hasBlocking ? Math.max(1, blockingRuns.length) : 0,
+  };
+}
+
+export async function activeCaseIqWorkReason(workId: string, sessionId: string, runId: string, work?: PairWorkspaceWork): Promise<string | null> {
+  return (await inspectBlockingCaseIqRuns(workId, sessionId, runId, work)).reason;
 }
 
 export async function getCaseIqAuthenticationStatus(
@@ -147,8 +232,19 @@ export async function getCaseIqAuthenticationStatus(
   const operation = await readCaseIqAuthentication(workId);
   if (operation && operation.userId !== userId) throw new CaseIqIntegrationError("Authentication belongs to another user.", 403);
   const activity = operation ? await caseIqAuthenticationActivity(operation) : null;
+  const activeBlocking = local && work.status !== "ARCHIVED" && !activity?.reserved
+    ? await inspectBlockingCaseIqRuns(workId, binding.sessionId, run.id, work)
+    : null;
+  const sessionCaseIqRunning = run.status === "RUNNING" || Boolean(
+    activeBlocking?.blockingRuns.some((candidate) =>
+      candidate.status === "RUNNING" && candidate.copilotSessionId === binding.sessionId
+    )
+  );
   let connection = operation && operation.sessionId === binding.sessionId
-    ? await readCaseIqNativeConnection(operation, binding.oauthStorage) : { status: "unknown" as const, toolCount: null, checkedAt: null };
+    ? await readCaseIqNativeConnection(operation, binding.oauthStorage, {
+        allowTransientLauncherReset: sessionCaseIqRunning && !activity?.reserved,
+      })
+    : { status: "unknown" as const, toolCount: null, checkedAt: null };
   const automaticSignIn = await automaticSignInRequirement(userId, workId, binding.sessionId, run, operation,
     connection.status === "connected" ? connection.checkedAt : null);
   if (automaticSignIn && !automaticSignIn.attempted && (connection.status !== "connected" || !connection.checkedAt ||
@@ -166,7 +262,7 @@ export async function getCaseIqAuthenticationStatus(
   const blockedReason = !local ? "Open this Work on its local Windows host to sign in."
     : work.status === "ARCHIVED" ? "Restore this Work before signing in."
       : state?.reserved ? state.message
-        : await activeCaseIqWorkReason(workId, binding.sessionId, run.id, work);
+        : activeBlocking?.reason ?? null;
   const credentialManager = local
     ? await inspectWindowsCredentialManager({
         sessionHome: nativeSessionBindingHome(binding),
@@ -174,6 +270,10 @@ export async function getCaseIqAuthenticationStatus(
       }).catch(() => null)
     : null;
   return { sessionId: binding.sessionId, available: blockedReason === null, blockedReason,
+    ...(activeBlocking?.canStopRunsToSignIn ? {
+      canStopRunsToSignIn: true,
+      blockingRunCount: activeBlocking.blockingRunCount,
+    } : {}),
     authenticationVerified: connection.status === "connected", connection, operation: state,
     ...(credentialManager ? { credentialManager } : {}),
     ...(binding.oauthStorage ? { oauthStorage: { mode: binding.oauthStorage.mode, reason: binding.oauthStorage.reason } } : {}),
@@ -189,6 +289,160 @@ export async function cleanCaseIqStaleCredentials(
     const status = await getCaseIqAuthenticationStatus(userId, workId, runId, true);
     return { ...status, credentialCleanup };
   });
+}
+
+function isBenignCaseIqStopRace(error: unknown): boolean {
+  if (!(error instanceof CaseIqIntegrationError) || error instanceof CaseIqRunUnconfirmedError) return false;
+  return (
+    error.message.includes("already reported exit and is finalizing") ||
+    error.message.includes("already recorded a different stop request")
+  );
+}
+
+async function cancelRunningBlockingRun(candidate: BlockingCaseIqRun): Promise<void> {
+  if (isCaseIqWebRun(candidate)) {
+    if (candidate.hostname !== hostname()) {
+      throw new CaseIqIntegrationError("Cancel this Run on its verified owning Windows host.", 409);
+    }
+    try {
+      if (!(isNativeCopilotRunActive(candidate.id) && await cancelRun(candidate.id))) {
+        const latest = await prisma.run.findFirst({ where: { id: candidate.id }, select: { status: true } });
+        if (latest?.status === "RUNNING") {
+          await requestInterruptedCaseIqCancellation(candidate);
+        }
+      }
+    } catch (error) {
+      if (isBenignCaseIqStopRace(error)) return;
+      if (error instanceof CaseIqIntegrationError) throw error;
+      console.error("[CaseIQ] Interrupted Run cancellation could not be requested.", candidate.id, error instanceof Error ? error.name : error);
+      throw new CaseIqIntegrationError(
+        "CaseIQ cancellation could not be requested. The Work remains reserved; inspect the original host and private Run diagnostics.",
+        409,
+      );
+    }
+    return;
+  }
+
+  const killed = candidate.engine === "SDK" ? await cancelSdkRun(candidate.id) : await cancelRun(candidate.id);
+  if (!killed) {
+    await prisma.run.updateMany({ where: { id: candidate.id, status: "RUNNING" }, data: { status: "CANCELLED" } });
+    if (candidate.taskId) await finalizeAutomationRun(candidate.id, "CANCELLED", "Run was cancelled.");
+    else if (candidate.workId) await finalizeCancelledWorkRun(candidate.id, "Run was cancelled so SupportIQ sign-in could open.");
+  }
+}
+
+export async function stopCaseIqRunsAndStartAuthentication(
+  userId: string,
+  workId: string,
+  runId: string,
+  requestId: string,
+  trustWorkFolder = false,
+  waitTimeoutMs = 20_000,
+): Promise<CaseIqAuthenticationStatus> {
+  const owner = await resolveCaseIqSessionOwner(userId, workId, runId);
+  const existing = await readCaseIqAuthentication(workId);
+  if (existing && existing.userId !== userId) throw new CaseIqIntegrationError("Authentication belongs to another user.", 403);
+  if (existing?.id === requestId) {
+    if (existing.sourceRunId !== runId || existing.sessionId !== owner.binding.sessionId ||
+        existing.trustWorkFolder !== trustWorkFolder || Boolean(existing.automatic)) {
+      throw new CaseIqIntegrationError("This authentication request ID belongs to a different Run/session.");
+    }
+    return getCaseIqAuthenticationStatus(userId, workId, runId, true);
+  }
+  if (owner.work.status === "ARCHIVED") {
+    throw new CaseIqIntegrationError("Restore this Work before signing in.");
+  }
+  if (existing && (await caseIqAuthenticationActivity(existing)).reserved) {
+    throw new CaseIqIntegrationError("An authentication window is already open for this Work.");
+  }
+
+  const blocking = await inspectBlockingCaseIqRuns(workId, owner.binding.sessionId, runId, owner.work);
+  if (blocking.reason !== null) {
+    if (!blocking.canStopRunsToSignIn) {
+      throw new CaseIqIntegrationError(
+        blocking.blockingRuns.some((candidate) => isTerminalRunTrigger(candidate.trigger))
+          ? "External Terminal sessions cannot be cancelled here. Close Copilot in Terminal before signing in."
+          : blocking.reason,
+        409,
+      );
+    }
+
+    const pendingRuns = blocking.blockingRuns.filter((candidate) => candidate.status === "PENDING");
+    const runningRuns = blocking.blockingRuns.filter((candidate) => candidate.status === "RUNNING");
+
+    for (const pendingRun of pendingRuns) {
+      if (pendingRun.workId && !pendingRun.taskId && isCaseIqWebRun(pendingRun)) {
+        const cancelled = await cancelPendingCaseIqWorkRun(
+          pendingRun.id,
+          "Run was cancelled before it started so SupportIQ sign-in could open.",
+        );
+        if (!cancelled) {
+          const current = await prisma.run.findFirst({
+            where: { id: pendingRun.id },
+            select: {
+              id: true, status: true, workId: true, copilotSessionId: true, engine: true, providerId: true,
+              executionPath: true, hostname: true, taskId: true, experimentVariantId: true, trigger: true,
+            },
+          });
+          if (current?.status === "RUNNING") runningRuns.push(current);
+        }
+        continue;
+      }
+      const updated = await prisma.run.updateMany({
+        where: { id: pendingRun.id, status: "PENDING" },
+        data: { status: "CANCELLED" },
+      });
+      if (updated.count === 0) {
+        const current = await prisma.run.findFirst({
+          where: { id: pendingRun.id },
+          select: {
+            id: true, status: true, workId: true, copilotSessionId: true, engine: true, providerId: true,
+            executionPath: true, hostname: true, taskId: true, experimentVariantId: true, trigger: true,
+          },
+        });
+        if (current?.status === "RUNNING") runningRuns.push(current);
+      } else if (pendingRun.taskId) {
+        await finalizeAutomationRun(pendingRun.id, "CANCELLED", "Run was cancelled before it started.");
+      } else if (pendingRun.workId) {
+        await finalizeCancelledWorkRun(pendingRun.id, "Run was cancelled before it started so SupportIQ sign-in could open.");
+      }
+    }
+
+    if (runningRuns.length === 0 && isNativeCopilotRunActive(runId)) {
+      runningRuns.push({
+        id: owner.run.id,
+        status: owner.run.status,
+        workId,
+        copilotSessionId: owner.run.copilotSessionId,
+        engine: owner.run.engine,
+        providerId: owner.run.providerId,
+        executionPath: owner.run.executionPath,
+        hostname: owner.run.hostname,
+        taskId: null,
+        experimentVariantId: null,
+        trigger: "WORK",
+      });
+    }
+
+    for (const runningRun of runningRuns) {
+      await cancelRunningBlockingRun(runningRun);
+    }
+
+    const deadline = Date.now() + waitTimeoutMs;
+    while (Date.now() < deadline) {
+      if ((await activeCaseIqWorkReason(workId, owner.binding.sessionId, runId, owner.work)) === null) {
+        break;
+      }
+      await sleep(100);
+    }
+
+    if ((await activeCaseIqWorkReason(workId, owner.binding.sessionId, runId, owner.work)) !== null) {
+      const status = await getCaseIqAuthenticationStatus(userId, workId, runId, true);
+      return { ...status, stoppingRuns: true };
+    }
+  }
+
+  return startCaseIqAuthentication(userId, workId, runId, requestId, trustWorkFolder, false);
 }
 
 const monitors = new Set<string>();

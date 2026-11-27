@@ -14,19 +14,27 @@ import SessionUsagePanel from "@/components/SessionUsagePanel";
 import WorkWorkspace from "@/components/WorkWorkspace";
 import ManagedRuntimePanel from "@/components/ManagedRuntimePanel";
 import CaseIqStartupStatus from "@/components/CaseIqStartupStatus";
-import { CaseIqAuthenticationPanel, CaseIqSignInCallout, useCaseIqAuthentication } from "@/components/CaseIqAuthenticationPanel";
+import {
+  CaseIqAuthenticationPanel,
+  CaseIqSignInCallout,
+  isCaseIqSignInCalloutVisible,
+  useCaseIqAuthentication,
+} from "@/components/CaseIqAuthenticationPanel";
 import { CaseIqToolPermissionsPanel, useCaseIqToolPermissions } from "@/components/CaseIqToolPermissionsPanel";
 import { isCaseIqAuthenticationCommand } from "@/lib/caseiq-options";
 import { AttachmentDraft, MessageAttachments, useMessageAttachments } from "@/components/WorkMessageAttachments";
+import ComposerSavedPrompts from "@/components/ComposerSavedPrompts";
+import { resolveSavedPromptDraft, type SavedPromptApplyMode } from "@/lib/prompt-templates";
 import type { WorkAttachment } from "@/lib/work-attachment-types";
 import { conversationTimeline, conversationTimelineRows, conversationToolActivityAt, isAuxiliaryEvent, isConversationMessage, withPendingFollowUp, type ConversationActivitySummary, type ConversationTimelineItem } from "@/lib/conversation-activity";
 import type { ConversationEvent, SessionConversationData } from "@/lib/session-conversation";
 import { ConversationPinsContext, ConversationPinsPanel, ConversationPinsProvider } from "@/components/ConversationPins";
 import ConversationMarkdown from "@/components/ConversationMarkdown";
+import AssistantReplyCopyActions from "@/components/AssistantReplyCopyActions";
 import type { ConversationPin } from "@/lib/conversation-pin-types";
 import PairedSessionPanels, {
   PairedFollowUpReceipt, PairedFollowUpTargets, PairedLaneToolbar, pairedViewLanes, readPairedSessionView, type PairedLaneControl,
-  type PairedResultFilesAction, type PairedSessionView,
+  type PairedResultFilesAction, type PairedSessionView, type PairedTerminalResumeAction,
 } from "@/components/PairedSessionPanels";
 import { pairedLaneInfo, readPairedFollowUpReceipt, type PairedWorkFollowUp, type PairedWorkLane, type PairedWorkReceipt } from "@/lib/work-session-pair";
 
@@ -35,8 +43,10 @@ type LaneDisplay = {
   runId: string | null;
   isLive: boolean;
   awaitingRunStart: boolean;
+  historySync?: boolean;
   initialLog: string;
   outputFormat: "text" | "json";
+  terminalResume?: { canOpenLocal: boolean; state: "ready" | "active" | "unavailable" };
   notices?: ReactNode;
   runActions?: ReactNode;
   runError?: ReactNode;
@@ -54,6 +64,7 @@ export function ConversationMessage({ event, relatedEvents = [event], workId, pe
   pendingRun?: { id: string; status: string };
 }) {
   const [expanded, setExpanded] = useState(false);
+  const articleRef = useRef<HTMLElement>(null);
   const pinContext = useContext(ConversationPinsContext);
   const pinnedOpen = relatedEvents.some((record) => record.id === pinContext?.activePin?.eventId);
   const auxiliary = isAuxiliaryEvent(event);
@@ -80,7 +91,7 @@ export function ConversationMessage({ event, relatedEvents = [event], workId, pe
   }
   if (!event.text.trim() && !event.attachments?.length) return null;
   return (
-    <article className={`min-w-0 space-y-1 py-1.5 ${event.role === "user" ? "ml-auto w-fit max-w-[95%] rounded-md bg-neutral-800/45 px-3" : "pr-2"}`} aria-label={`${event.title} message`}>
+    <article ref={articleRef} className={`min-w-0 space-y-1 py-1.5 ${event.role === "user" ? "ml-auto w-fit max-w-[95%] rounded-md bg-neutral-800/45 px-3" : "pr-2"}`} aria-label={`${event.title} message`}>
       <div className="flex items-center gap-2 text-xs text-neutral-500">
         {event.role === "user" ? <User size={14} aria-hidden="true" /> : <Bot size={14} className="text-emerald-400" aria-hidden="true" />}
         <span className="font-semibold text-neutral-300">{event.title}</span>
@@ -89,6 +100,9 @@ export function ConversationMessage({ event, relatedEvents = [event], workId, pe
       </div>
       {event.role === "assistant" ? <ConversationMarkdown event={event} /> : <MarkdownResult content={event.text} copyCodeBlocks />}
       {workId && event.attachments?.length ? <MessageAttachments workId={workId} files={event.attachments} /> : null}
+      {event.role === "assistant" && event.text.trim() ? (
+        <AssistantReplyCopyActions markdown={event.text} containerRef={articleRef} />
+      ) : null}
     </article>
   );
 }
@@ -297,7 +311,11 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   panels?: { id: string; label: string; content: ReactNode }[];
   fileBrowser?: ReactNode;
   paired?: { lanes: Record<PairedWorkLane, LaneDisplay>; sendBlockedReason: string | null };
-  lane?: { kind: PairedWorkLane; sessionId: string };
+  lane?: {
+    kind: PairedWorkLane;
+    sessionId: string;
+    terminalResume?: { canOpenLocal: boolean; state: "ready" | "active" | "unavailable" };
+  };
   visible?: boolean;
   onLaneControl?(lane: PairedWorkLane, control: PairedLaneControl): void;
   onOpenConfiguration?(): void;
@@ -318,6 +336,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   const [earlierReadError, setEarlierReadError] = useState<string | null>(null);
   const conversationReadError = readError ?? earlierReadError;
   const [sendError, setSendError] = useState<string | null>(null);
+  const [terminalError, setTerminalError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pairedReceipt, setPairedReceipt] = useState<PairedWorkReceipt | null>(null);
   const [newPairedMessages, setNewPairedMessages] = useState(false);
@@ -457,7 +476,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     setSelectedPanel("conversation");
     setView("conversation");
     setFocusRequest((current) => current + 1);
-  }, [sending, frozenDraft, draftComposing, updateDraft, setSelectedPanel]);
+  }, [sending, frozenDraft, draftComposing, updateDraft, setSelectedPanel, setView]);
 
   const composerContext = useMemo(() => ({
     workId, disabled: sending || frozenDraft || draftComposing, insertPath,
@@ -835,9 +854,9 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     } finally { pairSending.current = false; setSending(false); }
   }
 
-  async function send(event?: React.FormEvent, action?: "steer") {
+  async function send(event?: React.FormEvent, action?: "steer", promptOverride?: string) {
     event?.preventDefault();
-    const text = draft.trim();
+    const text = (promptOverride ?? draftValue.current).trim();
     if (paired) return sendToPair(text);
     if (runtimeEngine === "CASEIQ" && isCaseIqAuthenticationCommand(text) && !attempt.current?.dispatched) {
       if (attachments.files.length || isLive || sending || frozenDraft || steeringRequestState) {
@@ -987,7 +1006,7 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     timestamp: "timestamp" in pendingMessage ? pendingMessage.timestamp ?? null : pendingRun?.createdAt ?? null,
     afterOffset: "afterOffset" in pendingMessage ? pendingMessage.afterOffset : undefined,
   } : null));
-  const caseIqLive = isLive && !awaitingRunStart && runtimeEngine === "CASEIQ" && runId !== null;
+  const caseIqLive = isLive && !historySync && !awaitingRunStart && runtimeEngine === "CASEIQ" && runId !== null;
   const Toolbar = workHeader ? "header" : "div";
   const headingId = lane ? `${panelPrefix}-session-heading` : "session-conversation-heading";
   const tabs = [
@@ -1115,7 +1134,14 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     </div>
   </aside> : null;
 
-  const signInCallout = runtimeEngine === "CASEIQ" && runId ? <CaseIqSignInCallout authentication={authentication} /> : null;
+  const signInCalloutVisible = runtimeEngine === "CASEIQ" && Boolean(runId) && isCaseIqSignInCalloutVisible({
+    status: authentication.status,
+    opening: authentication.opening,
+    stoppingRuns: authentication.stoppingRuns,
+    uncertain: authentication.uncertain,
+    error: authentication.error,
+  });
+  const signInCallout = signInCalloutVisible ? <CaseIqSignInCallout authentication={authentication} /> : null;
   const queuedCount = data?.queuedMessageCount ?? 0;
   const queueTitle = `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}`;
   const queueItems = queuedCount > 0 && <>
@@ -1139,10 +1165,63 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
     </div>}
   </>;
 
+  function applySavedPrompt(templateContent: string, mode: SavedPromptApplyMode, sendImmediately: boolean) {
+    if (sending || frozenDraft || draftComposing || attempt.current?.dispatched ||
+      steeringRequestState !== null || steeringUncertain !== null) {
+      setDraftInsertionError("This draft is locked. Resolve the current submission before using a saved prompt.");
+      return;
+    }
+    const resolved = resolveSavedPromptDraft(draftValue.current, templateContent, mode);
+    if (!resolved.ok) {
+      setDraftInsertionError(resolved.error);
+      return;
+    }
+    setSelectedPanel("conversation");
+    setView("conversation");
+    updateDraft(resolved.value);
+    if (sendImmediately) {
+      void send(undefined, undefined, resolved.value);
+      return;
+    }
+    const selection = { start: resolved.value.length, end: resolved.value.length };
+    draftSelection.current = selection;
+    pendingDraftSelection.current = selection;
+    setFocusRequest((current) => current + 1);
+  }
+
   const composerHelpId = `${panelPrefix}-composer-help`;
   const pairedTargetsHintId = `${panelPrefix}-target-hints`;
   const pairedAuthHintId = `${panelPrefix}-auth-hint`;
-  const draftAttachments = <AttachmentDraft {...attachments} disabled={sending || frozenDraft} />;
+  const savedPromptsDisabled = sending || frozenDraft || draftComposing ||
+    steeringRequestState !== null || steeringUncertain !== null;
+  const canQuickSendSavedPrompt = !savedPromptsDisabled && conversationReadError === null &&
+    (paired ? Boolean(pairReady) && !pairedAuthenticationDraft : canSubmit && !authenticationCommand);
+  const savedPromptSendDisabledReason = conversationReadError !== null
+    ? "Resolve the conversation read error before sending."
+    : paired
+      ? pairedAuthenticationDraft
+        ? "Use Sign in to SupportIQ in the CaseIQ pane."
+        : !pairReady
+          ? paired.sendBlockedReason ?? targets.map((kind) => laneControls[kind]?.blockedReason).find(Boolean) ?? "Checking target Session readiness..."
+          : null
+      : authentication.reserved
+        ? "Finish SupportIQ sign-in before sending another message."
+        : authenticationCommand
+          ? "Clear the sign-in command before sending a saved prompt."
+          : isLive
+            ? !canQueue ? data?.queueBlockedReason ?? "Queue is not available right now." : null
+            : !canFollowUp ? data?.blockedReason ?? (data?.terminalActive ? "Session open in Terminal." : "No recorded Session to continue yet.") : null;
+  const draftAttachments = <AttachmentDraft {...attachments} disabled={sending || frozenDraft}
+    actions={!lane ? <ComposerSavedPrompts
+      draft={draft}
+      disabled={savedPromptsDisabled}
+      canDirectSend={canQuickSendSavedPrompt}
+      sendMode={(paired ? pairQueues : isLive) ? "queue" : "send"}
+      targetLabel={paired ? pairTargetLabel : undefined}
+      sendDisabledReason={savedPromptSendDisabledReason}
+      onInsert={(content, mode) => applySavedPrompt(content, mode, false)}
+      onSend={(content, mode) => applySavedPrompt(content, mode, true)}
+    /> : undefined} />;
   const sendButton = <button ref={submitButton} type="submit" disabled={sending || (!draft.trim() && !attachments.files.length) ||
     (paired ? !frozenDraft && (!pairReady || pairedAuthenticationDraft) :
     (steeringUncertain !== null && steeringUncertain.text !== draft.trim()) ||
@@ -1158,6 +1237,28 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
   const workspaceHeight = viewportHeight === null ? `calc(100dvh - ${navigationHeight}px - 1rem)` : `${Math.max(120, viewportHeight - navigationHeight - 16)}px`;
   const workspaceStyle: (CSSProperties & { "--work-detail-viewport-height"?: string }) | undefined = !hasWorkspace
     ? undefined : paired ? { "--work-detail-viewport-height": workspaceHeight } : { height: workspaceHeight };
+  const laneManagedLive = Boolean(lane && isLive && !historySync);
+  const laneAuthReserved = Boolean(lane?.kind === "CASEIQ" && authentication.reserved);
+  const laneTerminalResume: PairedTerminalResumeAction | undefined = lane ? {
+    runId,
+    canOpenLocal: lane.terminalResume?.canOpenLocal ?? true,
+    state: !runId || laneManagedLive || laneAuthReserved
+      ? "unavailable"
+      : data?.terminalActive
+        ? "active"
+        : lane.terminalResume
+          ? lane.terminalResume.state
+          : data?.historyAvailable
+            ? "ready"
+            : "unavailable",
+    disabledReason: laneAuthReserved
+      ? `Finish SupportIQ sign-in before resuming ${pairedLaneInfo[lane.kind].label} in Windows Terminal`
+      : laneManagedLive
+        ? `Wait for ${pairedLaneInfo[lane.kind].label}'s Run to finish before resuming in Windows Terminal`
+        : lane.terminalResume && !lane.terminalResume.canOpenLocal
+          ? "Local Windows Terminal is only available on the owning host"
+          : null,
+  } : undefined;
 
   return (
     <ConversationPinsProvider workId={workId} runId={runId} sessionId={data?.sessionId ?? null}
@@ -1168,6 +1269,9 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
       {lane ? <PairedLaneToolbar lane={lane.kind} sessionId={lane.sessionId} headingId={headingId} runActions={runActions}
         raw={view === "raw"} hasRun={runId !== null} showLatest={events.length > 0 || pinWindow ? showLatest : undefined}
         newMessages={newPairedMessages} resultFiles={resultFiles}
+        terminalResume={laneTerminalResume}
+        onTerminalResumed={() => { router.refresh(); void reload.current(); }}
+        onTerminalError={setTerminalError}
         downloadHref={runId && (data?.historyAvailable || conversationReadError) ? endpoint({ download: "1" }) : undefined}
         toggleRaw={() => setView((current) => current === "raw" ? "conversation" : "raw")} />
       : <Toolbar className={`work-conversation-toolbar flex flex-wrap items-center gap-x-2 gap-y-1${workHeader ? " work-detail-header work-detail-unified-toolbar" : ""}`}
@@ -1197,19 +1301,23 @@ export default function SessionConversation({ workId, runId, runtimeEngine, init
           aria-labelledby={hasWorkspace ? `${panelPrefix}-tab-conversation` : headingId}
           hidden={activePanel !== "conversation"} className={hasWorkspace || lane
             ? `work-conversation-panel${paired ? " work-paired-conversation" : ""}` : "space-y-2"}>
-          {lane && notices ? <div className="work-paired-run-notices">{notices}</div> : notices}
+          {lane && (notices || terminalError) ? <div className="work-paired-run-notices">
+            {notices}
+            {terminalError && <p role="alert" className="text-xs text-red-400">{terminalError}</p>}
+          </div> : notices}
           {paired ? <PairedSessionPanels view={pairedView} setView={setPairedView} locked={sending || frozenDraft}
             renderLane={(kind, shown) => {
-              const { sessionId, ...display } = paired.lanes[kind];
-              return <SessionConversation key={sessionId} workId={workId} {...display} runtimeEngine={kind} historySync={false}
-                lane={{ kind, sessionId }} visible={shown && activePanel === "conversation"} onLaneControl={recordLaneControl}
+              const { sessionId, historySync: laneHistorySync, terminalResume, ...display } = paired.lanes[kind];
+              return <SessionConversation key={sessionId} workId={workId} {...display} runtimeEngine={kind}
+                historySync={laneHistorySync ?? false}
+                lane={{ kind, sessionId, terminalResume }} visible={shown && activePanel === "conversation"} onLaneControl={recordLaneControl}
                 resultFiles={fileBrowser && hasWorkspace ? { panelId: filesId, open: (opener) => openResultFiles(kind, opener) } : undefined}
                 onOpenConfiguration={kind === "CASEIQ" ? () => setSelectedPanel("mcp") : undefined} />;
             }} />
           : <>
           {isLive && runId && runtimeEngine === "SDK" && <ManagedRuntimePanel key={runId} workId={workId} runId={runId} />}
           {runtimeEngine === "CASEIQ" && runId && <div className="caseiq-runtime-banners" aria-label="CaseIQ access controls">
-            <CaseIqAuthenticationPanel authentication={authentication} />
+            {!signInCalloutVisible && <CaseIqAuthenticationPanel authentication={authentication} />}
             <CaseIqToolPermissionsPanel permissions={toolPermissions}
               onOpenConfiguration={onOpenConfiguration ?? (hasWorkspace && panels.some((panel) => panel.id === "mcp")
                 ? () => setSelectedPanel("mcp") : undefined)} />

@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { AlertCircle, ArrowDown, ArrowUpRight, Check, Columns2, Download, FolderOpen, GripVertical, ListPlus, MessageSquareText, TerminalSquare, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUpRight, Check, Columns2, Download, FolderOpen, GripVertical, ListPlus, LoaderCircle, MessageSquareText, ScrollText, TerminalSquare, X } from "lucide-react";
 import CaseIqRuntimeTag from "@/components/CaseIqRuntimeTag";
 import PaneResizeHandle from "@/components/PaneResizeHandle";
 import {
@@ -85,8 +85,17 @@ export function PairedFollowUpReceipt({ receipt, onDismiss }: {
 }
 
 export type PairedResultFilesAction = { panelId: string; open(opener: HTMLButtonElement): void };
+export type PairedTerminalResumeAction = {
+  runId: string | null;
+  state: "ready" | "active" | "unavailable";
+  canOpenLocal: boolean;
+  disabledReason?: string | null;
+};
 
-export function PairedLaneToolbar({ lane, sessionId, headingId, runActions, raw, hasRun, downloadHref, showLatest, newMessages, toggleRaw, resultFiles }: {
+export function PairedLaneToolbar({
+  lane, sessionId, headingId, runActions, raw, hasRun, downloadHref, showLatest, newMessages, toggleRaw, resultFiles,
+  terminalResume, onTerminalResumed, onTerminalError,
+}: {
   lane: PairedWorkLane;
   sessionId: string;
   headingId: string;
@@ -98,8 +107,63 @@ export function PairedLaneToolbar({ lane, sessionId, headingId, runActions, raw,
   newMessages?: boolean;
   toggleRaw(): void;
   resultFiles?: PairedResultFilesAction;
+  terminalResume?: PairedTerminalResumeAction;
+  onTerminalResumed?: () => void;
+  onTerminalError?: (message: string | null) => void;
 }) {
-  const resultFilesLabel = `Open ${pairedLaneInfo[lane].label} result files`;
+  const [resumingTerminal, setResumingTerminal] = useState(false);
+  const label = pairedLaneInfo[lane].label;
+  const resultFilesLabel = `Open ${label} result files`;
+  const canResume = Boolean(
+    terminalResume &&
+    terminalResume.canOpenLocal &&
+    terminalResume.runId &&
+    terminalResume.state !== "unavailable" &&
+    !terminalResume.disabledReason
+  );
+  const terminalLabel = resumingTerminal
+    ? `Opening ${label} in Windows Terminal...`
+    : terminalResume?.disabledReason
+      ? terminalResume.disabledReason
+      : terminalResume?.state === "active"
+        ? `Check and resume ${label} in Windows Terminal`
+        : canResume
+          ? `Resume ${label} in Windows Terminal`
+          : `${label} has no resumable Terminal session`;
+
+  async function launchResume() {
+    if (!canResume || !terminalResume?.runId || resumingTerminal) return;
+    setResumingTerminal(true);
+    onTerminalError?.(null);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(terminalResume.runId)}/resume-terminal`, {
+        method: "POST",
+        signal: controller.signal,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof body.error === "string" ? body.error : `Failed to resume ${label} in Windows Terminal.`);
+      }
+      if (typeof body.runId !== "string") {
+        throw new Error("Terminal Resume did not start.");
+      }
+      onTerminalResumed?.();
+    } catch (reason) {
+      onTerminalError?.(
+        reason instanceof DOMException && reason.name === "AbortError"
+          ? "The Terminal request timed out. Refresh to check its status."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason)
+      );
+    } finally {
+      clearTimeout(timeout);
+      setResumingTerminal(false);
+    }
+  }
+
   return <header className="work-conversation-toolbar work-paired-lane-toolbar">
     <div className="work-paired-lane-identity">
       <h2 id={headingId}>
@@ -108,22 +172,30 @@ export function PairedLaneToolbar({ lane, sessionId, headingId, runActions, raw,
       <span className="work-paired-session-id" title={`Session ${sessionId}`}>{sessionId.slice(0, 8)}</span>
     </div>
     {runActions}
-    {(hasRun || resultFiles) && <div className="work-paired-lane-actions" role="group" aria-label={`${pairedLaneInfo[lane].label} view actions`}>
+    {(hasRun || resultFiles) && <div className="work-paired-lane-actions" role="group" aria-label={`${label} view actions`}>
       {resultFiles && <button type="button" className="work-toolbar-action work-toolbar-control size-8"
         title={resultFilesLabel} aria-label={resultFilesLabel} aria-controls={resultFiles.panelId}
         onClick={(event) => resultFiles.open(event.currentTarget)}>
         <FolderOpen size={15} aria-hidden="true" />
       </button>}
       {hasRun && <button type="button" className="work-toolbar-action work-toolbar-control size-8"
+        disabled={!canResume || resumingTerminal}
+        aria-label={terminalLabel} title={terminalLabel}
+        onClick={() => void launchResume()}>
+        {resumingTerminal
+          ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" />
+          : <TerminalSquare size={14} aria-hidden="true" />}
+      </button>}
+      {hasRun && <button type="button" className="work-toolbar-action work-toolbar-control size-8"
         aria-label="Raw output" aria-pressed={raw} title={raw ? "Back to conversation" : "Show raw output"} onClick={toggleRaw}>
-        {raw ? <MessageSquareText size={14} aria-hidden="true" /> : <TerminalSquare size={14} aria-hidden="true" />}
+        {raw ? <MessageSquareText size={14} aria-hidden="true" /> : <ScrollText size={14} aria-hidden="true" />}
       </button>}
       {showLatest && !raw && <button type="button" className="work-toolbar-action work-toolbar-control size-8"
         data-new-messages={newMessages || undefined}
         title={newMessages ? "New messages - jump to latest" : "Latest messages"}
-        aria-label={newMessages ? `Jump to new ${pairedLaneInfo[lane].label} messages` : "Latest messages"}
+        aria-label={newMessages ? `Jump to new ${label} messages` : "Latest messages"}
         onClick={showLatest}><ArrowDown size={14} aria-hidden="true" /></button>}
-      {newMessages && !raw && <span role="status" className="sr-only">New messages in {pairedLaneInfo[lane].label}.</span>}
+      {newMessages && !raw && <span role="status" className="sr-only">New messages in {label}.</span>}
       {downloadHref && <a className="work-toolbar-action work-toolbar-control size-8" href={downloadHref}
         title="Download full session history" aria-label="Download full session history"><Download size={14} aria-hidden="true" /></a>}
     </div>}

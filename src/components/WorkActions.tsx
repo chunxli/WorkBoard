@@ -58,6 +58,8 @@ export default function WorkActions({
         canOpenLocal={canOpenLocal}
         terminalRunId={terminalRunId}
         terminalState={terminalState}
+        hideTerminal={paired}
+        stayOnPageOnTerminal
         archiveTarget={{ kind: "work", id: workId }}
         archived={archived}
         archiveRedirect="/work"

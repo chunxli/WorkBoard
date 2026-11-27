@@ -82,9 +82,17 @@ and installation path, independently of Work/SID or source version. At the final
 CLI boundary, [native-shared-oauth.mjs](../scripts/native-shared-oauth.mjs)
 partitions by the actual generated SupportIQ endpoint/authentication
 configuration, excluding tool lists, descriptions and timeouts. It reconnects
-only the Session's `mcp-oauth-config` link after the original launcher has
-assembled the home. Other home state, prompts, history and approvals remain
-separate. No CaseIQ source or credential contents are edited.
+the Session's `mcp-oauth-config` link (along with `entra-broker-accounts` and
+`entra-broker-cache` when not already plain local directories) after the
+original launcher has assembled the home. On Windows hosts where a
+`@techsupport.microsoft.com` TSE account is signed into Windows Account Manager,
+non-authentication task runs also stage a per-attempt MCP config override via
+[supportiq-mcp-bridge.mjs](../scripts/supportiq-mcp-bridge.mjs) so SupportIQ
+acquires TSE tokens directly from Windows WAM without colliding on shared
+Windows Credential Manager OAuth entries; `authenticationOnly: true` requests
+keep native HTTP OAuth so interactive sign-in updates Windows WAM. Other home
+state, prompts, history and approvals remain separate. No CaseIQ source or
+credential contents are edited.
 
 The native OAuth directory, including other MCP OAuth entries in the same
 profile, is shared. Each profile is one selected TSE identity, not a way to

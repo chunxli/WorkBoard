@@ -8,6 +8,7 @@ import {
   cleanCaseIqStaleCredentials,
   getCaseIqAuthenticationStatus,
   startCaseIqAuthentication,
+  stopCaseIqRunsAndStartAuthentication,
 } from "@/lib/caseiq-authentication";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,11 @@ const querySchema = z.object({ runId: z.string().min(1).max(128) });
 const actionSchema = z.union([
   querySchema.extend({
     action: z.literal("clean-credentials"),
+  }).strict(),
+  querySchema.extend({
+    action: z.literal("stop-and-sign-in"),
+    requestId: z.uuid(),
+    trustWorkFolder: z.boolean().default(false),
   }).strict(),
   querySchema.extend({
     requestId: z.uuid(), trustWorkFolder: z.boolean().default(false), automatic: z.boolean().default(false),
@@ -59,7 +65,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const workId = (await params).id;
     const payload = input.data;
     if ("action" in payload) {
-      return NextResponse.json(await cleanCaseIqStaleCredentials(userId, workId, payload.runId), { status: 200, headers });
+      if (payload.action === "clean-credentials") {
+        return NextResponse.json(await cleanCaseIqStaleCredentials(userId, workId, payload.runId), { status: 200, headers });
+      }
+      return NextResponse.json(
+        await stopCaseIqRunsAndStartAuthentication(userId, workId, payload.runId, payload.requestId, payload.trustWorkFolder),
+        { status: 202, headers }
+      );
     }
     return NextResponse.json(await startCaseIqAuthentication(userId, workId, payload.runId,
       payload.requestId, payload.trustWorkFolder, payload.automatic), { status: 202, headers });

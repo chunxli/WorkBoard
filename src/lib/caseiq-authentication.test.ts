@@ -5,12 +5,31 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  work: vi.fn(), run: vi.fn(), count: vi.fn(), createRun: vi.fn(), binding: vi.fn(),
+  work: vi.fn(), run: vi.fn(), findMany: vi.fn(), count: vi.fn(), createRun: vi.fn(), binding: vi.fn(),
   installation: vi.fn(), prepare: vi.fn(), accept: vi.fn(), spawn: vi.fn(), history: vi.fn(), session: vi.fn(), events: vi.fn(),
+  cancelRun: vi.fn(), nativeActive: vi.fn(), cancelPendingCaseIq: vi.fn(), requestInterrupted: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
-  work: { findFirst: mocks.work }, run: { findFirst: mocks.run, count: mocks.count, create: mocks.createRun },
+  work: { findFirst: mocks.work },
+  run: {
+    findFirst: mocks.run,
+    findMany: (...args: unknown[]) => mocks.findMany(...args),
+    count: mocks.count,
+    create: mocks.createRun,
+  },
 } }));
+vi.mock("@/lib/copilot-runner", async (original) => ({
+  ...await original<typeof import("./copilot-runner")>(),
+  cancelRun: mocks.cancelRun,
+  isNativeCopilotRunActive: mocks.nativeActive,
+}));
+vi.mock("@/lib/work-executor", () => ({
+  cancelPendingCaseIqWorkRun: mocks.cancelPendingCaseIq,
+  finalizeCancelledWorkRun: vi.fn(),
+}));
+vi.mock("@/lib/caseiq-run-lifecycle", () => ({
+  requestInterruptedCaseIqCancellation: mocks.requestInterrupted,
+}));
 vi.mock("@/lib/caseiq-installation", () => ({ getCaseIqInstallationPaths: mocks.installation }));
 vi.mock("@/lib/native-session-bindings", async (original) => ({
   ...await original<typeof import("./native-session-bindings")>(), readNativeSessionBindingSync: mocks.binding,
@@ -25,7 +44,13 @@ vi.mock("@/lib/copilot-session-compat", async (original) => ({
   copilotSessionHasHistory: mocks.history, assertCopilotSessionNotInUse: mocks.session,
   readCopilotSessionSnapshot: async () => ({ events: await mocks.events(), incompleteTail: false, size: 0, modifiedAt: new Date() }),
 }));
-import { getCaseIqAuthenticationStatus, startCaseIqAuthentication, supportIqAuthenticationRejectedAt } from "./caseiq-authentication";
+import {
+  getCaseIqAuthenticationStatus,
+  startCaseIqAuthentication,
+  stopCaseIqRunsAndStartAuthentication,
+  supportIqAuthenticationRejectedAt,
+} from "./caseiq-authentication";
+import { CaseIqRunUnconfirmedError } from "./caseiq-errors";
 import * as authenticationState from "./caseiq-authentication-state";
 
 let root: string;
@@ -47,6 +72,18 @@ beforeEach(async () => {
   mocks.run.mockResolvedValue({ id: "run", hostname: hostname(), status: "SUCCESS", engine: "CASEIQ", providerId: "caseiq", copilotSessionId: sessionId,
     startedAt: new Date(Date.now() - 120_000), finishedAt: new Date() });
   mocks.count.mockResolvedValue(0);
+  mocks.findMany.mockImplementation(async (...args: unknown[]) => {
+    const count = await mocks.count(...args);
+    if (!count) return [];
+    return [{
+      id: "run", status: "RUNNING", workId: "work", copilotSessionId: sessionId,
+      engine: "CASEIQ", providerId: "caseiq", executionPath: root, hostname: hostname(),
+      taskId: null, experimentVariantId: null, trigger: "WORK",
+    }];
+  });
+  mocks.nativeActive.mockReturnValue(false);
+  mocks.cancelRun.mockResolvedValue(true);
+  mocks.cancelPendingCaseIq.mockResolvedValue(true);
   mocks.history.mockResolvedValue(true);
   mocks.events.mockResolvedValue([]);
   mocks.session.mockResolvedValue(undefined);
@@ -309,5 +346,68 @@ describe("explicit manual CaseIQ authentication", () => {
       expect(result.operation?.message).toContain("Exit Copilot to release this Work");
       expect(result.blockedReason).not.toContain("run /mcp auth");
     } finally { spy.mockRestore(); }
+  });
+
+  it("stops pending and active CaseIQ Runs, then immediately launches SupportIQ authentication once settled", async () => {
+    const activeRuns = [
+      {
+        id: "run", status: "RUNNING", workId: "work", copilotSessionId: sessionId,
+        engine: "CASEIQ", providerId: "caseiq", executionPath: root, hostname: hostname(),
+        taskId: null, experimentVariantId: null, trigger: "WORK",
+      },
+      {
+        id: "queued-run", status: "PENDING", workId: "work", copilotSessionId: sessionId,
+        engine: "CASEIQ", providerId: "caseiq", executionPath: root, hostname: null,
+        taskId: null, experimentVariantId: null, trigger: "FOLLOW_UP",
+      },
+    ];
+    mocks.findMany.mockImplementation(async () => activeRuns.filter((entry) => entry.status === "PENDING" || entry.status === "RUNNING"));
+    mocks.nativeActive.mockImplementation((id: string) => id === "run" && activeRuns[0].status === "RUNNING");
+    mocks.cancelPendingCaseIq.mockImplementation(async (id: string) => {
+      const match = activeRuns.find((entry) => entry.id === id);
+      if (match) match.status = "CANCELLED";
+      return true;
+    });
+    mocks.cancelRun.mockImplementation(async (id: string) => {
+      const match = activeRuns.find((entry) => entry.id === id);
+      if (match) match.status = "CANCELLED";
+      return true;
+    });
+
+    const before = await getCaseIqAuthenticationStatus("owner", "work", "run", true);
+    expect(before).toMatchObject({ available: false, canStopRunsToSignIn: true, blockingRunCount: 2 });
+
+    const requestId = randomUUID();
+    const opened = await stopCaseIqRunsAndStartAuthentication("owner", "work", "run", requestId, true, 500);
+    expect(mocks.cancelPendingCaseIq).toHaveBeenCalledWith(
+      "queued-run",
+      "Run was cancelled before it started so SupportIQ sign-in could open."
+    );
+    expect(mocks.cancelRun).toHaveBeenCalledWith("run");
+    expect(opened).toMatchObject({
+      available: false,
+      operation: { id: requestId, sessionId, reserved: true, trustWorkFolder: true },
+    });
+    expect(mocks.spawn).toHaveBeenCalledOnce();
+  });
+
+  it("reports stoppingRuns when CaseIQ exit is still settling and never launches on an unconfirmed stop", async () => {
+    const running = {
+      id: "run", status: "RUNNING", workId: "work", copilotSessionId: sessionId,
+      engine: "CASEIQ", providerId: "caseiq", executionPath: root, hostname: hostname(),
+      taskId: null, experimentVariantId: null, trigger: "WORK",
+    };
+    mocks.findMany.mockResolvedValue([running]);
+    mocks.nativeActive.mockReturnValue(true);
+    mocks.cancelRun.mockRejectedValueOnce(new CaseIqRunUnconfirmedError());
+    await expect(stopCaseIqRunsAndStartAuthentication("owner", "work", "run", randomUUID(), true, 50))
+      .rejects.toThrow("remains reserved");
+    expect(mocks.spawn).not.toHaveBeenCalled();
+
+    mocks.nativeActive.mockReturnValue(false);
+    mocks.requestInterrupted.mockResolvedValueOnce(undefined);
+    const settling = await stopCaseIqRunsAndStartAuthentication("owner", "work", "run", randomUUID(), true, 50);
+    expect(settling).toMatchObject({ available: false, stoppingRuns: true });
+    expect(mocks.spawn).not.toHaveBeenCalled();
   });
 });

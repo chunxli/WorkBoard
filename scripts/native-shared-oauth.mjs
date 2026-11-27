@@ -143,6 +143,24 @@ async function replaceLink(file, target, originalTarget) {
   }
 }
 
+const SHARED_BROKER_SUBDIRS = ["entra-broker-accounts", "entra-broker-cache"];
+
+async function connectOptionalBrokerSubdir(storageRoot, sessionRoot, home, profileId, subdirName) {
+  const targetDirectory = path.join(storageRoot, profileId, subdirName);
+  const linkPath = path.join(home, subdirName);
+  const info = await optionalInfo(linkPath);
+  if (info && !info.isSymbolicLink()) return;
+  const originalTarget = info ? await readlink(linkPath) : null;
+  const resolvedOriginal = originalTarget === null ? null : path.resolve(home, originalTarget);
+  if (resolvedOriginal !== null && !within(sessionRoot, resolvedOriginal) && !within(storageRoot, resolvedOriginal)) {
+    return;
+  }
+  await ensureOAuthDirectory(storageRoot, targetDirectory);
+  if (resolvedOriginal === null || !samePath(resolvedOriginal, targetDirectory)) {
+    await replaceLink(linkPath, targetDirectory, originalTarget);
+  }
+}
+
 export async function connectCaseIqSharedOAuth(storage, binding) {
   const local = (reason) => nativeOAuthStorageSchema.parse({ mode: "session", profileId: null, reason });
   if (storage.root === null) return local("shared-directory-unavailable");
@@ -168,6 +186,9 @@ export async function connectCaseIqSharedOAuth(storage, binding) {
     await ensureOAuthDirectory(storage.root, directory);
     if (target === null || !samePath(target, directory)) await replaceLink(file, directory, originalTarget);
     if (!samePath(await realpath(file), await realpath(directory))) throw new SharedOAuthUnavailable("unsafe-cache-path");
+    for (const subdir of SHARED_BROKER_SUBDIRS) {
+      await connectOptionalBrokerSubdir(storage.root, sessionRoot, home, profileId, subdir);
+    }
     return nativeOAuthStorageSchema.parse({ mode: "shared", profileId, reason: null });
   } catch (error) {
     const reason = sharedOAuthFailureReason(error);

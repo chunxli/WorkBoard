@@ -195,11 +195,11 @@ try {
     $extra = @()
     if ($request.mode -eq 'prompt') {
         $extra = @('-p', $request.prompt, '--output-format', 'json', '--stream', 'on')
-        if ($request.PSObject.Properties['sharedInputDirectory']) {
-            $extra += @('--add-dir', $request.sharedInputDirectory)
-        }
     } elseif ($request.sendPrompt) {
         $extra = @('-i', $request.prompt)
+    }
+    if ($request.PSObject.Properties['sharedInputDirectory'] -and $request.sharedInputDirectory -and -not $request.authenticationOnly) {
+        $extra += @('--add-dir', [string]$request.sharedInputDirectory)
     }
     if ($request.resume) { $extra += "--resume=$($request.sessionId)" }
     else { $extra += "--session-id=$($request.sessionId)" }

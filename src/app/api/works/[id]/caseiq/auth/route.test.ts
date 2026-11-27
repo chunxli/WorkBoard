@@ -3,12 +3,13 @@ import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CaseIqIntegrationError } from "@/lib/caseiq-errors";
 
-const mocks = vi.hoisted(() => ({ user: vi.fn(), local: vi.fn(), status: vi.fn(), start: vi.fn(), clean: vi.fn() }));
+const mocks = vi.hoisted(() => ({ user: vi.fn(), local: vi.fn(), status: vi.fn(), start: vi.fn(), stopAndStart: vi.fn(), clean: vi.fn() }));
 vi.mock("@/lib/session", () => ({ getSessionUserId: mocks.user }));
 vi.mock("@/lib/local-terminal-policy", () => ({ localTerminalAvailable: mocks.local }));
 vi.mock("@/lib/caseiq-authentication", () => ({
   getCaseIqAuthenticationStatus: mocks.status,
   startCaseIqAuthentication: mocks.start,
+  stopCaseIqRunsAndStartAuthentication: mocks.stopAndStart,
   cleanCaseIqStaleCredentials: mocks.clean,
 }));
 import { GET, POST } from "./route";
@@ -93,6 +94,22 @@ describe("owned CaseIQ sign-in API", () => {
     }), params);
     expect(response.status).toBe(200);
     expect(mocks.clean).toHaveBeenCalledWith("owner", "work", "run");
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+  it("dispatches stop-and-sign-in with exact Work/Run ownership and folder-trust preference", async () => {
+    mocks.stopAndStart.mockResolvedValueOnce({
+      available: false,
+      blockedReason: "Opening",
+      authenticationVerified: false,
+      operation: { id: requestId },
+    });
+    const response = await POST(new NextRequest("http://localhost/api/works/work/caseiq/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost" },
+      body: JSON.stringify({ action: "stop-and-sign-in", runId: "run", requestId, trustWorkFolder: true }),
+    }), params);
+    expect(response.status).toBe(202);
+    expect(mocks.stopAndStart).toHaveBeenCalledWith("owner", "work", "run", requestId, true);
     expect(mocks.start).not.toHaveBeenCalled();
   });
 });

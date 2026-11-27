@@ -115,8 +115,9 @@ SupportIQ 认证独立于 WorkBoard 网站登录、GitHub Copilot 登录和 GitH
 共享范围和接入方式：
 
 - [原生 Session 准备逻辑](../src/lib/caseiq-integration.ts) 在宿主私有 runtime 根下创建稳定共享区，按 WorkBoard 用户、操作系统账号、主机和 CaseIQ 安装路径分组，不依赖单个 Work 或 SID 的生命周期，也不按每次源版本重新建组。
-- [OAuth 桥接逻辑](../scripts/native-shared-oauth.mjs) 从原启动器实际生成的 MCP 配置识别 SupportIQ 端点和认证配置，再以摘要区分 profile。不同端点或认证配置不混用；工具列表、超时或描述变化不新建认证身份。共享位置为 `shared-oauth/<owner-scope-hash>/<profile-hash>/mcp-oauth-config`，不在网页暴露完整宿主路径。
-- 每次原启动器装配完准确的原生 Session 后，在真正调用 CLI 前重新接好 `mcp-oauth-config` 链接。原启动器下次修复自己的链接不会使 Follow Up 退回私有缓存。只替换经过校验的会话链接，原有目标目录及其文件保持原地；不读取、复制、合并、迁移或删除令牌。只有正确的 owner/Work/home 和批准握手才可实际启动原生任务。
+- [OAuth 桥接逻辑](../scripts/native-shared-oauth.mjs) 从原启动器实际生成的 MCP 配置识别 SupportIQ 端点和认证配置，再以摘要区分 profile。不同端点或认证配置不混用；工具列表、超时或描述变化不新建认证身份。共享位置为 `shared-oauth/<owner-scope-hash>/<profile-hash>/`（同时关联 `mcp-oauth-config`、`entra-broker-accounts` 与 `entra-broker-cache`），不在网页暴露完整宿主路径。
+- 当 Windows 主机系统的 Windows Account Manager (WAM) 中已登录 `@techsupport.microsoft.com` TSE 账号时，[原生代理](../scripts/caseiq-native-delegate.mjs) 与普通 CLI 入口会自动将非专用登录（`authenticationOnly=false`）下的 HTTP SupportIQ 配置路由至本地 [Windows WAM TSE 桥接器](../scripts/supportiq-mcp-bridge.mjs)，按租户强锁定静默换取 TSE 令牌，从而使普通 CLI 保持公司租户 MCP 的默认 OneAuth 免登，并彻底避免后台其他客户端改写 Windows 凭据管理器共享槽位导致反复要求重登；专用 **Sign in to SupportIQ** 窗口仍保留原生 HTTP OAuth 流程以更新系统 WAM 缓存。
+- 每次原启动器装配完准确的原生 Session 后，在真正调用 CLI 前重新接好 `mcp-oauth-config`（及可选 broker 缓存）链接。原启动器在 `Initializing CaseIQ` 阶段短暂重置链接不会触发误报弹窗，也不会使 Follow Up 退回私有缓存。只替换经过校验的会话链接，原有目标目录及其文件保持原地；不读取、复制、合并、迁移或删除令牌。只有正确的 owner/Work/home 和批准握手才可实际启动原生任务。
 - 与 CaseIQ 原生机制一样，整个 MCP OAuth 目录共享，因此该 profile 中其他 CaseIQ MCP 的 OAuth 认证也在共享范围内，不只是 SupportIQ。一个 profile 使用用户在原生流程中选择的 TSE 身份；切换账号或租户会影响该 profile 的其他会话，不支持将它当成同时使用多个账号的隔离区。不同 WorkBoard 用户不共享。
 
 **首次切换可能需要再登录一次。** 旧 Session 私有缓存不会导入新的共享区。用户在一个已接通的 Session 中完成官方 TSE 登录后，相同 profile 的后续原生会话使用同一缓存；不需要逐个复制授权。已有但空闲的 Session 在下次 Run / Follow Up / 手动登录准备时接入；已经运行中的进程不会被热改缓存、取消或重放。旧认证绿色回执不能用来证明新共享 profile 已登录，存储 profile 变化后会退回未验证。
@@ -129,7 +130,7 @@ SupportIQ 认证独立于 WorkBoard 网站登录、GitHub Copilot 登录和 GitH
 
 ### 网页手动登录入口
 
-1. 在 **CaseIQ Runtime** 的 Work Conversation 顶部展开默认折叠的 **SupportIQ sign-in** banner，点击 **Sign in to SupportIQ**。等待当前 Run 和已排队消息结束后，按钮才允许打开认证窗口。**Trust this Work's exact folder** 现在默认勾选，只作用于当前 Work 的准确目录及私有 Session；用户可取消，同一页面中该 Work 的明确选择不会因 Follow Up 换 Run 而被重置。
+1. 在 **CaseIQ Runtime** 的 Work Conversation 空闲/已核验状态下，顶部保留默认折叠的 **SupportIQ sign-in** banner；当检测到需要登录或正在执行认证流程时，顶部重复横幅自动隐藏，仅在底部输入框/会话栏上方显示紧凑登录引导。若当前有活跃或排队的 CaseIQ Run 阻塞认证，可直接点击 **Stop Run & sign in to SupportIQ** 立即取消阻塞中的 CaseIQ Run（不影响配对双会话中独立运行的 Copilot CLI 分栏）并自动拉起认证窗口。**Trust this Work's exact folder** 默认勾选，只作用于当前 Work 的准确目录及私有 Session；用户可取消，同一页面中该 Work 的明确选择不会因 Follow Up 换 Run 而被重置。
 2. 也可在 Follow Up 输入确切的 `/mcp auth SupportIQ`。WorkBoard 将它当作本地认证动作，而不是用户 Prompt；不创建 Follow Up Run、不中转给模型。包含其他文字的自然语言请求仍是普通 Prompt，不能代替此入口；认证命令不能附带文件。
 3. 点击登录按钮时，WorkBoard 先将固定的 `/mcp auth SupportIQ` 复制到剪贴板，成功时显示 **Command copied**；另有 **Copy authentication command** 手动复制按钮。浏览器拒绝复制时显示错误和手动输入回退，不伪装成复制成功，也不因此禁止打开认证窗口。将命令粘贴到原生窗口执行，在官方页面选择 TSE 账户；WorkBoard 不代填凭据或批准原生提示。
 4. 打开的窗口调用原 CaseIQ 启动器，恢复当前 Work 的准确原生 Session。WorkBoard 自有观察扩展只附加该 Session，查询真实 MCP 状态、live `tools/list` 并再次核对仍为 `connected`，同时执行运行时只读 `mcp.oauth.probe` 观察 OAuth 令牌；不能仅凭可列工具断言登录有效；不创建 SDK Run、不发送模型 Prompt、不调用案件工具或读取 Token。

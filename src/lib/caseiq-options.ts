@@ -153,6 +153,9 @@ export type CaseIqCredentialManagerCleanup = z.infer<typeof caseIqCredentialMana
 export const caseIqAuthenticationStatusSchema = z.object({
   sessionId: z.uuid().optional(),
   available: z.boolean(), blockedReason: z.string().nullable(),
+  canStopRunsToSignIn: z.boolean().optional(),
+  blockingRunCount: z.number().int().nonnegative().optional(),
+  stoppingRuns: z.boolean().optional(),
   authenticationVerified: z.boolean(),
   oauthStorage: z.object({
     mode: z.enum(["shared", "session"]),

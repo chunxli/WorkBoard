@@ -163,7 +163,9 @@ async function cleanStoppedAuthenticationObserver(operation: StoredCaseIqAuthent
 }
 
 export async function readCaseIqNativeConnection(
-  operation: StoredCaseIqAuthentication, currentStorage?: NativeSessionBinding["oauthStorage"],
+  operation: StoredCaseIqAuthentication,
+  currentStorage?: NativeSessionBinding["oauthStorage"],
+  options: { allowTransientLauncherReset?: boolean } = {},
 ) {
   const unknown = { status: "unknown" as const, toolCount: null, checkedAt: null };
   const directory = path.join(getCaseIqStateRoot(), "requests", operation.id);
@@ -200,7 +202,18 @@ export async function readCaseIqNativeConnection(
     if (extra !== undefined || name !== "mcp-oauth-config" || !/^[a-f0-9]{64}$/.test(profileId) ||
         prepared.binding.oauthStorage?.mode !== "shared" ||
         prepared.binding.oauthStorage.profileId !== profileId) return unknown;
-  } else if (prepared.binding.oauthStorage?.mode === "shared") return unknown;
+  } else if (prepared.binding.oauthStorage?.mode === "shared") {
+    const expectedProfileId = prepared.binding.oauthStorage.profileId;
+    if (!options.allowTransientLauncherReset || !canonicalSharedRoot || !expectedProfileId || !/^[a-f0-9]{64}$/.test(expectedProfileId)) {
+      return unknown;
+    }
+    const nativeSessionRoot = await realpath(/* turbopackIgnore: true */ path.join(getCaseIqStateRoot(), "native", operation.sessionId)).catch(() => null);
+    const sharedProfileDir = path.join(canonicalSharedRoot, expectedProfileId, "mcp-oauth-config");
+    const sharedInfo = await lstat(/* turbopackIgnore: true */ sharedProfileDir).catch(() => null);
+    if (!nativeSessionRoot || !pathIsWithin(nativeSessionRoot, actualDirectory) || !sharedInfo?.isDirectory() || sharedInfo.isSymbolicLink()) {
+      return unknown;
+    }
+  }
   if (observation.status !== "connected") {
     return { status: observation.status, toolCount: observation.toolCount, checkedAt: observation.checkedAt };
   }

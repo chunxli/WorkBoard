@@ -9,7 +9,7 @@ import {
 } from "./caseiq-authentication-state";
 import { RunStartInProgressError, withRunStartLock } from "./run-start-lock";
 import { bridgeCorrelation, parseNativeBridgeRequest } from "../../scripts/native-bridge-protocol.mjs";
-import { getCaseIqSharedOAuthRoot } from "./native-runtime-paths";
+import { getCaseIqSharedOAuthRoot, getCaseIqStateRoot } from "./native-runtime-paths";
 import type { NativeSessionBinding } from "./native-session-bindings";
 
 const processMocks = vi.hoisted(() => ({ matches: vi.fn(), alive: vi.fn(), started: vi.fn() }));
@@ -161,6 +161,24 @@ describe("correlated native MCP verification", () => {
     await unlink(path.join(root, "mcp-oauth-config"));
     await symlink(otherTarget, path.join(root, "mcp-oauth-config"), process.platform === "win32" ? "junction" : "dir");
     expect(await readCaseIqNativeConnection(operation, storage)).toMatchObject({ status: "unknown", checkedAt: null });
+    expect(await readCaseIqNativeConnection(operation, storage, { allowTransientLauncherReset: true }))
+      .toMatchObject({ status: "unknown", checkedAt: null });
+  });
+
+  it("tolerates transient launcher junction resets inside the active native Session without flickering unverified state", async () => {
+    const storage = { mode: "shared" as const, profileId: "c".repeat(64), reason: null };
+    const sessionHome = path.join(getCaseIqStateRoot(), "native", operation.sessionId, "cases", "_unclassified", "sessions", operation.sessionId);
+    const launcherStaging = path.join(getCaseIqStateRoot(), "native", operation.sessionId, "home", "instances", "inst", "shared", "mcp-oauth-config");
+    await mkdir(launcherStaging, { recursive: true });
+    await interruptedWindow(sessionHome, storage);
+    await observation();
+
+    await unlink(path.join(sessionHome, "mcp-oauth-config"));
+    await symlink(launcherStaging, path.join(sessionHome, "mcp-oauth-config"), process.platform === "win32" ? "junction" : "dir");
+
+    expect(await readCaseIqNativeConnection(operation, storage)).toMatchObject({ status: "unknown", checkedAt: null });
+    expect(await readCaseIqNativeConnection(operation, storage, { allowTransientLauncherReset: true }))
+      .toMatchObject({ status: "connected", toolCount: 10 });
   });
 
   it("does not equate an open wrapper with a started native Session", async () => {

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Copy, RefreshCw, Terminal, Trash2 } from "lucide-react";
+import { Copy, LoaderCircle, RefreshCw, Square, Terminal, Trash2 } from "lucide-react";
 import { z } from "zod";
 import {
   CASEIQ_AUTHENTICATION_COMMAND,
@@ -13,7 +13,9 @@ import {
 } from "@/lib/caseiq-options";
 import { copyCodeText } from "@/components/CopyableCodeBlock";
 import CaseIqAccessBanner from "@/components/CaseIqAccessBanner";
-import CaseIqSignInProgress from "@/components/CaseIqSignInProgress";
+import CaseIqSignInProgress, { isCaseIqSignInCalloutVisible } from "@/components/CaseIqSignInProgress";
+
+export { isCaseIqSignInCalloutVisible };
 
 export function formatCredentialKilobytes(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -32,9 +34,13 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
   const [clipboardError, setClipboardError] = useState<string | null>(null);
   const [cleaningCredentials, setCleaningCredentials] = useState(false);
   const [credentialNotice, setCredentialNotice] = useState<CaseIqCredentialManagerCleanup | null>(null);
+  const [stoppingRuns, setStoppingRuns] = useState(false);
   const openingRef = useRef(false);
+  const stoppingRef = useRef(false);
+  const pendingStopSignInRef = useRef(false);
   const checkingRef = useRef(false);
   const cleaningRef = useRef(false);
+  const copiedWorkRef = useRef<string | null>(null);
   const requestVersion = useRef(0);
   const request = useRef<{ runId: string; requestId: string; trustWorkFolder: boolean; automatic?: boolean } | null>(null);
   const automaticAttempts = useRef(new Set<string>());
@@ -45,6 +51,12 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
 
   const apply = useCallback((value: CaseIqAuthenticationStatus) => {
     setStatus(value);
+    if (value.operation?.reserved || value.authenticationVerified) {
+      pendingStopSignInRef.current = false;
+    }
+    if (!value.stoppingRuns && (value.available || value.operation?.reserved || value.authenticationVerified)) {
+      setStoppingRuns(false);
+    }
     if (value.operation?.reserved && value.operation.trustWorkFolder !== undefined &&
         (!value.sessionId || value.operation.sessionId === value.sessionId)) {
       setTrustWorkFolder(value.operation.trustWorkFolder);
@@ -58,7 +70,7 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
   }, [router]);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    if (!enabled || !runId || openingRef.current) return false;
+    if (!enabled || !runId || openingRef.current || stoppingRef.current) return false;
     const currentScope = `${workId}:${runId}`;
     const version = ++requestVersion.current;
     try {
@@ -81,17 +93,24 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
 
   useEffect(() => {
     const controller = new AbortController();
+    const sameWork = scope.current.startsWith(`${workId}:`);
     scope.current = `${workId}:${runId}`;
     requestVersion.current++;
-    checkingRef.current = false; openingRef.current = false; cleaningRef.current = false;
+    checkingRef.current = false; openingRef.current = false; stoppingRef.current = false; cleaningRef.current = false;
     request.current = null;
+    if (!sameWork) pendingStopSignInRef.current = false;
     automaticAttempts.current.clear();
     lastReserved.current = false;
     void Promise.resolve().then(async () => {
       if (controller.signal.aborted) return;
       setStatus(null); setError(null); setUncertain(false);
       setCheckedAt(null); setChecking(false); setOpening(false);
-      setCommandCopied(false); setClipboardError(null);
+      if (!sameWork) setStoppingRuns(false);
+      if (copiedWorkRef.current !== workId) {
+        copiedWorkRef.current = null;
+        setCommandCopied(false);
+      }
+      setClipboardError(null);
       setCleaningCredentials(false); setCredentialNotice(null);
       if (trustPreference.current?.workId !== workId) trustPreference.current = null;
       setTrustWorkFolder(trustPreference.current?.value ?? true);
@@ -108,7 +127,7 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
     const controller = new AbortController();
     let checking = false;
     const check = async () => {
-      if (checking || checkingRef.current || openingRef.current || document.hidden || controller.signal.aborted) return;
+      if (checking || checkingRef.current || openingRef.current || stoppingRef.current || document.hidden || controller.signal.aborted) return;
       checking = true;
       try { await refresh(controller.signal); }
       catch (reason) {
@@ -128,9 +147,14 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
     const currentScope = `${workId}:${runId}`;
     try {
       await copyCodeText(CASEIQ_AUTHENTICATION_COMMAND, navigator.clipboard);
-      if (scope.current === currentScope) { setCommandCopied(true); setClipboardError(null); }
+      if (scope.current === currentScope) {
+        copiedWorkRef.current = workId;
+        setCommandCopied(true);
+        setClipboardError(null);
+      }
     } catch (reason) {
       if (scope.current === currentScope) {
+        copiedWorkRef.current = null;
         setCommandCopied(false);
         setClipboardError(reason instanceof Error ? reason.message : "The authentication command could not be copied.");
       }
@@ -187,11 +211,111 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
     }
   }, [enabled, runId, uncertain, status, error, workId, trustWorkFolder, copyCommand, endpoint, apply]);
 
+  const stopAndStart = useCallback(async () => {
+    if (!enabled || !runId || openingRef.current || stoppingRef.current || checkingRef.current || uncertain || status?.operation?.reserved) {
+      throw new Error("Wait for the current authentication request to be confirmed before opening another window.");
+    }
+    if (error) throw new Error("Refresh the CaseIQ authentication state before stopping and signing in.");
+    if (!status?.canStopRunsToSignIn && !status?.available) {
+      throw new Error(status?.blockedReason ?? "Check the CaseIQ authentication state before signing in.");
+    }
+    if (status.available) {
+      await start(false);
+      return;
+    }
+    const currentScope = `${workId}:${runId}`;
+    if (scope.current !== currentScope) throw new Error("Wait for this Run's authentication state to finish loading.");
+    const version = ++requestVersion.current;
+    stoppingRef.current = true;
+    setStoppingRuns(true);
+    setError(null);
+    request.current ??= { runId, requestId: crypto.randomUUID(), trustWorkFolder };
+    const pendingRequest = request.current;
+    let dispatched = false;
+    try {
+      await copyCommand();
+      if (scope.current !== currentScope || requestVersion.current !== version) {
+        throw new Error("The selected CaseIQ Run changed before authentication was requested.");
+      }
+      dispatched = true;
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "stop-and-sign-in",
+          runId: pendingRequest.runId,
+          requestId: pendingRequest.requestId,
+          trustWorkFolder: pendingRequest.trustWorkFolder,
+        }),
+      });
+      const body: unknown = await response.json();
+      if (!response.ok) {
+        const failure = z.object({ error: z.string() }).safeParse(body);
+        if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+          dispatched = false;
+          request.current = null;
+        }
+        throw new Error(failure.success ? failure.data.error : "Could not stop the current Run for SupportIQ sign-in.");
+      }
+      const parsed = caseIqAuthenticationStatusSchema.safeParse(body);
+      if (!parsed.success) {
+        throw new Error("CaseIQ returned an invalid stop-and-sign-in response.");
+      }
+      if (parsed.data.stoppingRuns && !parsed.data.operation?.reserved) {
+        if (scope.current === currentScope && requestVersion.current === version) {
+          request.current = null;
+          pendingStopSignInRef.current = true;
+          apply(parsed.data);
+          router.refresh();
+        }
+        return;
+      }
+      if (parsed.data.operation?.id !== pendingRequest.requestId) {
+        throw new Error("Authentication window acceptance is unconfirmed. It may already be open.");
+      }
+      if (scope.current === currentScope && requestVersion.current === version) {
+        pendingStopSignInRef.current = false;
+        setStoppingRuns(false);
+        apply(parsed.data);
+        router.refresh();
+      }
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Could not stop the current Run for SupportIQ sign-in.";
+      if (scope.current === currentScope && requestVersion.current === version) {
+        setStoppingRuns(false);
+        setError(message);
+        setUncertain(dispatched);
+      }
+      throw new Error(message);
+    } finally {
+      if (scope.current === currentScope && requestVersion.current === version) {
+        stoppingRef.current = false;
+      }
+    }
+  }, [enabled, runId, uncertain, status, error, start, workId, trustWorkFolder, copyCommand, endpoint, apply, router]);
+
   const reportError = useCallback((reason: unknown) => {
     if (scope.current === `${workId}:${runId}`) setError(reason instanceof Error ? reason.message : "The authentication action failed.");
   }, [runId, workId]);
 
   useEffect(() => {
+    if (pendingStopSignInRef.current && enabled && runId) {
+      if (status?.authenticationVerified || status?.operation?.reserved) {
+        pendingStopSignInRef.current = false;
+        return;
+      }
+      if (status?.available && !openingRef.current && !stoppingRef.current && !checkingRef.current &&
+          !opening && !uncertain && !error) {
+        let cancelled = false;
+        void Promise.resolve().then(async () => {
+          if (cancelled || openingRef.current || stoppingRef.current) return;
+          pendingStopSignInRef.current = false;
+          setStoppingRuns(false);
+          try { await start(false); } catch (reason) { reportError(reason); }
+        });
+        return () => { cancelled = true; };
+      }
+    }
     const requirement = status?.automaticSignIn;
     if (!requirement || requirement.attempted || !automaticEnabled || !enabled || !runId) return;
     if (!status.available && !status.operation?.reserved) {
@@ -199,18 +323,18 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
       return;
     }
     if (!status.available || status.authenticationVerified || status.operation?.reserved || openingRef.current ||
-        checkingRef.current || opening || uncertain || error || document.hidden ||
+        stoppingRef.current || checkingRef.current || opening || uncertain || error || document.hidden ||
         automaticAttempts.current.has(requirement.requestId)) return;
     let cancelled = false;
     void Promise.resolve().then(async () => {
-      if (cancelled || document.hidden || openingRef.current) return;
+      if (cancelled || document.hidden || openingRef.current || stoppingRef.current) return;
       automaticAttempts.current.add(requirement.requestId);
       try { await start(true); } catch (reason) { reportError(reason); }
     });
     return () => { cancelled = true; };
   }, [status, automaticEnabled, enabled, runId, opening, uncertain, error, start, reportError]);
   async function refreshManually() {
-    if (checkingRef.current || openingRef.current || cleaningRef.current) return;
+    if (checkingRef.current || openingRef.current || stoppingRef.current || cleaningRef.current) return;
     const currentScope = `${workId}:${runId}`;
     checkingRef.current = true; setChecking(true);
     try {
@@ -221,7 +345,7 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
     }
   }
   async function cleanCredentials() {
-    if (!enabled || !runId || cleaningRef.current || openingRef.current) return;
+    if (!enabled || !runId || cleaningRef.current || openingRef.current || stoppingRef.current) return;
     const currentScope = `${workId}:${runId}`;
     const version = ++requestVersion.current;
     cleaningRef.current = true;
@@ -254,25 +378,34 @@ export function useCaseIqAuthentication(workId: string, runId: string | null, en
     }
   }
   return {
-    status, error, opening, uncertain, checking, checkedAt, trustWorkFolder,
+    status, error, opening, stoppingRuns, uncertain, checking, checkedAt, trustWorkFolder,
     setTrustWorkFolder: (value: boolean) => { trustPreference.current = { workId, value }; setTrustWorkFolder(value); },
     commandCopied, clipboardError, copyCommand,
     cleaningCredentials, credentialNotice, cleanCredentials,
-    reserved: opening || uncertain || Boolean(status?.operation?.reserved), refresh, refreshManually, start, reportError,
+    reserved: opening || stoppingRuns || uncertain || Boolean(status?.operation?.reserved),
+    refresh, refreshManually, start, stopAndStart, reportError,
   };
 }
 
 export function CaseIqAuthenticationPanel({ authentication }: {
   authentication: ReturnType<typeof useCaseIqAuthentication>;
 }) {
-  const { status, error, opening, uncertain } = authentication;
+  const { status, error, opening, stoppingRuns, uncertain } = authentication;
   const connected = Boolean(status?.authenticationVerified && status?.connection?.status === "connected");
   const pendingAutomatic = Boolean(status?.automaticSignIn && !status.automaticSignIn.attempted);
   const failure = error ?? (status?.operation && ["failed", "unconfirmed"].includes(status.operation.status) &&
     !pendingAutomatic ? status.operation.message : null);
   const credManager = status?.credentialManager;
   const quotaAlert = Boolean(credManager?.quotaExceeded);
-  const summary = opening ? "Opening window" : authentication.cleaningCredentials ? "Cleaning credentials..."
+  const activeReservation = opening || uncertain || Boolean(status?.operation?.reserved);
+  const canStopToSignIn = Boolean((status?.canStopRunsToSignIn || stoppingRuns) && !activeReservation && !connected);
+  const stopActionLabel = stoppingRuns
+    ? "Stopping Run & opening..."
+    : (status?.blockingRunCount ?? 1) > 1
+      ? "Stop Runs & sign in to SupportIQ"
+      : "Stop Run & sign in to SupportIQ";
+  const summary = opening ? "Opening window" : stoppingRuns ? "Stopping Run..."
+    : authentication.cleaningCredentials ? "Cleaning credentials..."
     : authentication.checking || !status ? "Checking..."
     : status.operation?.reserved ? connected ? "OAuth checked · Close Terminal"
       : status.operation.phase === "native-started" ? "Waiting for TSE sign-in" : "Preparing Session"
@@ -282,13 +415,13 @@ export function CaseIqAuthenticationPanel({ authentication }: {
           ? status.automaticSignIn && !status.automaticSignIn.attempted && !status.available
             ? "Sign-in queued" : "Sign-in required"
           : "Not verified";
-  const revealKey = opening || status?.operation?.reserved ? "signing-in"
+  const revealKey = opening || stoppingRuns || status?.operation?.reserved ? "signing-in"
       : status?.automaticSignIn && !status.automaticSignIn.attempted ? status.automaticSignIn.requestId : null;
-  const settledVerified = connected && !quotaAlert && !opening && !uncertain && !status?.operation?.reserved && !failure;
+  const settledVerified = connected && !quotaAlert && !opening && !stoppingRuns && !uncertain && !status?.operation?.reserved && !failure;
   return <CaseIqAccessBanner label="SupportIQ sign-in" summary={summary} verified={connected && !quotaAlert}
-    busy={opening || authentication.cleaningCredentials || authentication.checking || !status && !error} error={failure}
+    busy={opening || stoppingRuns || authentication.cleaningCredentials || authentication.checking || !status && !error} error={failure}
     revealKey={revealKey} autoCollapse={settledVerified}>
-    <CaseIqSignInProgress status={status} opening={opening} uncertain={uncertain} error={failure}
+    <CaseIqSignInProgress status={status} opening={opening} stoppingRuns={stoppingRuns} uncertain={uncertain} error={failure}
       commandCopied={authentication.commandCopied} clipboardError={authentication.clipboardError} />
     {quotaAlert && credManager && <div role="alert" className="mb-2 space-y-1.5 rounded-md border border-amber-700 bg-amber-950/70 p-2 text-amber-200">
       <p className="font-semibold">
@@ -338,6 +471,16 @@ export function CaseIqAuthenticationPanel({ authentication }: {
     </p>}
     {status?.oauthStorage && <p className="mb-2 text-neutral-400">Existing private caches are not imported. The shared profile may need one initial TSE sign-in.</p>}
     <div className="flex flex-wrap items-center gap-2">
+      {canStopToSignIn && (
+        <button type="button" className="ui-subtle-button"
+          disabled={stoppingRuns || authentication.checking || Boolean(authentication.cleaningCredentials) || Boolean(error)}
+          onClick={() => { void authentication.stopAndStart().catch(authentication.reportError); }}>
+          {stoppingRuns
+            ? <LoaderCircle size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            : <Square size={12} fill="currentColor" aria-hidden="true" />}
+          {stopActionLabel}
+        </button>
+      )}
       <button type="button" className="ui-subtle-button" disabled={!status?.available || authentication.reserved || authentication.checking || Boolean(error)}
         onClick={() => { void authentication.start().catch(authentication.reportError); }}>
         <Terminal size={13} aria-hidden="true" />{opening ? "Opening authentication window..." : "Sign in to SupportIQ"}
@@ -378,7 +521,15 @@ export function CaseIqSignInCallout({ authentication }: {
   const otherWindowOpen = authentication.status?.sessionId && authentication.status.operation?.reserved &&
     authentication.status.operation.sessionId !== authentication.status.sessionId;
   const credManager = authentication.status?.credentialManager;
+  const activeReservation = authentication.opening || authentication.uncertain || Boolean(authentication.status?.operation?.reserved);
+  const canStopToSignIn = Boolean((authentication.status?.canStopRunsToSignIn || authentication.stoppingRuns) && !activeReservation && !connected);
+  const stopActionLabel = authentication.stoppingRuns
+    ? "Stopping Run & opening..."
+    : (authentication.status?.blockingRunCount ?? 1) > 1
+      ? "Stop Runs & sign in to SupportIQ"
+      : "Stop Run & sign in to SupportIQ";
   return <CaseIqSignInProgress compact status={authentication.status} opening={authentication.opening}
+    stoppingRuns={authentication.stoppingRuns}
     uncertain={authentication.uncertain} error={authentication.error}
     commandCopied={authentication.commandCopied} clipboardError={authentication.clipboardError}
     actions={<>
@@ -390,29 +541,42 @@ export function CaseIqSignInCallout({ authentication }: {
       {authentication.credentialNotice && <p role="status" className="text-emerald-400">
         Cleaned {authentication.credentialNotice.deletedCount} stale MCP credentials ({formatCredentialKilobytes(authentication.credentialNotice.freedBytes)} freed).
       </p>}
-      {!authentication.reserved && !connected && authentication.status?.available && <label className="flex items-start gap-2">
-        <input type="checkbox" aria-label="Trust this Work's exact folder" checked={authentication.trustWorkFolder}
-          onChange={(event) => authentication.setTrustWorkFolder(event.target.checked)} />
-        <span>Trust exact Work folder; no Full access.</span>
-      </label>}
+      {!activeReservation && !authentication.stoppingRuns && !connected && (authentication.status?.available || canStopToSignIn) && (
+        <label className="flex items-start gap-2">
+          <input type="checkbox" aria-label="Trust this Work's exact folder" checked={authentication.trustWorkFolder}
+            onChange={(event) => authentication.setTrustWorkFolder(event.target.checked)} />
+          <span>Trust exact Work folder; no Full access.</span>
+        </label>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {credManager?.quotaExceeded && credManager.staleCopilotCount > 0 && authentication.cleanCredentials && (
-          <button type="button" className="ui-subtle-button" disabled={Boolean(authentication.cleaningCredentials)}
+          <button type="button" className="ui-subtle-button" disabled={Boolean(authentication.cleaningCredentials) || authentication.stoppingRuns}
             onClick={() => { void authentication.cleanCredentials?.(); }}>
             <Trash2 size={13} aria-hidden="true" />
             {authentication.cleaningCredentials ? "Cleaning..." : `Clean ${credManager.staleCopilotCount} stale credentials`}
           </button>
         )}
-        {!authentication.reserved && !connected && <button type="button" className="ui-primary-button"
-          disabled={!authentication.status?.available || authentication.checking || Boolean(authentication.cleaningCredentials) || Boolean(authentication.error)}
-          onClick={() => { void authentication.start().catch(authentication.reportError); }}>
-          <Terminal size={13} aria-hidden="true" />Sign in to SupportIQ
-        </button>}
+        {canStopToSignIn ? (
+          <button type="button" className="ui-primary-button"
+            disabled={authentication.stoppingRuns || authentication.checking || Boolean(authentication.cleaningCredentials) || Boolean(authentication.error)}
+            onClick={() => { void authentication.stopAndStart().catch(authentication.reportError); }}>
+            {authentication.stoppingRuns
+              ? <LoaderCircle size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+              : <Square size={12} fill="currentColor" aria-hidden="true" />}
+            {stopActionLabel}
+          </button>
+        ) : !authentication.reserved && !connected && (
+          <button type="button" className="ui-primary-button"
+            disabled={!authentication.status?.available || authentication.checking || Boolean(authentication.cleaningCredentials) || Boolean(authentication.error)}
+            onClick={() => { void authentication.start().catch(authentication.reportError); }}>
+            <Terminal size={13} aria-hidden="true" />Sign in to SupportIQ
+          </button>
+        )}
         {!connected && !otherWindowOpen && <button type="button" className="ui-subtle-button" aria-label="Copy authentication command"
           onClick={() => { void authentication.copyCommand(); }}>
           <Copy size={13} aria-hidden="true" />{authentication.commandCopied ? "Command copied" : "Copy command"}
         </button>}
-        <button type="button" className="ui-subtle-button" disabled={authentication.checking} aria-label="Refresh sign-in state"
+        <button type="button" className="ui-subtle-button" disabled={authentication.checking || authentication.stoppingRuns} aria-label="Refresh sign-in state"
           onClick={() => { void authentication.refreshManually(); }}>
           <RefreshCw size={13} className={authentication.checking ? "animate-spin motion-reduce:animate-none" : undefined} aria-hidden="true" />
           {authentication.checking ? "Checking..." : "Refresh"}

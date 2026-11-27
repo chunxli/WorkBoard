@@ -114,18 +114,22 @@ export function useMessageAttachments(workId?: string) {
   return { files, add, remove, clear, upload, error };
 }
 
-export function AttachmentDraft({ files, disabled, error, add, remove }: {
+export function AttachmentDraft({ files, disabled, error, add, remove, actions }: {
   files: DraftFile[]; disabled: boolean; error: string | null; add: (files: File[]) => void; remove: (id: string) => void;
+  actions?: React.ReactNode;
 }) {
   const picker = useRef<HTMLInputElement>(null);
   return <div className="space-y-1">
     <input ref={picker} type="file" multiple hidden aria-label="Choose message attachments" disabled={disabled}
       onChange={(event) => { add([...event.currentTarget.files ?? []]); event.currentTarget.value = ""; }} />
-    <button type="button" disabled={disabled} onClick={() => picker.current?.click()}
-      title="Paste images, drop files, or select up to 10 files; 25 MiB each, 100 MiB total."
-      className="work-toolbar-action inline-flex min-h-8 items-center gap-1 text-xs disabled:opacity-50">
-      <FilePlus2 size={14} aria-hidden="true" />Add files
-    </button>
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button type="button" disabled={disabled} onClick={() => picker.current?.click()}
+        title="Paste images, drop files, or select up to 10 files; 25 MiB each, 100 MiB total."
+        className="work-toolbar-action inline-flex min-h-8 items-center gap-1 text-xs disabled:opacity-50">
+        <FilePlus2 size={14} aria-hidden="true" />Add files
+      </button>
+      {actions}
+    </div>
     {files.length > 0 && <ul className="flex max-h-28 flex-wrap gap-1 overflow-auto" aria-label="Attachments to send">
       {files.map((entry) => <li key={entry.id} className="flex max-w-64 items-center gap-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs">
         {entry.thumbnail && <Image unoptimized width={48} height={40} src={entry.thumbnail} alt="" className="max-h-10 max-w-12 rounded object-contain" />}

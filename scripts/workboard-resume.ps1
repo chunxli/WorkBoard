@@ -21,13 +21,43 @@ Save-LaunchState
 
 try {
     Set-Location -LiteralPath $launch.workingDirectory
-    $copilotArgs = if ($null -ne $launch.copilotArgs) {
-        @($launch.copilotArgs | ForEach-Object { [string]$_ })
+    $allowedEnvKeys = @(
+        "COPILOT_ENTRA_ONEAUTH",
+        "COPILOT_ENTRA_ONEAUTH_SCOPE_BINDING_MODE",
+        "COPILOT_ENTRA_DISABLE_ONEAUTH",
+        "COPILOT_CUSTOM_INSTRUCTIONS_DIRS"
+    )
+    if ($launch.PSObject.Properties['environment'] -and $null -ne $launch.environment) {
+        foreach ($key in $allowedEnvKeys) {
+            if (-not $launch.environment.PSObject.Properties[$key]) { continue }
+            $value = $launch.environment.$key
+            if ($null -eq $value -or [string]$value -eq '') {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
+            }
+            else {
+                Set-Item -LiteralPath "Env:$key" -Value ([string]$value)
+            }
+        }
+    }
+    [string[]]$copilotArgs = @()
+    if ($null -ne $launch.PSObject.Properties['copilotArgs'] -and $null -ne $launch.copilotArgs) {
+        foreach ($arg in @($launch.copilotArgs)) {
+            $copilotArgs += [string]$arg
+        }
     }
     else {
-        @("--resume=$($launch.sessionId)")
+        $copilotArgs += "--resume=$($launch.sessionId)"
     }
-    & copilot @($copilotArgs)
+    if ($launch.PSObject.Properties['sharedInputDirectory'] -and $launch.sharedInputDirectory) {
+        $copilotArgs += @("--add-dir", [string]$launch.sharedInputDirectory)
+    }
+    if ($null -ne $launch.PSObject.Properties['extraArgs'] -and $null -ne $launch.extraArgs) {
+        foreach ($arg in @($launch.extraArgs)) {
+            $copilotArgs += [string]$arg
+        }
+    }
+    $env:SUPPORTIQ_INTERACTIVE_AUTH = "1"
+    & copilot @copilotArgs
     $exitCode = $LASTEXITCODE
 }
 catch {

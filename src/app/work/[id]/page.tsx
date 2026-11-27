@@ -52,12 +52,17 @@ const workRunRelations = {
 
 type DisplayRun = Prisma.RunGetPayload<{ include: typeof workRunRelations }>;
 
-async function pairedLaneDisplay(work: { id: string; directoryPath: string }, pair: { cliSessionId: string; caseIqSessionId: string }, lane: PairedWorkLane) {
+async function pairedLaneDisplay(
+  work: { id: string; directoryPath: string; status: string },
+  pair: { cliSessionId: string; caseIqSessionId: string },
+  lane: PairedWorkLane,
+  canOpenLocal: boolean,
+) {
   const sessionId = pairedSessionId(pair, lane);
   const executionPath = pairedWorkspacePath(work.directoryPath, pair, lane);
   const where: Prisma.RunWhereInput = {
     workId: work.id, copilotSessionId: sessionId, engine: lane, providerId: lane === "CASEIQ" ? "caseiq" : null,
-    taskId: null, experimentVariantId: null, executionPath, trigger: { in: ["WORK", "FOLLOW_UP"] },
+    taskId: null, experimentVariantId: null, executionPath, trigger: { in: ["WORK", "FOLLOW_UP", "TERMINAL_RESUME"] },
   };
   const active = await prisma.run.findMany({
     where: { ...where, status: { in: ["PENDING", "RUNNING"] } },
@@ -80,13 +85,40 @@ async function pairedLaneDisplay(work: { id: string; directoryPath: string }, pa
       }
     }
   }
+  const runIsActive = run?.status === "PENDING" || run?.status === "RUNNING";
+  let terminalState: "ready" | "active" | "unavailable" = "unavailable";
+  if (run?.copilotSessionId && canOpenLocal && (!run.hostname || run.hostname === hostname()) && work.status !== "ARCHIVED") {
+    if (runIsActive && isTerminalRunTrigger(run.trigger)) {
+      if (state?.terminalActive === true) terminalState = "active";
+      else if (state?.terminalActive === false) terminalState = "ready";
+    } else if (!runIsActive && await isTerminalResumeReady({
+      id: run.id,
+      taskId: null,
+      status: run.status,
+      executionPath: run.executionPath,
+      copilotSessionId: run.copilotSessionId,
+      engine: run.engine,
+      providerId: run.providerId,
+      work: { directoryPath: work.directoryPath, sessionPair: pair },
+    })) {
+      terminalState = "ready";
+    }
+  }
   return {
     sessionId, runId: run?.id ?? null,
     initialLog,
-    isLive: run?.status === "PENDING" || run?.status === "RUNNING",
+    isLive: runIsActive,
     awaitingRunStart: state?.displayStatus === "PENDING",
+    historySync: Boolean(run && isTerminalRunTrigger(run.trigger) && (run.status === "RUNNING" || run.status === "UNKNOWN")),
     outputFormat: run?.outputFormat === "json" ? "json" as const : "text" as const,
+    terminalResume: { canOpenLocal, state: terminalState },
     notices: <>{state && <RunStatusRefresher key={state.id} initialState={state} workId={work.id} />}
+      {state?.displayStatus === "SYNCING" && (
+        <p role="status" className="text-xs text-emerald-200">{TERMINAL_SYNCING_MESSAGE}</p>
+      )}
+      {state?.observationError && (
+        <p role="alert" className="break-words text-xs text-red-400">{state.observationError}</p>
+      )}
       {artifactError && <p role="alert" className="text-xs text-red-400">The original Run log could not be verified or read.</p>}
     </>,
     runActions: run && renderRunActions(run, state, true),
@@ -154,8 +186,12 @@ export default async function WorkDetailPage({
     },
   });
   if (!work) notFound();
+  const requestHost = (await headers()).get("host") ?? "";
+  const canOpenLocal = localTerminalAvailable(requestHost) && (!work.hostname || work.hostname === hostname());
   const pair = work.sessionPair;
-  const laneDisplays = pair ? await Promise.all(pairedWorkLanes.map((lane) => pairedLaneDisplay(work, pair, lane))) : null;
+  const laneDisplays = pair
+    ? await Promise.all(pairedWorkLanes.map((lane) => pairedLaneDisplay(work, pair, lane, canOpenLocal)))
+    : null;
 
   const skillComparisonSetting = process.env.WORKBOARD_SHOW_SKILL_COMPARISON?.trim().toLowerCase() ?? "";
   if (skillComparisonSetting && skillComparisonSetting !== "true" && skillComparisonSetting !== "false") {
@@ -225,11 +261,8 @@ export default async function WorkDetailPage({
   const hasActiveExperiment = work.experiments.some((experiment) =>
     ["PROVISIONING", "RUNNING"].includes(experiment.status)
   );
-  const requestHost = (await headers()).get("host") ?? "";
-  const canOpenLocal = localTerminalAvailable(requestHost) && (!work.hostname || work.hostname === hostname());
   const canOpenTerminal =
     !pair && canOpenLocal &&
-    work.defaultEngine !== "CASEIQ" && latestRun?.engine !== "CASEIQ" &&
     (!latestRun?.hostname || latestRun.hostname === hostname());
   let terminalState: "ready" | "active" | "unavailable" = "unavailable";
   if (latestRun?.copilotSessionId && canOpenTerminal && work.status !== "ARCHIVED") {

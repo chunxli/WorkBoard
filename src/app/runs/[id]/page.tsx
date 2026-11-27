@@ -83,12 +83,15 @@ export default async function RunDetailPage({
   const canOpenTerminal = localTerminalAvailable(requestHost) && sameMachine;
   const resumeReady =
     Boolean(run.copilotSessionId) &&
-    run.engine !== "CASEIQ" &&
     canOpenTerminal &&
     await isTerminalResumeReady({
       id: run.id,
       taskId: run.taskId,
       status: run.status,
+      executionPath: run.executionPath,
+      copilotSessionId: run.copilotSessionId,
+      engine: run.engine,
+      providerId: run.providerId,
       work: run.work,
     });
   let terminalState: "ready" | "active" | "unavailable" = !ownerArchived && !activeContinuation && resumeReady ? "ready" : "unavailable";
